@@ -1,7 +1,46 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git branch *)",
+      "Bash(mvn clean *)",
+      "WebSearch",
+      "WebFetch(domain:docs.langchain4j.dev)",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:dev.langchain4j+AND+a:langchain4j-dashscope&rows=5&wt=json\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); docs=data['response']['docs']; [print\\(d['id'], d['latestVersion']\\) for d in docs]\")",
+      "Bash(mvn versions:display-dependency-updates -Dincludes=dev.langchain4j:langchain4j-dashscope)",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=dashscope+AND+g:dev.langchain4j&rows=10&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:dev.langchain4j+AND+dashscope&rows=10&wt=json\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:dev.langchain4j+AND+a:langchain4j-community-dashscope+AND+v:1.0.0-beta5&rows=1&wt=json\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\)['response']['docs'][0]; print\\(d.get\\('latestVersion',''\\)\\)\")",
+      "Bash(curl -s \"https://search.maven.org/solrsearch/select?q=g:dev.langchain4j+AND+a:langchain4j&rows=3&wt=json&sort=timestamp+desc\")",
+      "Bash(python3 -c \"import sys,json; [print\\(d['id'], d['latestVersion']\\) for d in json.load\\(sys.stdin\\)['response']['docs']]\")",
+      "Bash(jar -tf __TRACKED_VAR__/.m2/repository/dev/langchain4j/langchain4j-dashscope/0.36.2/langchain4j-dashscope-0.36.2.jar)",
+      "Bash(javap -c -p -classpath langchain4j-dashscope-0.36.2.jar dev.langchain4j.model.dashscope.QwenHelper)",
+      "Bash(javap -c -p -classpath langchain4j-dashscope-0.36.2.jar dev.langchain4j.model.dashscope.QwenChatModel)",
+      "Bash(jar -tf __TRACKED_VAR__/.m2/repository/dev/langchain4j/langchain4j/0.36.2/langchain4j-0.36.2.jar)",
+      "Bash(javap -c -p -classpath __TRACKED_VAR__/.m2/repository/dev/langchain4j/langchain4j/0.36.2/langchain4j-0.36.2.jar dev.langchain4j.service.DefaultAiServices)",
+      "Bash(javap -c -p -classpath __TRACKED_VAR__/.m2/repository/dev/langchain4j/langchain4j/0.36.2/langchain4j-0.36.2.jar 'dev.langchain4j.service.DefaultAiServices$1')",
+      "Bash(mvn compile *)",
+      "Bash(javap -c -p -classpath langchain4j-dashscope-0.36.2.jar 'dev.langchain4j.model.dashscope.QwenHelper$$Lambda')",
+      "Bash(grep -A 80 'lambda$messageAccumulator$26')",
+      "Bash(javap -c -p -classpath __TRACKED_VAR__/.m2/repository/dev/langchain4j/langchain4j/0.36.2/langchain4j-0.36.2.jar dev.langchain4j.service.AiServiceContext)",
+      "Bash(mvn spring-boot:run -q)",
+      "Bash(curl -s \"http://localhost:8080/test/simple/chat-notools?query=你好\")",
+      "Bash(curl -s \"http://localhost:8080/test/simple/chat?query=你好\")",
+      "Bash(curl *)",
+      "Bash(netstat -ano)",
+      "Bash(kill -9 31364)",
+      "Bash(taskkill /F /PID 31364)",
+      "Bash(cmd.exe *)",
+      "Bash(wmic process *)",
+      "Bash(jar xf *)",
+      "Bash(javap -c -p /tmp/dev/langchain4j/model/dashscope/QwenHelper.class)",
+      "Bash(javap *)",
+      "Bash(jar tf *)",
+      "Bash(mysql -u root -p1234 -e \"ALTER TABLE vibe_music.chat_messages MODIFY COLUMN message_type ENUM\\('USER','ASSISTANT','SYSTEM'\\) NOT NULL;\")",
+      "Bash(mysql *)"
     ]
   }
 }
