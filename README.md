@@ -106,6 +106,3 @@ pnpm dev
 | 用户端 | Vue 3, Vite 6, Pinia, Element Plus, ArtPlayer |
 | 构建工具 | Maven, pnpm |
 
-## 项目作者
-
-Alex LiSun — vibe_music_service@163.com
