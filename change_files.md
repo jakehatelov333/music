@@ -132,7 +132,7 @@ role-path-permissions:
 # LangChain4j DashScope 通义千问大模型配置
 langchain4j:
   dashscope:
-    api-key: sk-d4b224f3e44a4f5ea1c876606d4ed58e
+    api-key: ${DASHSCOPE_API_KEY:} # 由环境变量注入，禁止明文提交
     model-name: qwen-max
 
 # 显式声明服务端口
@@ -485,7 +485,7 @@ public SseEmitter streamChat(@RequestParam("query") String query, ...) {
 
 ## 三、后端配置与依赖改动
 
-### 3.1 `application.yml` — 配置从占位符改为实际值
+### 3.1 `application.yml` — 配置从模板占位符改为环境变量注入
 
 **数据库配置：**
 
@@ -493,7 +493,7 @@ public SseEmitter streamChat(@RequestParam("query") String query, ...) {
 |---|---|---|
 | MySQL URL | `jdbc:mysql://YOUR_MYSQL_HOST:3306/vibe_music?...` | `jdbc:mysql://localhost:3306/vibe_music?...&allowPublicKeyRetrieval=true` |
 | 用户名 | `YOUR_MYSQL_USER` | `root` |
-| 密码 | `YOUR_MYSQL_PASSWORD` | `1234` |
+| 密码 | `YOUR_MYSQL_PASSWORD` | `${MYSQL_PASSWORD}`（环境变量注入） |
 
 **Redis 配置：**
 
@@ -506,8 +506,8 @@ public SseEmitter streamChat(@RequestParam("query") String query, ...) {
 | 配置项 | 改动前 | 改动后 |
 |---|---|---|
 | SMTP 服务器 | `smtp.example.com` | `smtp.qq.com` |
-| 账号 | `your-email@example.com` | `2509680148@qq.com` |
-| 密码 | `YOUR_EMAIL_APP_PASSWORD` | `tdmklkghymgyeacg` |
+| 账号 | `your-email@example.com` | `${MAIL_USERNAME}`（环境变量注入） |
+| 密码 | `YOUR_EMAIL_APP_PASSWORD` | `${MAIL_PASSWORD}`（环境变量注入；原授权码已泄露并吊销） |
 
 **意义：** 从模板占位符替换为开发环境的实际连接参数。`allowPublicKeyRetrieval=true` 是 MySQL 8.0+ 连接所需的参数。
 
