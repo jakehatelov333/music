@@ -18,3 +18,9 @@ out/
 # ===== Node / frontend =====
 node_modules/
 dist/
+
+# ===== AI tool local data =====
+.workbuddy-ai/
+.claude/settings.local.json
+
+scripts/

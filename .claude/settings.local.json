@@ -42,7 +42,8 @@
       "Bash(mysql -u root -p1234 -e \"ALTER TABLE vibe_music.chat_messages MODIFY COLUMN message_type ENUM\\('USER','ASSISTANT','SYSTEM'\\) NOT NULL;\")",
       "Bash(mysql *)",
       "Bash(git remote *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git submodule *)"
     ]
   }
 }
