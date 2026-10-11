@@ -78,7 +78,7 @@ router.beforeEach((to) => {
   const guestMode = sessionStorage.getItem(GUEST_MODE_KEY) === 'true'
 
   if (to.path === '/' && !userStore.isLoggedIn && !guestMode) {
-    return '/login'
+    return '/landing'
   }
 
   if (
