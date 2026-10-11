@@ -1,0 +1,133 @@
+spring:
+  # 敏感信息统一从环境变量或项目根目录下的 .env 文件读取（.env 已被 .gitignore 忽略）
+  # 本地开发：复制 .env.example 为 .env 并填入真实值；线上部署：直接注入环境变量
+  config:
+    import: "optional:file:./.env[.properties]"
+
+  # 配置数据源
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/vibe_music?useUnicode=true&characterEncoding=utf-8&allowPublicKeyRetrieval=true&useSSL=false # 修改你的 MySQL 地址和库名
+    type: com.alibaba.druid.pool.DruidDataSource # 配置连接池
+    username: ${MYSQL_USERNAME:root} # 环境变量 MYSQL_USERNAME
+    password: ${MYSQL_PASSWORD:} # 环境变量 MYSQL_PASSWORD，禁止在此写明文密码
+
+  # Redis服务连接配置
+  data:
+    redis:
+      database: 1
+      host: 127.0.0.1
+      port: 6379
+
+  servlet:
+    multipart:
+      max-file-size: 2GB # 专辑批量上传允许单个大音频文件
+      max-request-size: 3GB # 专辑批量上传允许多首音频合计上传
+
+  # 对于注解的Redis缓存数据统一设置有效期为10分钟，单位毫秒
+  cache:
+    redis:
+      time-to-live: 600000
+
+  # 配置邮件服务
+  mail:
+    # 配置邮箱账户和密码
+    host: smtp.qq.com # 修改你的 SMTP 服务器地址
+    username: ${MAIL_USERNAME:} # 环境变量 MAIL_USERNAME，发件邮箱账号
+    password: ${MAIL_PASSWORD:} # 环境变量 MAIL_PASSWORD，邮箱授权码，禁止在此写明文
+    protocol: smtp
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          ssl:
+            enable: true
+          socketFactory:
+            port: 465
+            class: javax.net.ssl.SSLSocketFactory
+          # 邮件服务超时时间配置
+          connectiontimeout: 5000
+          timeout: 3000
+          writetimeout: 5000
+
+# 配置 mybatis-plus
+mybatis-plus:
+  type-aliases-package: cn.edu.seig.pojo # 实体类所在的包，允许用实体类类名作为别名
+
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # 配置日志
+    map-underscore-to-camel-case: true # 类属性与表字段的驼峰映射
+
+  global-config:
+    db-config: # 数据库配置
+      table-prefix: tb_  # 表名前缀为tb_，表名为前缀连接类名（小写）
+
+# 定义角色和路径权限的映射关系
+role-path-permissions:
+  permissions:
+    ROLE_ADMIN:
+      - "/admin/"
+    ROLE_USER:
+      - "/user/"
+      - "/playlist/"
+      - "/artist/"
+      - "/song/"
+      - "/album/"
+      - "/favorite/"
+      - "/comment/"
+      - "/banner/"
+      - "/feedback/"
+      - "/test"
+
+minio:
+  endpoint: http://127.0.0.1:9005 # 修改你的 MinIO 端点
+  accessKey: ${MINIO_ACCESS_KEY:} # 环境变量 MINIO_ACCESS_KEY
+  secretKey: ${MINIO_SECRET_KEY:} # 环境变量 MINIO_SECRET_KEY
+  bucket: vibe-music-data # 确认 Bucket 名称与你创建的一致
+server:
+  port: 8080
+
+logging:
+  level:
+    com.heima: debug
+
+# LangChain4j DashScope 配置
+langchain4j:
+  dashscope:
+    api-key: ${DASHSCOPE_API_KEY:} # 环境变量 DASHSCOPE_API_KEY，禁止在此写明文 Key
+    model-name: qwen-flash
+
+# 歌词补全配置
+lyrics:
+  enabled: true # 总开关，关闭后所有歌词抓取接口直接返回不可用
+  proxy: ${LYRICS_PROXY:} # 可选代理（如 http://127.0.0.1:8080），留空表示直连
+  match:
+    min-score: 0.7 # 匹配得分阈值，低于该值视为无匹配，宁可不写
+    duration-tolerance-seconds: 3 # 时长容差（秒）
+  providers:
+    # 主源：QQ 音乐，一次请求返回歌词 + 词/曲/编曲
+    qq:
+      enabled: true
+      base-url: https://c.y.qq.com
+      referer: https://y.qq.com/portal/player.html
+      user-agent: VibeMusic/1.0 (https://github.com/jakehatelov333/music)
+      connect-timeout-ms: 3000
+      read-timeout-ms: 8000
+      max-retries: 2
+    # 兜底：LRCLIB，公开开放接口，但无词曲作者信息
+    lrclib:
+      enabled: true
+      base-url: https://lrclib.net
+      user-agent: VibeMusic/1.0 (https://github.com/jakehatelov333/music)
+      connect-timeout-ms: 3000
+      read-timeout-ms: 8000
+      max-retries: 2
+  batch:
+    thread-pool-size: 2 # 并发刻意保持很低，节流靠 delay-ms
+    queue-capacity: 200
+    delay-ms: 500 # 每首歌曲之间的间隔，避免触发数据源限流
+    max-task-size: 1000 # 单次批量任务最多处理多少首
+    task-ttl-hours: 24 # 任务状态在 Redis 中的保留时长

@@ -12,7 +12,7 @@ scripts/secret-expressions.txt
 # ===== Build output =====
 target/
 out/
-build/
+/build/
 *.class
 
 # ===== Node / frontend =====

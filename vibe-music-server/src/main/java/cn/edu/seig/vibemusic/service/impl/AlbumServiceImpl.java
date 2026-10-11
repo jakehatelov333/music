@@ -1,0 +1,377 @@
+package cn.edu.seig.vibemusic.service.impl;
+
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.constant.MessageConstant;
+import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
+import cn.edu.seig.vibemusic.enumeration.RoleEnum;
+import cn.edu.seig.vibemusic.mapper.AlbumMapper;
+import cn.edu.seig.vibemusic.mapper.ArtistMapper;
+import cn.edu.seig.vibemusic.mapper.SongMapper;
+import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
+import cn.edu.seig.vibemusic.model.dto.AlbumAddDTO;
+import cn.edu.seig.vibemusic.model.dto.AlbumQueryDTO;
+import cn.edu.seig.vibemusic.model.dto.AlbumUpdateDTO;
+import cn.edu.seig.vibemusic.model.entity.Album;
+import cn.edu.seig.vibemusic.model.entity.Song;
+import cn.edu.seig.vibemusic.model.entity.UserFavorite;
+import cn.edu.seig.vibemusic.model.vo.AlbumDetailVO;
+import cn.edu.seig.vibemusic.model.vo.AlbumVO;
+import cn.edu.seig.vibemusic.model.vo.SongVO;
+import cn.edu.seig.vibemusic.result.PageResult;
+import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.service.IAlbumService;
+import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.util.TypeConversionUtil;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.time.LocalDateTime;
+
+/**
+ * 用户端专辑业务实现。
+ */
+@Service
+public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements IAlbumService {
+
+    private static final int MAX_LIMIT = 50;
+
+    @Autowired
+    private AlbumMapper albumMapper;
+
+    @Autowired
+    private UserFavoriteMapper userFavoriteMapper;
+
+    @Autowired
+    private SongMapper songMapper;
+
+    @Autowired
+    private ArtistMapper artistMapper;
+
+    @Autowired
+    private MinioService minioService;
+
+    @Override
+    public Result<PageResult<AlbumVO>> getAlbumList(AlbumQueryDTO queryDTO) {
+        Page<AlbumVO> page = new Page<>(queryDTO.getPageNum(), queryDTO.getPageSize());
+        IPage<AlbumVO> albumPage = albumMapper.getAlbumList(
+                page,
+                queryDTO.getAlbumName(),
+                queryDTO.getArtistId(),
+                queryDTO.getKeyword(),
+                queryDTO.getStatus()
+        );
+
+        return Result.success(new PageResult<>(albumPage.getTotal(), albumPage.getRecords()));
+    }
+
+    @Override
+    public Result<AlbumDetailVO> getAlbumDetail(Long albumId, HttpServletRequest request) {
+        Album entity = albumMapper.selectById(albumId);
+        if (entity == null) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_FOUND);
+        }
+
+        AlbumDetailVO album = albumMapper.getAlbumDetailById(albumId);
+        List<SongVO> songs = albumMapper.getSongsByAlbumId(albumId);
+        setSongLikeStatus(songs, request);
+        album.setSongs(songs);
+        album.setSongCount((long) songs.size());
+        return Result.success(album);
+    }
+
+    @Override
+    public Result<List<SongVO>> getAlbumSongs(Long albumId, HttpServletRequest request) {
+        if (albumMapper.selectById(albumId) == null) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_FOUND);
+        }
+
+        List<SongVO> songs = albumMapper.getSongsByAlbumId(albumId);
+        setSongLikeStatus(songs, request);
+        return Result.success(songs);
+    }
+
+    @Override
+    public Result<List<AlbumVO>> searchAlbums(String keyword, int limit) {
+        String normalizedKeyword = keyword == null ? "" : keyword.trim();
+        if (normalizedKeyword.isEmpty()) {
+            return Result.success(Collections.emptyList());
+        }
+
+        int safeLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+        return Result.success(albumMapper.searchAlbums(normalizedKeyword, safeLimit));
+    }
+
+    @Override
+    public Result<Boolean> albumExists(Long artistId, String albumName) {
+        if (artistId == null || albumName == null || albumName.isBlank()) {
+            return Result.success(false);
+        }
+
+        Long count = albumMapper.selectCount(new QueryWrapper<Album>()
+                .eq("artist_id", artistId)
+                .eq("name", albumName.trim()));
+        return Result.success(count != null && count > 0);
+    }
+
+    @Override
+    public Result<Long> getAllAlbumsCount() {
+        return Result.success(albumMapper.getVisibleAlbumCount());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result addAlbum(AlbumAddDTO albumAddDTO) {
+        if (albumAddDTO == null || albumAddDTO.getArtistId() == null
+                || albumAddDTO.getAlbumName() == null || albumAddDTO.getAlbumName().isBlank()) {
+            return Result.error("专辑名称和主艺人不能为空");
+        }
+        if (artistMapper.selectById(albumAddDTO.getArtistId()) == null) {
+            return Result.error("主艺人不存在");
+        }
+        String albumName = albumAddDTO.getAlbumName().trim();
+        if (albumExistsForArtist(albumAddDTO.getArtistId(), albumName, null)) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.ALREADY_EXISTS);
+        }
+        String status = normalizeStatus(albumAddDTO.getStatus(), "DRAFT");
+        Album album = new Album()
+                .setArtistId(albumAddDTO.getArtistId())
+                .setAlbumName(albumName)
+                .setCoverUrl(trimToNull(albumAddDTO.getCoverUrl()))
+                .setReleaseDate(albumAddDTO.getReleaseDate())
+                .setDescription(albumAddDTO.getDescription())
+                .setStatus(status)
+                .setCreatedAt(LocalDateTime.now())
+                .setUpdatedAt(LocalDateTime.now());
+        if (albumMapper.insert(album) == 0) {
+            return Result.error(MessageConstant.ADD + MessageConstant.FAILED);
+        }
+        return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result updateAlbum(AlbumUpdateDTO albumUpdateDTO) {
+        Album albumInDB = albumMapper.selectById(albumUpdateDTO.getAlbumId());
+        if (albumInDB == null) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_FOUND);
+        }
+        if (albumUpdateDTO.getAlbumName() == null || albumUpdateDTO.getAlbumName().isBlank()) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_NULL);
+        }
+
+        String albumName = albumUpdateDTO.getAlbumName().trim();
+        Long artistId = albumUpdateDTO.getArtistId() == null ? albumInDB.getArtistId() : albumUpdateDTO.getArtistId();
+        if (artistMapper.selectById(artistId) == null) {
+            return Result.error("主艺人不存在");
+        }
+        if (albumExistsForArtist(artistId, albumName, albumInDB.getAlbumId())) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.ALREADY_EXISTS);
+        }
+
+        UpdateWrapper<Album> albumUpdate = new UpdateWrapper<Album>()
+                .eq("id", albumInDB.getAlbumId())
+                .set("artist_id", artistId)
+                .set("name", albumName)
+                .set("release_date", albumUpdateDTO.getReleaseDate())
+                .set("description", albumUpdateDTO.getDescription())
+                .set("status", normalizeStatus(albumUpdateDTO.getStatus(), albumInDB.getStatus() == null ? "DRAFT" : albumInDB.getStatus()))
+                .set("updated_at", LocalDateTime.now());
+        // 编辑表单不包含封面字段：未传 coverUrl 时保留原封面，避免「编辑专辑」把封面清空
+        if (albumUpdateDTO.getCoverUrl() != null) {
+            albumUpdate.set("cover_url", trimToNull(albumUpdateDTO.getCoverUrl()));
+        }
+        int updated = albumMapper.update(null, albumUpdate);
+        if (updated == 0) {
+            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+
+        if (!albumName.equals(albumInDB.getAlbumName())) {
+            songMapper.update(null, new UpdateWrapper<Song>()
+                    .eq("album_id", albumInDB.getAlbumId())
+                    .set("album", albumName));
+        }
+        return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result updateAlbumCover(Long albumId, String coverUrl) {
+        Album album = albumMapper.selectById(albumId);
+        if (album == null) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_FOUND);
+        }
+
+        String oldCoverUrl = album.getCoverUrl();
+        album.setCoverUrl(coverUrl);
+        if (albumMapper.updateById(album) == 0) {
+            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+        if (oldCoverUrl != null && !oldCoverUrl.isEmpty()) {
+            minioService.deleteFile(oldCoverUrl);
+        }
+        return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(cacheNames = "songCache", allEntries = true)
+    public Result deleteAlbum(Long albumId) {
+        return deleteAlbum(albumId, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(cacheNames = "songCache", allEntries = true)
+    public Result deleteAlbum(Long albumId, boolean deleteSongs) {
+        Album album = albumMapper.selectById(albumId);
+        if (album == null) {
+            return Result.error(MessageConstant.ALBUM + MessageConstant.NOT_FOUND);
+        }
+
+        List<Song> songs = songMapper.selectList(new QueryWrapper<Song>().eq("album_id", albumId));
+
+        if (deleteSongs) {
+            // 连同专辑内的所有歌曲一起删除：先清理 MinIO 中的音频与歌曲封面，再删除歌曲记录。
+            // tb_comment / tb_genre / tb_playlist_binding / tb_user_favorite 均对 tb_song 设置了 ON DELETE CASCADE，
+            // 删除歌曲记录时相关评论、收藏、歌单关联会自动清理。
+            for (Song song : songs) {
+                if (song.getCoverUrl() != null && !song.getCoverUrl().isEmpty()) {
+                    minioService.deleteFile(song.getCoverUrl());
+                }
+                if (song.getAudioUrl() != null && !song.getAudioUrl().isEmpty()) {
+                    minioService.deleteFile(song.getAudioUrl());
+                }
+            }
+            if (!songs.isEmpty()) {
+                songMapper.deleteByIds(songs.stream().map(Song::getSongId).collect(Collectors.toList()));
+            }
+        } else {
+            // 删除专辑只解除歌曲归属，歌曲、音频、歌单、收藏和评论均保留。
+            songMapper.update(null, new UpdateWrapper<Song>()
+                    .eq("album_id", albumId)
+                    .set("album_id", null));
+        }
+
+        if (albumMapper.deleteById(albumId) == 0) {
+            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+        if (album.getCoverUrl() != null && !album.getCoverUrl().isEmpty()) {
+            minioService.deleteFile(album.getCoverUrl());
+        }
+        return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result deleteAlbums(List<Long> albumIds) {
+        if (albumIds == null || albumIds.isEmpty()) {
+            return Result.error(MessageConstant.DATA_NOT_FOUND);
+        }
+
+        List<Album> albums = albumMapper.selectByIds(albumIds);
+        for (Album album : albums) {
+            songMapper.update(null, new UpdateWrapper<Song>()
+                    .eq("album_id", album.getAlbumId())
+                    .set("album_id", null));
+        }
+
+        if (albumMapper.deleteByIds(albumIds) == 0) {
+            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+        for (Album album : albums) {
+            if (album.getCoverUrl() != null && !album.getCoverUrl().isEmpty()) {
+                minioService.deleteFile(album.getCoverUrl());
+            }
+        }
+        return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    }
+
+    private boolean albumExistsForArtist(Long artistId, String albumName, Long excludeAlbumId) {
+        QueryWrapper<Album> queryWrapper = new QueryWrapper<Album>()
+                .eq("artist_id", artistId)
+                .eq("name", albumName);
+        if (excludeAlbumId != null) {
+            queryWrapper.ne("id", excludeAlbumId);
+        }
+        return albumMapper.selectCount(queryWrapper) > 0;
+    }
+
+    private boolean hasSongs(Long albumId) {
+        return songMapper.selectCount(new QueryWrapper<Song>().eq("album_id", albumId)) > 0;
+    }
+
+    private String normalizeStatus(String status, String fallback) {
+        String normalized = status == null ? "" : status.trim().toUpperCase();
+        if (normalized.isEmpty()) {
+            return fallback;
+        }
+        if (!"DRAFT".equals(normalized) && !"PUBLISHED".equals(normalized)) {
+            throw new IllegalArgumentException("专辑状态仅支持 DRAFT 或 PUBLISHED");
+        }
+        return normalized;
+    }
+
+    private String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private void setSongLikeStatus(List<SongVO> songs, HttpServletRequest request) {
+        songs.forEach(song -> song.setLikeStatus(LikeStatusEnum.DEFAULT.getId()));
+
+        Long userId = getUserId(request);
+        if (userId == null || songs.isEmpty()) {
+            return;
+        }
+
+        List<UserFavorite> favoriteSongs = userFavoriteMapper.selectList(new QueryWrapper<UserFavorite>()
+                .eq("user_id", userId)
+                .eq("type", 0));
+        Set<Long> favoriteSongIds = favoriteSongs.stream()
+                .map(UserFavorite::getSongId)
+                .collect(Collectors.toSet());
+
+        songs.forEach(song -> {
+            if (favoriteSongIds.contains(song.getSongId())) {
+                song.setLikeStatus(LikeStatusEnum.LIKE.getId());
+            }
+        });
+    }
+
+    private Long getUserId(HttpServletRequest request) {
+        String token = request.getHeader("Authorization");
+        if (token == null || token.isEmpty()) {
+            return null;
+        }
+        if (token.startsWith("Bearer ")) {
+            token = token.substring(7);
+        }
+        if (token.isEmpty()) {
+            return null;
+        }
+
+        try {
+            Map<String, Object> claims = JwtUtil.parseToken(token);
+            String role = (String) claims.get(JwtClaimsConstant.ROLE);
+            if (!RoleEnum.USER.getRole().equals(role)) {
+                return null;
+            }
+            return TypeConversionUtil.toLong(claims.get(JwtClaimsConstant.USER_ID));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+}

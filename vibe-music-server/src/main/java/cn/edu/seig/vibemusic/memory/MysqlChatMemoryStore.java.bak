@@ -1,0 +1,196 @@
+package cn.edu.seig.vibemusic.memory;
+
+import cn.edu.seig.vibemusic.model.entity.ChatMessage;
+import cn.edu.seig.vibemusic.service.IAiService;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.*;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class MysqlChatMemoryStore implements ChatMemoryStore {
+
+    private final IAiService aiService;
+
+    @Override
+    public List<dev.langchain4j.data.message.ChatMessage> getMessages(Object memoryId) {
+        String chatId = memoryId.toString();
+        List<ChatMessage> entities = aiService.getMessagesByChatId(chatId);
+        List<dev.langchain4j.data.message.ChatMessage> messages = new ArrayList<>();
+
+        for (ChatMessage entity : entities) {
+            switch (entity.getMessageType()) {
+                case USER:
+                    messages.add(UserMessage.from(entity.getContent()));
+                    break;
+                case ASSISTANT:
+                    messages.add(AiMessage.from(entity.getContent()));
+                    break;
+                case SYSTEM:
+                    // 系统消息由 @SystemMessage 注解每次注入，无需从数据库加载
+                    break;
+                case TOOL_REQUEST:
+                    // 从内容重建工具请求：格式为 JSON 数组 [{name, arguments, id}, ...]
+                    messages.add(AiMessage.from(parseToolRequests(entity.getContent())));
+                    break;
+                case TOOL_RESULT:
+                    // 从内容重建工具结果：格式为 JSON {id, toolName, text}
+                    messages.add(ToolExecutionResultMessage.from(
+                            parseToolResultId(entity.getContent()),
+                            parseToolResultName(entity.getContent()),
+                            parseToolResultText(entity.getContent())));
+                    break;
+            }
+        }
+
+        // 移除末尾没有AI回复的UserMessage（来自之前失败的请求）
+        long userCount = messages.stream()
+                .filter(m -> m.type() == ChatMessageType.USER).count();
+        long aiCount = messages.stream()
+                .filter(m -> m.type() == ChatMessageType.AI).count();
+        while (userCount > aiCount + 1 && !messages.isEmpty()
+                && messages.get(messages.size() - 1).type() == ChatMessageType.USER) {
+            messages.remove(messages.size() - 1);
+            userCount--;
+        }
+
+        log.info("加载聊天历史，chatId={}, 消息数={}, 消息类型={}",
+                chatId, messages.size(),
+                messages.stream().map(m -> m.type().name()).collect(java.util.stream.Collectors.joining(",")));
+
+        return messages;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void updateMessages(Object memoryId, List<dev.langchain4j.data.message.ChatMessage> messages) {
+        String chatId = memoryId.toString();
+
+        log.info("updateMessages: chatId={}, 传入消息数={}, 类型: {}",
+                chatId, messages.size(),
+                messages.stream().map(m -> m.type().name()).collect(java.util.stream.Collectors.joining(",")));
+
+        aiService.deleteMessagesByChatId(chatId);
+
+        for (dev.langchain4j.data.message.ChatMessage message : messages) {
+            switch (message.type()) {
+                case SYSTEM:
+                    // 系统消息不持久化到数据库，它由 @SystemMessage 注解在每次调用时注入
+                    break;
+                case USER:
+                    String userContent = ((UserMessage) message).singleText();
+                    if (userContent != null) {
+                        aiService.saveMessage(chatId, ChatMessage.MessageType.USER, userContent);
+                    }
+                    break;
+                case AI:
+                    AiMessage aiMessage = (AiMessage) message;
+                    if (aiMessage.hasToolExecutionRequests()) {
+                        // 保存工具请求为 TOOL_REQUEST，内容为 JSON 数组
+                        String toolReqJson = serializeToolRequests(aiMessage.toolExecutionRequests());
+                        aiService.saveMessage(chatId, ChatMessage.MessageType.TOOL_REQUEST, toolReqJson);
+                    }
+                    String aiContent = aiMessage.text();
+                    if (aiContent != null) {
+                        aiService.saveMessage(chatId, ChatMessage.MessageType.ASSISTANT, aiContent);
+                    }
+                    break;
+                case TOOL_EXECUTION_RESULT:
+                    ToolExecutionResultMessage toolResult = (ToolExecutionResultMessage) message;
+                    String resultJson = serializeToolResult(
+                            toolResult.id(), toolResult.toolName(), toolResult.text());
+                    aiService.saveMessage(chatId, ChatMessage.MessageType.TOOL_RESULT, resultJson);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void deleteMessages(Object memoryId) {
+        aiService.deleteMessagesByChatId(memoryId.toString());
+    }
+
+    // ---- 工具消息的序列化/反序列化辅助方法 ----
+
+    private String serializeToolRequests(List<ToolExecutionRequest> requests) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < requests.size(); i++) {
+            ToolExecutionRequest req = requests.get(i);
+            if (i > 0) sb.append(",");
+            sb.append("{\"id\":\"").append(escapeJson(req.id())).append("\"");
+            sb.append(",\"name\":\"").append(escapeJson(req.name())).append("\"");
+            sb.append(",\"arguments\":\"").append(escapeJson(req.arguments())).append("\"}");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private List<ToolExecutionRequest> parseToolRequests(String content) {
+        List<ToolExecutionRequest> requests = new ArrayList<>();
+        String json = content.trim();
+        if (!json.startsWith("[")) return requests;
+        json = json.substring(1, json.length() - 1);
+        if (json.isEmpty()) return requests;
+        String[] items = json.split("\\},\\{");
+        for (String item : items) {
+            item = item.replaceAll("[{}]", "").trim();
+            String id = extractField(item, "id");
+            String name = extractField(item, "name");
+            String arguments = extractField(item, "arguments");
+            requests.add(ToolExecutionRequest.builder()
+                    .id(id).name(name).arguments(arguments).build());
+        }
+        return requests;
+    }
+
+    private String serializeToolResult(String id, String toolName, String text) {
+        return "{\"id\":\"" + escapeJson(id) + "\"" +
+                ",\"toolName\":\"" + escapeJson(toolName) + "\"" +
+                ",\"text\":\"" + escapeJson(text != null ? text : "") + "\"}";
+    }
+
+    private String parseToolResultId(String content) { return extractField(content, "id"); }
+    private String parseToolResultName(String content) { return extractField(content, "toolName"); }
+    private String parseToolResultText(String content) { return extractField(content, "text"); }
+
+    private String extractField(String json, String fieldName) {
+        String key = "\"" + fieldName + "\":\"";
+        int start = json.indexOf(key);
+        if (start < 0) return "";
+        start += key.length();
+        StringBuilder value = new StringBuilder();
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '\\' && i + 1 < json.length()) {
+                value.append(json.charAt(i + 1));
+                i++;
+            } else if (c == '"') {
+                break;
+            } else {
+                value.append(c);
+            }
+        }
+        return value.toString();
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+}

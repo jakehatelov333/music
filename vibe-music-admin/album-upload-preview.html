@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>上传专辑 · 新 UI 预览</title>
+<style>
+  :root{
+    --bg:#fff; --border-lighter:#ebeef5; --border:#dcdfe6;
+    --text-primary:#303133; --text-regular:#606266; --text-secondary:#909399; --text-placeholder:#a8abb2;
+    --fill-light:#f5f7fa; --fill-lighter:#fafafa; --fill:#f0f2f5;
+    --primary:#2563eb; --primary-soft:rgba(37,99,235,.10);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:24px; background:#f6f7f9; color:var(--text-primary);
+    font-family:"Helvetica Neue",Helvetica,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",Arial,sans-serif;
+    font-size:14px; line-height:1.5;
+  }
+  .page{max-width:1040px; margin:0 auto;}
+  svg{display:block; flex:0 0 auto;}
+
+  /* 演示控制条 */
+  .demo-bar{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding:10px 14px; margin-bottom:16px; background:#fff; border:1px dashed var(--border);
+    border-radius:12px; font-size:12px; color:var(--text-secondary);
+  }
+  .demo-bar b{color:var(--text-primary); font-weight:600;}
+  .demo-bar button{
+    padding:6px 12px; font-size:12px; color:var(--text-regular); cursor:pointer;
+    background:#fff; border:1px solid var(--border); border-radius:8px; transition:.18s;
+  }
+  .demo-bar button:hover{border-color:var(--primary); color:var(--primary);}
+  .demo-bar button.on{color:#fff; background:var(--primary); border-color:var(--primary);}
+
+  /* ---------- 通用按钮 ---------- */
+  .btn{
+    display:inline-flex; align-items:center; gap:6px; justify-content:center;
+    padding:8px 16px; font-size:14px; font-family:inherit; cursor:pointer;
+    background:#fff; border:1px solid var(--border); border-radius:8px; color:var(--text-regular);
+    transition:.18s ease;
+  }
+  .btn:hover{color:var(--primary); border-color:#a9c4fb; background:#f5f9ff;}
+  .btn-primary{color:#fff; background:var(--primary); border-color:var(--primary);}
+  .btn-primary:hover{color:#fff; background:#1d4ed8; border-color:#1d4ed8; box-shadow:0 6px 16px rgba(37,99,235,.28);}
+  .btn-lg{padding:11px 22px; font-size:15px; border-radius:10px;}
+
+  /* ---------- 顶部标题区 ---------- */
+  .hero-card{
+    display:flex; gap:16px; align-items:center; padding:20px 24px; margin-bottom:14px;
+    background:linear-gradient(135deg, rgba(239,246,255,.95), rgba(255,255,255,.98)), var(--bg);
+    border:1px solid var(--border-lighter); border-radius:var(--radius); box-shadow:0 8px 28px rgba(17,24,39,.04);
+  }
+  .hero-icon{
+    display:grid; place-items:center; width:58px; height:58px; color:#fff;
+    background:linear-gradient(135deg,#3b82f6,#1d4ed8); border-radius:16px; box-shadow:0 12px 24px rgba(37,99,235,.24);
+  }
+  .hero-copy{flex:1; min-width:0;}
+  .hero-copy h1{margin:0 0 5px; font-size:25px; line-height:1.2;}
+  .hero-copy p{margin:0; color:var(--text-secondary);}
+  .hero-back{flex:0 0 auto;}
+
+  /* ---------- 步骤条 ---------- */
+  .steps-bar{
+    padding:18px 24px 14px; margin-bottom:14px; background:var(--bg);
+    border:1px solid var(--border-lighter); border-radius:var(--radius); box-shadow:0 8px 28px rgba(17,24,39,.04);
+  }
+  .stepper{display:flex; align-items:flex-start;}
+  .step{position:relative; display:flex; flex:1; flex-direction:column; gap:8px; align-items:center;}
+  .step:not(:first-child)::before{
+    content:""; position:absolute; top:15px; left:calc(-50% + 22px); right:calc(50% + 22px);
+    height:2px; background:var(--border);
+  }
+  .step.is-active:not(:first-child)::before,
+  .step.is-done:not(:first-child)::before{background:#bfdbfe;}
+  .step-dot{
+    display:grid; place-items:center; width:32px; height:32px; font-size:14px; font-weight:600;
+    color:var(--text-placeholder); background:var(--fill-light); border:2px solid var(--border);
+    border-radius:50%; transition:.25s ease;
+  }
+  .step-label{font-size:13px; color:var(--text-secondary);}
+  .step.is-active .step-dot{color:#fff; background:var(--primary); border-color:var(--primary); box-shadow:0 6px 16px rgba(37,99,235,.30);}
+  .step.is-active .step-label{font-weight:600; color:var(--primary);}
+  .step.is-done .step-dot{color:#fff; background:var(--primary); border-color:var(--primary);}
+  .step.is-done .step-label{color:var(--text-regular);}
+
+  /* ---------- 面板 ---------- */
+  .panel{
+    padding:20px; margin-bottom:14px; background:var(--bg); border:1px solid var(--border-lighter);
+    border-radius:var(--radius); box-shadow:0 8px 28px rgba(17,24,39,.04);
+  }
+  .panel-heading{display:flex; gap:12px; align-items:center; margin-bottom:18px;}
+  .panel-heading h2{margin:0; font-size:17px;}
+  .panel-heading p{margin:4px 0 0; font-size:13px; color:var(--text-secondary);}
+  .panel-badge{
+    display:grid; place-items:center; flex:0 0 auto; width:34px; height:34px;
+    color:var(--primary); background:var(--primary-soft); border-radius:10px;
+  }
+  .panel-badge.is-number{font-weight:700; color:#fff; background:var(--primary); border-radius:50%;}
+
+  /* ---------- 拖拽上传区 ---------- */
+  .dropzone{
+    display:flex; flex-direction:column; gap:10px; align-items:center; padding:40px 24px 28px;
+    text-align:center; cursor:pointer; outline:none; transition:.22s ease;
+    background:linear-gradient(180deg, rgba(248,250,255,.9), rgba(255,255,255,.4));
+    border:1.5px dashed var(--border); border-radius:14px;
+  }
+  .dropzone:hover, .dropzone:focus-visible{border-color:#3b82f6; box-shadow:0 10px 26px rgba(59,130,246,.10);}
+  .dropzone.is-dragging{
+    background:rgba(239,246,255,.9); border-color:var(--primary); border-style:solid;
+    box-shadow:0 14px 32px rgba(37,99,235,.16); transform:scale(1.005);
+  }
+  .dropzone strong{font-size:16px; color:var(--text-primary);}
+  .drop-icon{
+    display:grid; place-items:center; width:72px; height:72px; margin-bottom:4px; color:#4f46e5;
+    background:linear-gradient(135deg, rgba(99,102,241,.14), rgba(59,130,246,.12)); border-radius:20px;
+  }
+  .drop-sub{font-size:13px; color:var(--text-secondary);}
+  .dropzone .btn{margin-top:6px;}
+  .drop-hint{display:flex; gap:6px; align-items:center; margin-top:6px; font-size:12px; color:var(--text-placeholder);}
+
+  /* ---------- 封面 ---------- */
+  .cover-section{
+    display:flex; gap:16px; align-items:center; padding:16px; margin-top:16px;
+    background:var(--fill-lighter); border:1px solid var(--border-lighter); border-radius:12px;
+  }
+  .cover-thumb{
+    display:grid; place-items:center; flex:0 0 auto; width:64px; height:64px; overflow:hidden;
+    color:var(--text-placeholder); background:var(--fill); border-radius:10px;
+  }
+  .cover-copy{flex:1; min-width:0;}
+  .cover-copy strong{display:block; margin-bottom:4px; font-size:14px;}
+  .cover-copy p{margin:0; font-size:13px; line-height:1.5; color:var(--text-secondary);}
+
+  /* ---------- 底部操作条 ---------- */
+  .action-bar{
+    position:sticky; bottom:12px; z-index:6; display:flex; gap:16px; align-items:center;
+    padding:14px 20px; margin-bottom:14px; background:var(--bg); border:1px solid var(--border-lighter);
+    border-radius:var(--radius); box-shadow:0 12px 32px rgba(17,24,39,.10);
+  }
+  .next-btn{flex:0 0 auto;}
+  .next-arrow{margin-left:4px;}
+  .action-hints{display:flex; flex:1; gap:22px; min-width:0; font-size:13px; color:var(--text-secondary);}
+  .action-hints span{display:inline-flex; gap:6px; align-items:center; white-space:nowrap;}
+  .action-hints svg{color:var(--text-placeholder);}
+  .selection-status{
+    display:inline-flex; gap:6px; align-items:center; max-width:260px; padding:7px 12px;
+    overflow:hidden; font-size:13px; color:var(--text-secondary); white-space:nowrap;
+    background:var(--fill-light); border-radius:8px;
+  }
+  .selection-status span{overflow:hidden; text-overflow:ellipsis;}
+  .selection-status.has-selection{color:var(--primary); background:var(--primary-soft);}
+
+  /* ---------- 步骤 2 ---------- */
+  .confirm-layout{display:grid; grid-template-columns:190px minmax(0,1fr); gap:26px;}
+  .confirm-cover{display:flex; flex-direction:column; gap:10px; align-items:center;}
+  .confirm-cover-empty{
+    display:grid; place-items:center; width:180px; height:180px; font-size:32px;
+    color:var(--text-placeholder); background:var(--fill-lighter); border-radius:12px;
+    box-shadow:0 12px 26px rgba(15,23,42,.12);
+  }
+  .confirm-cover-label{font-size:12px; color:var(--text-secondary);}
+  .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:0 18px;}
+  .field{margin-bottom:18px;}
+  .field label{display:block; margin-bottom:6px; font-size:13px; color:var(--text-regular);}
+  .field label .req{color:#f56c6c;}
+  .field input, .field textarea{
+    width:100%; padding:8px 11px; font-size:14px; font-family:inherit; color:var(--text-primary);
+    background:#fff; border:1px solid var(--border); border-radius:8px; outline:none; transition:.18s;
+  }
+  .field input:focus, .field textarea:focus{border-color:var(--primary); box-shadow:0 0 0 3px rgba(37,99,235,.12);}
+  .field input[disabled]{background:var(--fill-light); color:var(--text-placeholder);}
+  .field.full{grid-column:1 / -1;}
+  .songs-heading{display:flex; gap:10px; align-items:baseline; margin:24px 0 12px;}
+  .songs-heading h3{margin:0; font-size:15px;}
+  .songs-heading span{font-size:13px; color:var(--text-secondary);}
+  table.songs{width:100%; border-collapse:collapse; font-size:13px;}
+  table.songs th, table.songs td{padding:10px 12px; text-align:left; border:1px solid var(--border-lighter);}
+  table.songs th{font-weight:600; color:var(--text-regular); background:var(--fill-light);}
+  .actions{display:flex; justify-content:flex-end; gap:10px; margin-top:18px;}
+
+  @media (max-width:900px){
+    body{padding:14px;}
+    .hero-card{flex-wrap:wrap;}
+    .hero-copy{flex:1 1 60%;}
+    .hero-back{order:3; width:100%;}
+    .action-bar{flex-wrap:wrap;}
+    .next-btn{width:100%;}
+    .action-hints{flex-wrap:wrap; gap:10px 18px;}
+    .selection-status{max-width:100%;}
+    .confirm-layout, .form-grid{grid-template-columns:minmax(0,1fr);}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="demo-bar">
+    <b>状态预览：</b>
+    <button id="tab1" class="on" onclick="showStep(1)">步骤 1 · 上传文件</button>
+    <button id="tab2" onclick="showStep(2)">步骤 2 · 解析信息</button>
+    <span style="width:1px;height:18px;background:var(--border);"></span>
+    <button id="selBtn" onclick="toggleSel()">切换：已选择文件夹</button>
+  </div>
+
+  <!-- 顶部标题区 -->
+  <section class="hero-card">
+    <div class="hero-icon">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="3"/></svg>
+    </div>
+    <div class="hero-copy">
+      <h1>上传专辑</h1>
+      <p>一次上传整张专辑，自动解析曲目与元数据，校对后一次性入库。</p>
+    </div>
+    <button class="btn hero-back">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      返回专辑管理
+    </button>
+  </section>
+
+  <!-- 步骤条 -->
+  <section class="steps-bar">
+    <div class="stepper">
+      <div class="step is-active" id="stepDot0"><span class="step-dot">1</span><span class="step-label">上传文件</span></div>
+      <div class="step" id="stepDot1"><span class="step-dot">2</span><span class="step-label">解析信息</span></div>
+      <div class="step" id="stepDot2"><span class="step-dot">3</span><span class="step-label">最终确认</span></div>
+    </div>
+  </section>
+
+  <!-- 步骤 1 -->
+  <div id="step1">
+    <section class="panel">
+      <div class="panel-heading">
+        <span class="panel-badge">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M12 16V10.5M12 10.5l-2 2M12 10.5l2 2"/></svg>
+        </span>
+        <div>
+          <h2>上传专辑文件</h2>
+          <p>选择或拖入整张专辑文件夹，系统会自动读取音频标签并识别封面。</p>
+        </div>
+      </div>
+
+      <div class="dropzone" id="dropzone">
+        <div class="drop-icon">
+          <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M15.5 10.2v4.3a1.5 1.5 0 1 1-1.5-1.5"/><path d="M15.5 10.2 12.5 11"/></svg>
+        </div>
+        <strong>拖拽专辑文件夹到这里</strong>
+        <span class="drop-sub">也可以点击选择文件夹，支持 MP3、FLAC 等音频文件</span>
+        <button class="btn btn-primary btn-lg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          选择专辑文件夹
+        </button>
+        <div class="drop-hint">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          系统将自动读取音频标签并识别 cover.jpg / cover.png
+        </div>
+      </div>
+
+      <div class="cover-section">
+        <div class="cover-thumb">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-4 4-2-2-7 7"/></svg>
+        </div>
+        <div class="cover-copy">
+          <strong>专辑封面（可选）</strong>
+          <p>如果文件夹中包含 cover.jpg 或 cover.png，将自动使用；也可以手动上传封面。</p>
+        </div>
+        <button class="btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          上传封面
+        </button>
+      </div>
+    </section>
+
+    <section class="action-bar">
+      <button class="btn btn-primary btn-lg next-btn">
+        下一步：解析信息
+        <svg class="next-arrow" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <div class="action-hints">
+        <span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.2l2.4 2.4 4.6-5"/></svg>
+          支持整张专辑批量解析
+        </span>
+        <span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5-10.5a2 2 0 0 0-3-3L5 17z"/><path d="M14.5 6.5l3 3"/></svg>
+          提交前可修改曲目、歌手及专辑信息
+        </span>
+      </div>
+      <div class="selection-status" id="selStatus">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span id="selText">未选择文件夹</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- 步骤 2 -->
+  <div id="step2" hidden>
+    <section class="panel">
+      <div class="panel-heading">
+        <span class="panel-badge is-number">2</span>
+        <div>
+          <h2>解析信息与手动校正</h2>
+          <p>已根据音频标签自动填充，请核对后修改，确认无误再一次性入库。</p>
+        </div>
+      </div>
+
+      <div class="confirm-layout">
+        <div class="confirm-cover">
+          <div class="confirm-cover-empty">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-4 4-2-2-7 7"/></svg>
+          </div>
+          <span class="confirm-cover-label">专辑封面</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label>专辑名称 <span class="req">*</span></label>
+            <input value="夜曲 · 精选集" />
+          </div>
+          <div class="field">
+            <label>主艺人</label>
+            <input value="周杰伦" />
+          </div>
+          <div class="field">
+            <label>发行日期</label>
+            <input value="2024-11-06" />
+          </div>
+          <div class="field">
+            <label>状态</label>
+            <input value="草稿" disabled />
+          </div>
+          <div class="field full">
+            <label>简介</label>
+            <textarea rows="3" placeholder="可选，填写专辑简介"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="songs-heading"><h3>曲目列表</h3><span>12 首</span></div>
+      <table class="songs">
+        <thead>
+          <tr><th style="width:80px;">Disc</th><th style="width:80px;">曲序</th><th>歌曲名</th><th style="width:150px;">艺人</th><th style="width:90px;">时长</th><th style="width:180px;">文件</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>1</td><td>夜的第七章</td><td>周杰伦</td><td>03:44</td><td>01 夜的第七章.flac</td></tr>
+          <tr><td>1</td><td>2</td><td>听妈妈的话</td><td>周杰伦</td><td>04:13</td><td>02 听妈妈的话.flac</td></tr>
+          <tr><td>1</td><td>3</td><td>千里之外</td><td>周杰伦</td><td>04:16</td><td>03 千里之外.flac</td></tr>
+        </tbody>
+      </table>
+
+      <div class="actions">
+        <button class="btn">清空任务</button>
+        <button class="btn btn-primary">最终确认并上传</button>
+      </div>
+    </section>
+  </div>
+
+</div>
+
+<script>
+  function showStep(n){
+    document.getElementById('step1').hidden = n !== 1;
+    document.getElementById('step2').hidden = n !== 2;
+    document.getElementById('tab1').classList.toggle('on', n === 1);
+    document.getElementById('tab2').classList.toggle('on', n === 2);
+    var dots = [document.getElementById('stepDot0'), document.getElementById('stepDot1'), document.getElementById('stepDot2')];
+    dots.forEach(function(d, i){
+      d.classList.toggle('is-active', i === (n === 1 ? 0 : 1));
+      d.classList.toggle('is-done', i < (n === 1 ? 0 : 1));
+      var dot = d.querySelector('.step-dot');
+      if (i < (n === 1 ? 0 : 1)) { dot.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.2l2.4 2.4 4.6-5"/></svg>'; }
+      else { dot.textContent = String(i + 1); }
+    });
+  }
+  var selOn = false;
+  function toggleSel(){
+    selOn = !selOn;
+    var s = document.getElementById('selStatus');
+    s.classList.toggle('has-selection', selOn);
+    document.getElementById('selText').textContent = selOn ? '夜曲精选集 · 12 首音频 · 含封面' : '未选择文件夹';
+    document.getElementById('selBtn').textContent = selOn ? '切换：未选择' : '切换：已选择文件夹';
+  }
+  if (location.hash === '#step2') { showStep(2); toggleSel(); }
+  var dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', function(e){ e.preventDefault(); dz.classList.add('is-dragging'); });
+  dz.addEventListener('dragleave', function(){ dz.classList.remove('is-dragging'); });
+  dz.addEventListener('drop', function(e){ e.preventDefault(); dz.classList.remove('is-dragging'); toggleSel(); });
+</script>
+</body>
+</html>
