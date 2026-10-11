@@ -6,12 +6,14 @@ import LyricLineItem from './LyricLine.vue'
 const props = withDefaults(
   defineProps<{
     lyric?: string | null
+    lyricStatus?: number | null
     currentTime?: number
     isPlaying?: boolean
     trackId?: string | number
   }>(),
   {
     lyric: '',
+    lyricStatus: 0,
     currentTime: 0,
     isPlaying: false,
     trackId: '',
@@ -28,6 +30,7 @@ let resumeTimer: number | undefined
 
 const parsedLyrics = computed(() => parseLrc(props.lyric))
 const hasLyrics = computed(() => parsedLyrics.value.lines.length > 0)
+const isInstrumental = computed(() => props.lyricStatus === 4)
 
 const activeIndex = computed(() => {
   const lines = parsedLyrics.value.lines
@@ -184,9 +187,15 @@ onBeforeUnmount(() => {
       >
         <icon-ri:music-2-line class="text-3xl text-primary/80" />
       </div>
-      <h3 class="text-lg font-semibold text-foreground">这首歌暂时没有歌词</h3>
+      <h3 class="text-lg font-semibold text-foreground">
+        {{ isInstrumental ? '这是伴奏曲目' : '这首歌暂时没有歌词' }}
+      </h3>
       <p class="mt-2 max-w-64 text-sm leading-6 text-muted-foreground">
-        歌词上线后会自动出现在这里，并跟随播放进度滚动。
+        {{
+          isInstrumental
+            ? '该曲目已标记为伴奏，无需歌词搜索。'
+            : '歌词上线后会自动出现在这里，并跟随播放进度滚动。'
+        }}
       </p>
     </div>
   </div>

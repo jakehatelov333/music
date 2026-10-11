@@ -4,10 +4,10 @@ import Aside from './components/aside/index.vue'
 import Main from './components/main/index.vue'
 import Footer from './components/footer/index.vue'
 // import BG from './components/bg/index.vue'
+import { AudioPlayer } from '@/hooks/useAudioPlayer'
 import AiWidget from '@/components/Common/AiWidget.vue'
 
-// 注意：播放器（provide('audioPlayer')）已经上移到 App.vue。
-// 放在这里会导致切到 /login、/landing 时 layout 卸载、音乐中断。
+provide('audioPlayer', AudioPlayer())
 </script>
 <template>
   <!-- <BG /> -->

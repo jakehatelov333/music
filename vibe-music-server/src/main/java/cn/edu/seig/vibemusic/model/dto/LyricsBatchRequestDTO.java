@@ -31,6 +31,12 @@ public class LyricsBatchRequestDTO implements Serializable {
     /** 是否只处理缺失歌词的歌曲，默认 true */
     private Boolean onlyMissing;
 
+    /**
+     * 是否连"上次已判定无匹配"的歌曲一起重试，默认 false。
+     * 默认跳过它们，避免对纯音乐、古典曲这类本就没有歌词的曲目反复发起无效请求。
+     */
+    private Boolean retryNoMatch;
+
     /** 最多处理多少首，为空时使用配置上限 */
     private Integer limit;
 

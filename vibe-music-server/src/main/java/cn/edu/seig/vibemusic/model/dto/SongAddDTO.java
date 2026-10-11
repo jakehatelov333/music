@@ -48,6 +48,9 @@ public class SongAddDTO implements Serializable {
      */
     private String style;
 
+    /** 是否已确认该曲目为伴奏或无需歌词 */
+    private Boolean instrumental;
+
     /**
      * 歌曲发行时间
      */

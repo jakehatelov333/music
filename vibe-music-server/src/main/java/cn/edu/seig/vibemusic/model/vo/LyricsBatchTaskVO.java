@@ -18,7 +18,7 @@ public class LyricsBatchTaskVO implements Serializable {
 
     private String taskId;
 
-    /** RUNNING / DONE */
+    /** RUNNING / CANCELLING / CANCELLED / DONE */
     private String status;
 
     /** 任务描述，例如"补全专辑《太阳之子》" */
@@ -48,6 +48,12 @@ public class LyricsBatchTaskVO implements Serializable {
     private Long startedAt;
 
     private Long finishedAt;
+
+    /**
+     * 最近一次进度更新时间（心跳）。
+     * 用于识别"应用重启导致任务线程消失"的僵尸任务，避免执行位被永久占用。
+     */
+    private Long heartbeatAt;
 
     /** 进度百分比，0-100 */
     public Integer getProgress() {

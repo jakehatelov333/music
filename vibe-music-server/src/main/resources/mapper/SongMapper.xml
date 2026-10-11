@@ -12,6 +12,7 @@
         <result column="discNumber" property="discNumber"/>
         <result column="trackNumber" property="trackNumber"/>
         <result column="lyric" property="lyric"/>
+        <result column="lyricStatus" property="lyricStatus"/>
         <result column="duration" property="duration"/>
         <result column="songCoverUrl" property="coverUrl"/>
         <result column="audioUrl" property="audioUrl"/>
@@ -35,6 +36,7 @@
                s.disc_number  AS discNumber,
                s.track_number AS trackNumber,
                s.lyric        AS lyric,
+               s.lyric_status AS lyricStatus,
                s.duration     AS duration,
                s.cover_url    AS songCoverUrl,
                s.audio_url    AS audioUrl,

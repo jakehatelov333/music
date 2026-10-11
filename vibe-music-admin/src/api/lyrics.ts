@@ -36,9 +36,31 @@ export const submitLyricsBatch = (data: object) => {
   });
 };
 
+/** 歌词-批量标记歌曲为伴奏/无需歌词 */
+export const markSongsInstrumental = (songIds: number[]) => {
+  return http.request<Result>("post", "/admin/song/lyrics/instrumental", {
+    headers: authHeaders(),
+    data: songIds
+  });
+};
+
 /** 歌词-查询批量任务进度 */
 export const getLyricsTask = (taskId: string) => {
   return http.request<Result>("get", `/admin/song/lyrics/task/${taskId}`, {
+    headers: authHeaders()
+  });
+};
+
+/** 歌词-请求停止批量任务（当前正在进行的单首查询完成后停止） */
+export const cancelLyricsTask = (taskId: string) => {
+  return http.request<Result>("post", `/admin/song/lyrics/task/${taskId}/cancel`, {
+    headers: authHeaders()
+  });
+};
+
+/** 歌词-查询当前正在执行的批量任务（无则 data 为 null），用于刷新后恢复进度 */
+export const getRunningLyricsTask = () => {
+  return http.request<Result>("get", "/admin/song/lyrics/running", {
     headers: authHeaders()
   });
 };

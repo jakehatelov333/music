@@ -2,7 +2,7 @@
 import { formatMillisecondsToTime } from '@/utils'
 import { trackModel } from '@/stores/interface'
 const audio = AudioStore()
-const { loadTrack, play, pause, audioElement } = useAudioPlayer()
+const { loadTrack, play, audioElement } = useAudioPlayer()
 
 const mouseOverIndex = ref(-1) // 用于跟踪鼠标悬停的索引
 
@@ -15,12 +15,8 @@ const playMusic = async (song: trackModel) => {
 
 const handleClearAll = () => {
   audio.setAudioStore('trackList', [])
-  // 列表清空了就不要再留着声音：先停，再清掉 src。
-  // 注意不能用 `src = ''`，那会让浏览器把当前页面地址当成音源去请求。
-  pause()
   if (audioElement.value) {
-    audioElement.value.removeAttribute('src')
-    audioElement.value.load()
+    audioElement.value.src = ''
   }
 }
 </script>

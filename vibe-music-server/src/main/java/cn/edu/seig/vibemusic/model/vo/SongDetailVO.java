@@ -54,6 +54,9 @@ public class SongDetailVO implements Serializable {
      */
     private String lyric;
 
+    /** 歌词状态：4 表示已确认是伴奏或无需歌词 */
+    private Integer lyricStatus;
+
     /**
      * 歌曲时长
      */

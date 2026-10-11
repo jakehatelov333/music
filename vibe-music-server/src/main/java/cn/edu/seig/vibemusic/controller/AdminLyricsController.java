@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * 管理端歌词补全接口。
  * <p>
@@ -63,6 +65,26 @@ public class AdminLyricsController {
     @GetMapping("/task/{taskId}")
     public Result<LyricsBatchTaskVO> task(@PathVariable("taskId") String taskId) {
         return lyricsService.getTask(taskId);
+    }
+
+    /**
+     * 查询当前正在执行的批量任务（无则 data 为 null）。
+     */
+    @GetMapping("/running")
+    public Result<LyricsBatchTaskVO> running() {
+        return lyricsService.getCurrentTask();
+    }
+
+    /** 请求停止批量补全任务；当前正在执行的数据源请求结束后停止后续歌曲。 */
+    @PostMapping("/task/{taskId}/cancel")
+    public Result<LyricsBatchTaskVO> cancel(@PathVariable("taskId") String taskId) {
+        return lyricsService.cancelTask(taskId);
+    }
+
+    /** 将选中的歌曲标记为伴奏/无需歌词，并清空歌词文本。 */
+    @PostMapping("/instrumental")
+    public Result<Integer> markInstrumental(@RequestBody List<Long> songIds) {
+        return lyricsService.markInstrumental(songIds);
     }
 
 }

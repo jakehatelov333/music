@@ -55,7 +55,7 @@ public class SongAdminVO implements Serializable {
     private String lyricSource;
 
     /**
-     * 歌词状态：0 未获取 / 1 已获取 / 2 手动录入 / 3 无匹配
+     * 歌词状态：0 未获取 / 1 已获取 / 2 手动录入 / 3 无匹配 / 4 伴奏或无需歌词
      */
     private Integer lyricStatus;
 

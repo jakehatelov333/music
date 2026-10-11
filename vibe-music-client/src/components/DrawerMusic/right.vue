@@ -167,6 +167,7 @@ const handleDelete = async (comment: Comment) => {
         <LyricsPanel
           v-else
           :lyric="songDetail?.lyric"
+          :lyric-status="songDetail?.lyricStatus"
           :current-time="currentTime"
           :is-playing="isPlaying"
           :track-id="currentTrack.id"

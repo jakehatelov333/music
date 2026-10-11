@@ -18,7 +18,9 @@ public enum LyricStatusEnum {
     /** 管理员手动录入或上传 */
     MANUAL(2, "手动录入"),
     /** 已尝试抓取但所有数据源均无匹配 */
-    NO_MATCH(3, "无匹配");
+    NO_MATCH(3, "无匹配"),
+    /** 已确认是伴奏或其他无需歌词的曲目，作为已处理状态跳过后续搜索 */
+    INSTRUMENTAL(4, "伴奏/无需歌词");
 
     private final Integer id;
     private final String lyricStatus;

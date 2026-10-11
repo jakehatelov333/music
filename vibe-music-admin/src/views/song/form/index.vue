@@ -14,7 +14,8 @@ const props = withDefaults(defineProps<FormProps>(), {
     album: "",
     style: [],
     releaseTime: null,
-    lyric: ""
+    lyric: "",
+    instrumental: false
   })
 });
 
@@ -152,7 +153,22 @@ defineExpose({ getRef });
       </re-col>
 
       <re-col
-        v-if="newFormInline.title === '修改'"
+        :value="24"
+        :xs="24"
+        :sm="24"
+      >
+        <el-form-item label="曲目类型">
+          <el-checkbox v-model="newFormInline.instrumental">
+            这是伴奏 / 无需歌词
+          </el-checkbox>
+          <div class="lyric-hint">
+            标记后会作为“歌词已处理”保存，并从后续批量搜索中跳过；用户端会显示伴奏提示。
+          </div>
+        </el-form-item>
+      </re-col>
+
+      <re-col
+        v-if="newFormInline.title === '修改' && !newFormInline.instrumental"
         :value="24"
         :xs="24"
         :sm="24"

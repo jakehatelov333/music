@@ -3,6 +3,7 @@ package cn.edu.seig.vibemusic.service.impl;
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
+import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.GenreMapper;
@@ -142,11 +143,11 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      * @return 歌曲列表
      */
     @Override
-    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-album-v2'")
+    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-' + #songDTO.onlyMissingLyric + '-album-v3'")
     public Result<PageResult<SongAdminVO>> getAllSongsByArtist(SongAndArtistDTO songDTO) {
         // 分页查询
         Page<SongAdminVO> page = new Page<>(songDTO.getPageNum(), songDTO.getPageSize());
-        IPage<SongAdminVO> songPage = songMapper.getSongsWithArtistName(page, songDTO.getArtistId(), songDTO.getSongName(), songDTO.getAlbum());
+        IPage<SongAdminVO> songPage = songMapper.getSongsWithArtistName(page, songDTO.getArtistId(), songDTO.getSongName(), songDTO.getAlbum(), songDTO.getOnlyMissingLyric());
 
         if (songPage.getRecords().isEmpty()) {
             return Result.success(MessageConstant.DATA_NOT_FOUND, new PageResult<>(0L, null));
@@ -312,6 +313,12 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
         song.setAlbumId(albumId);
         song.setDiscNumber(songAddDTO.getDiscNumber() == null ? 1 : songAddDTO.getDiscNumber());
         song.setTrackNumber(resolveNextTrackNumber(albumId, songAddDTO.getTrackNumber()));
+        if (Boolean.TRUE.equals(songAddDTO.getInstrumental())) {
+            song.setLyric(null);
+            song.setLyricSource("INSTRUMENTAL");
+            song.setLyricStatus(LyricStatusEnum.INSTRUMENTAL.getId());
+            song.setLyricUpdatedAt(java.time.LocalDateTime.now());
+        }
 
         // 插入歌曲记录
         if (songMapper.insert(song) == 0) {
@@ -404,6 +411,35 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
         if (songMapper.updateById(song) == 0) {
             deleteEmptyAlbum(albumId != null && !Objects.equals(previousAlbumId, albumId) ? albumId : null);
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+
+        String normalizedLyric = songUpdateDTO.getLyric() == null
+                ? null
+                : songUpdateDTO.getLyric().trim();
+        boolean markInstrumental = Boolean.TRUE.equals(songUpdateDTO.getInstrumental());
+        boolean unmarkInstrumental = Boolean.FALSE.equals(songUpdateDTO.getInstrumental())
+                && Objects.equals(songInDB.getLyricStatus(), LyricStatusEnum.INSTRUMENTAL.getId());
+        String existingLyric = songInDB.getLyric() == null ? null : songInDB.getLyric().trim();
+        boolean lyricChanged = normalizedLyric != null && !Objects.equals(normalizedLyric, existingLyric);
+
+        if (markInstrumental) {
+            songMapper.update(null, new UpdateWrapper<Song>()
+                    .eq("id", songUpdateDTO.getSongId())
+                    .set("lyric", null)
+                    .set("lyric_source", "INSTRUMENTAL")
+                    .set("lyric_status", LyricStatusEnum.INSTRUMENTAL.getId())
+                    .set("lyric_updated_at", java.time.LocalDateTime.now()));
+        } else if (unmarkInstrumental || lyricChanged) {
+            boolean hasLyric = normalizedLyric != null && !normalizedLyric.isBlank();
+            UpdateWrapper<Song> lyricUpdate = new UpdateWrapper<Song>()
+                    .eq("id", songUpdateDTO.getSongId())
+                    .set("lyric", hasLyric ? normalizedLyric : null)
+                    .set("lyric_source", hasLyric ? "MANUAL" : null)
+                    .set("lyric_status", hasLyric
+                            ? LyricStatusEnum.MANUAL.getId()
+                            : LyricStatusEnum.MISSING.getId())
+                    .set("lyric_updated_at", java.time.LocalDateTime.now());
+            songMapper.update(null, lyricUpdate);
         }
 
         if (albumId == null) {

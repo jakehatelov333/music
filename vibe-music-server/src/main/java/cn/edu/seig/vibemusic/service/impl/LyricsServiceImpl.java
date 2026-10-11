@@ -36,6 +36,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -56,7 +57,14 @@ import java.util.concurrent.TimeUnit;
 public class LyricsServiceImpl implements ILyricsService {
 
     private static final String TASK_KEY_PREFIX = "lyrics:task:";
+    private static final String CANCEL_KEY_PREFIX = "lyrics:task:cancel:";
+    /** 批量任务的执行位，保证同一时刻只有一个批量任务在跑 */
+    private static final String RUNNING_KEY = "lyrics:batch:running";
+    /** 协调本实例内的取消请求与任务终态写入，避免结束/取消状态互相覆盖 */
+    private final Object taskLifecycleLock = new Object();
     private static final int MAX_FAILURE_DETAIL = 20;
+    /** 任务心跳超过 3 分钟即视为僵尸任务 */
+    private static final long STALE_TASK_MILLIS = 3 * 60 * 1000L;
     private static final String SONG_CACHE = "songCache";
 
     @Autowired
@@ -98,7 +106,7 @@ public class LyricsServiceImpl implements ILyricsService {
         }
 
         String artistName = resolveArtistName(song, null);
-        Fetched fetched = fetchFromProviders(song, artistName, null);
+        Fetched fetched = fetchFromProviders(song, artistName, null, null);
 
         LyricsFetchVO vo = buildVO(song, artistName, fetched);
         if (!fetched.matched()) {
@@ -164,13 +172,23 @@ public class LyricsServiceImpl implements ILyricsService {
         }
         LyricsBatchRequestDTO request = dto == null ? new LyricsBatchRequestDTO() : dto;
 
+        // 同一时刻只允许一个批量任务，否则重复点击会把任务堆在队列里长时间不动
+        LyricsBatchTaskVO running = currentTask();
+        if (running != null) {
+            return Result.error("已有批量补全任务正在执行（" + running.getDone() + "/" + running.getTotal()
+                    + "），请等待完成后再提交");
+        }
+
         List<Long> targetIds = resolveTargetSongIds(request);
         if (targetIds.isEmpty()) {
-            return Result.error("没有需要处理的歌曲");
+            return Result.error(noTargetMessage(request));
         }
 
         boolean force = Boolean.TRUE.equals(request.getForce());
         String taskId = UUID.randomUUID().toString();
+        if (!claimBatchSlot(taskId)) {
+            return Result.error("已有批量补全任务正在执行，请等待完成后再提交");
+        }
 
         LyricsBatchTaskVO task = new LyricsBatchTaskVO();
         task.setTaskId(taskId);
@@ -186,7 +204,12 @@ public class LyricsServiceImpl implements ILyricsService {
         saveTask(task);
 
         log.info("提交歌词批量补全任务：taskId={}, 歌曲数={}, 强制覆盖={}", taskId, targetIds.size(), force);
-        taskExecutor.execute(() -> runBatch(taskId, targetIds, force));
+        try {
+            taskExecutor.execute(() -> runBatch(taskId, targetIds, force));
+        } catch (RuntimeException e) {
+            releaseBatchSlot(taskId);
+            throw e;
+        }
 
         return Result.success("批量补全任务已提交", task);
     }
@@ -203,12 +226,80 @@ public class LyricsServiceImpl implements ILyricsService {
         return Result.success(task);
     }
 
+    /** 返回当前正在执行的批量任务，没有则返回 null（供管理端刷新页面后恢复进度） */
+    @Override
+    public Result<LyricsBatchTaskVO> getCurrentTask() {
+        return Result.success(currentTask());
+    }
+
+    @Override
+    public Result<LyricsBatchTaskVO> cancelTask(String taskId) {
+        if (!StringUtils.hasText(taskId)) {
+            return Result.error("任务不存在");
+        }
+
+        synchronized (taskLifecycleLock) {
+            LyricsBatchTaskVO task = loadTask(taskId);
+            if (task == null) {
+                return Result.error("任务不存在或已过期");
+            }
+            if ("DONE".equals(task.getStatus()) || "CANCELLED".equals(task.getStatus())) {
+                return Result.success("任务已结束，无需停止", task);
+            }
+            if (!"RUNNING".equals(task.getStatus()) && !"CANCELLING".equals(task.getStatus())) {
+                return Result.error("当前任务状态不支持停止");
+            }
+
+            String runningTaskId = stringRedisTemplate.opsForValue().get(RUNNING_KEY);
+            if (!taskId.equals(runningTaskId)) {
+                return Result.error("该任务当前未运行，无法停止");
+            }
+
+            stringRedisTemplate.opsForValue().set(
+                    CANCEL_KEY_PREFIX + taskId,
+                    "1",
+                    Math.max(1, properties.getBatch().getTaskTtlHours()),
+                    TimeUnit.HOURS);
+            task.setStatus("CANCELLING");
+            saveTask(task);
+            return Result.success("已请求停止；当前歌曲的数据源请求结束后将停止后续搜索", task);
+        }
+    }
+
+    @Override
+    public Result<Integer> markInstrumental(List<Long> songIds) {
+        List<Long> ids = songIds == null
+                ? List.of()
+                : songIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Result.error("请先选择要标记为伴奏的歌曲");
+        }
+
+        int maxSize = Math.max(1, properties.getBatch().getMaxTaskSize());
+        if (ids.size() > maxSize) {
+            return Result.error("一次最多可批量标记 " + maxSize + " 首歌曲");
+        }
+
+        int updated = songMapper.update(null, new UpdateWrapper<Song>()
+                .in("id", ids)
+                .set("lyric", null)
+                .set("lyric_source", "INSTRUMENTAL")
+                .set("lyric_status", LyricStatusEnum.INSTRUMENTAL.getId())
+                .set("lyric_updated_at", LocalDateTime.now()));
+        if (updated <= 0) {
+            return Result.error("所选歌曲不存在或标记失败");
+        }
+
+        clearSongCache();
+        return Result.success("已将 " + updated + " 首歌曲标记为伴奏，并清空现有歌词", updated);
+    }
+
     // ------------------------------------------------------------------ 内部
 
     /**
      * 依次尝试各数据源，返回首个匹配成功的结果。
      */
-    private Fetched fetchFromProviders(Song song, String artistName, Map<Long, String> artistCache) {
+    private Fetched fetchFromProviders(Song song, String artistName, Map<Long, String> artistCache, String batchTaskId) {
         String albumName = resolveAlbumName(song);
         LyricsProvider.Query query = new LyricsProvider.Query(
                 song.getSongName(),
@@ -218,11 +309,17 @@ public class LyricsServiceImpl implements ILyricsService {
         );
 
         for (LyricsProvider provider : orderedProviders()) {
+            if (isCancelRequested(batchTaskId)) {
+                break;
+            }
             if (!provider.enabled()) {
                 continue;
             }
             try {
                 List<LyricsCandidate> candidates = provider.search(query);
+                if (isCancelRequested(batchTaskId)) {
+                    break;
+                }
                 if (candidates.isEmpty()) {
                     continue;
                 }
@@ -251,6 +348,15 @@ public class LyricsServiceImpl implements ILyricsService {
     }
 
     private void runBatch(String taskId, List<Long> songIds, boolean force) {
+        try {
+            doRunBatch(taskId, songIds, force);
+        } finally {
+            // 无论成功失败都要释放执行位，否则后续批量任务会被一直挡住
+            releaseBatchSlot(taskId);
+        }
+    }
+
+    private void doRunBatch(String taskId, List<Long> songIds, boolean force) {
         LyricsBatchTaskVO task = loadTask(taskId);
         if (task == null) {
             log.warn("批量任务 {} 状态丢失，终止执行", taskId);
@@ -261,69 +367,104 @@ public class LyricsServiceImpl implements ILyricsService {
         long delay = Math.max(0, properties.getBatch().getDelayMs());
 
         for (Long songId : songIds) {
+            if (isCancelRequested(taskId)) {
+                break;
+            }
             try {
                 Song song = songMapper.selectById(songId);
                 if (song == null) {
                     task.setFailed(task.getFailed() + 1);
                     addFailure(task, songId + " 已不存在");
-                } else if (StringUtils.hasText(song.getLyric()) && !force) {
+                } else if (Objects.equals(song.getLyricStatus(), LyricStatusEnum.INSTRUMENTAL.getId())
+                        || (StringUtils.hasText(song.getLyric()) && !force)) {
                     task.setSkipped(task.getSkipped() + 1);
                 } else {
                     String artistName = resolveArtistName(song, artistCache);
-                    Fetched fetched = fetchFromProviders(song, artistName, artistCache);
+                    Fetched fetched = fetchFromProviders(song, artistName, artistCache, taskId);
+                    if (isCancelRequested(taskId)) {
+                        break;
+                    }
                     if (fetched.matched()) {
-                        persistFetched(song, fetched);
-                        task.setSuccess(task.getSuccess() + 1);
-                    } else {
-                        markNoMatch(song);
+                        if (persistFetched(song, fetched)) {
+                            task.setSuccess(task.getSuccess() + 1);
+                        } else {
+                            task.setSkipped(task.getSkipped() + 1);
+                        }
+                    } else if (markNoMatch(song)) {
                         task.setNoMatch(task.getNoMatch() + 1);
+                    } else {
+                        task.setSkipped(task.getSkipped() + 1);
                     }
                 }
             } catch (Exception e) {
+                if (isCancelRequested(taskId)) {
+                    break;
+                }
                 task.setFailed(task.getFailed() + 1);
                 addFailure(task, songId + " 处理异常：" + e.getMessage());
                 log.warn("批量补全歌词失败，songId={}", songId, e);
             }
 
+            if (isCancelRequested(taskId)) {
+                break;
+            }
             task.setDone(task.getDone() + 1);
             // 每首完成后立即持久化，保证前端进度平滑推进（Redis 写入开销可忽略）
             saveTask(task);
 
-            if (delay > 0 && task.getDone() < task.getTotal()) {
-                try {
-                    Thread.sleep(delay);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+            if (delay > 0 && task.getDone() < task.getTotal() && !waitForBatchDelay(taskId, delay)) {
+                break;
             }
         }
 
-        task.setStatus("DONE");
-        task.setFinishedAt(System.currentTimeMillis());
-        saveTask(task);
+        synchronized (taskLifecycleLock) {
+            boolean cancelled = isCancelRequested(taskId) || Thread.currentThread().isInterrupted();
+            task.setStatus(cancelled ? "CANCELLED" : "DONE");
+            task.setFinishedAt(System.currentTimeMillis());
+            saveTask(task);
+            stringRedisTemplate.delete(CANCEL_KEY_PREFIX + taskId);
+        }
 
-        // 批量更新了大量歌曲，清空歌曲详情缓存
+        // 批量更新了歌曲或结束了任务，清空歌曲详情缓存
         clearSongCache();
 
-        log.info("歌词批量补全完成：taskId={}, 成功={}, 无匹配={}, 跳过={}, 失败={}",
-                taskId, task.getSuccess(), task.getNoMatch(), task.getSkipped(), task.getFailed());
+        log.info("歌词批量任务结束：taskId={}, 状态={}, 成功={}, 无匹配={}, 跳过={}, 失败={}",
+                taskId, task.getStatus(), task.getSuccess(), task.getNoMatch(), task.getSkipped(), task.getFailed());
     }
 
-    private void persistFetched(Song song, Fetched fetched) {
-        songMapper.update(null, new UpdateWrapper<Song>()
+    private boolean waitForBatchDelay(String taskId, long delayMs) {
+        long deadline = System.currentTimeMillis() + delayMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (isCancelRequested(taskId)) {
+                return false;
+            }
+            long remaining = deadline - System.currentTimeMillis();
+            try {
+                Thread.sleep(Math.min(100, Math.max(1, remaining)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return !isCancelRequested(taskId);
+    }
+
+    private boolean persistFetched(Song song, Fetched fetched) {
+        return songMapper.update(null, new UpdateWrapper<Song>()
                 .eq("id", song.getSongId())
+                .ne("lyric_status", LyricStatusEnum.INSTRUMENTAL.getId())
                 .set("lyric", fetched.lyric())
                 .set("lyric_source", fetched.source())
                 .set("lyric_status", LyricStatusEnum.FETCHED.getId())
-                .set("lyric_updated_at", LocalDateTime.now()));
+                .set("lyric_updated_at", LocalDateTime.now())) > 0;
     }
 
-    private void markNoMatch(Song song) {
-        songMapper.update(null, new UpdateWrapper<Song>()
+    private boolean markNoMatch(Song song) {
+        return songMapper.update(null, new UpdateWrapper<Song>()
                 .eq("id", song.getSongId())
+                .ne("lyric_status", LyricStatusEnum.INSTRUMENTAL.getId())
                 .set("lyric_status", LyricStatusEnum.NO_MATCH.getId())
-                .set("lyric_updated_at", LocalDateTime.now()));
+                .set("lyric_updated_at", LocalDateTime.now())) > 0;
     }
 
     private List<Long> resolveTargetSongIds(LyricsBatchRequestDTO request) {
@@ -348,6 +489,12 @@ public class LyricsServiceImpl implements ILyricsService {
         // 3. 默认只处理缺歌词的歌曲
         if (!Boolean.FALSE.equals(request.getOnlyMissing())) {
             wrapper.and(w -> w.isNull("lyric").or().eq("lyric", ""));
+            // 确认过的伴奏始终跳过；无匹配歌曲仅在显式重试时纳入任务。
+            if (Boolean.TRUE.equals(request.getRetryNoMatch())) {
+                wrapper.ne("lyric_status", LyricStatusEnum.INSTRUMENTAL.getId());
+            } else {
+                wrapper.notIn("lyric_status", LyricStatusEnum.NO_MATCH.getId(), LyricStatusEnum.INSTRUMENTAL.getId());
+            }
         }
         wrapper.orderByAsc("id").last("LIMIT " + limit);
 
@@ -418,8 +565,24 @@ public class LyricsServiceImpl implements ILyricsService {
         }
     }
 
+    private boolean isCancelRequested(String taskId) {
+        if (!StringUtils.hasText(taskId)) {
+            return false;
+        }
+        try {
+            return "1".equals(stringRedisTemplate.opsForValue().get(CANCEL_KEY_PREFIX + taskId));
+        } catch (Exception e) {
+            log.warn("读取歌词任务停止标记失败，taskId={}", taskId, e);
+            return false;
+        }
+    }
+
     private void saveTask(LyricsBatchTaskVO task) {
         try {
+            if ("RUNNING".equals(task.getStatus()) && isCancelRequested(task.getTaskId())) {
+                task.setStatus("CANCELLING");
+            }
+            task.setHeartbeatAt(System.currentTimeMillis());
             stringRedisTemplate.opsForValue().set(
                     TASK_KEY_PREFIX + task.getTaskId(),
                     objectMapper.writeValueAsString(task),
@@ -441,6 +604,71 @@ public class LyricsServiceImpl implements ILyricsService {
             log.warn("读取歌词任务状态失败，taskId={}", taskId, e);
             return null;
         }
+    }
+
+    /** 当前正在执行的批量任务，没有则返回 null */
+    private LyricsBatchTaskVO currentTask() {
+        try {
+            String taskId = stringRedisTemplate.opsForValue().get(RUNNING_KEY);
+            if (!StringUtils.hasText(taskId)) {
+                return null;
+            }
+            LyricsBatchTaskVO task = loadTask(taskId);
+            if (task == null
+                    || (!"RUNNING".equals(task.getStatus()) && !"CANCELLING".equals(task.getStatus()))
+                    || isStale(task)) {
+                // 陈旧执行位：任务已结束、状态丢失，或应用重启导致任务线程消失
+                releaseBatchSlot(taskId);
+                return null;
+            }
+            return task;
+        } catch (Exception e) {
+            log.warn("读取当前歌词任务失败", e);
+            return null;
+        }
+    }
+
+    /** 心跳超过该时长即认为任务已死（应用重启会打断任务线程） */
+    private boolean isStale(LyricsBatchTaskVO task) {
+        Long heartbeat = task.getHeartbeatAt();
+        if (heartbeat == null) {
+            // 兼容早期没有心跳字段的任务记录
+            heartbeat = task.getStartedAt();
+        }
+        return heartbeat == null || System.currentTimeMillis() - heartbeat > STALE_TASK_MILLIS;
+    }
+
+    /** 抢占批量任务执行位，保证同一时刻只有一个批量任务 */
+    private boolean claimBatchSlot(String taskId) {
+        Boolean ok = stringRedisTemplate.opsForValue().setIfAbsent(
+                RUNNING_KEY, taskId,
+                Math.max(1, properties.getBatch().getTaskTtlHours()), TimeUnit.HOURS);
+        return Boolean.TRUE.equals(ok);
+    }
+
+    /** 释放执行位（仅当仍属于自己时，避免误删后续任务占用的位） */
+    private void releaseBatchSlot(String taskId) {
+        try {
+            String current = stringRedisTemplate.opsForValue().get(RUNNING_KEY);
+            if (StringUtils.hasText(current) && current.equals(taskId)) {
+                stringRedisTemplate.delete(RUNNING_KEY);
+            }
+        } catch (Exception e) {
+            log.warn("释放歌词任务执行位失败，taskId={}", taskId, e);
+        }
+    }
+
+    /** 没有可处理歌曲时给出更有信息量的提示 */
+    private String noTargetMessage(LyricsBatchRequestDTO request) {
+        if (!Boolean.TRUE.equals(request.getRetryNoMatch())) {
+            Long noMatch = songMapper.selectCount(new QueryWrapper<Song>()
+                    .eq("lyric_status", LyricStatusEnum.NO_MATCH.getId()));
+            if (noMatch != null && noMatch > 0) {
+                return "没有需要补全的歌曲；另有 " + noMatch
+                        + " 首已判定为无匹配（多为纯音乐、古典曲），如需重试请使用「重试无匹配」";
+            }
+        }
+        return "没有需要处理的歌曲";
     }
 
     private void clearSongCache() {

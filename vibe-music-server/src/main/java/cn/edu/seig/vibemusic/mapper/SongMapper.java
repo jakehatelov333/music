@@ -77,12 +77,15 @@ public interface SongMapper extends BaseMapper<Song> {
                     (#{artistId} IS NULL OR s.artist_id = #{artistId})
                     AND (#{songName} IS NULL OR TRIM(#{songName}) = '' OR s.name LIKE CONCAT('%', TRIM(#{songName}), '%'))
                     AND (#{album} IS NULL OR TRIM(#{album}) = '' OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{album}), '%'))
+                    AND (COALESCE(#{onlyMissingLyric}, FALSE) = FALSE
+                         OR ((s.lyric IS NULL OR TRIM(s.lyric) = '') AND COALESCE(s.lyric_status, 0) <> 4))
                 ORDER BY s.release_time DESC
             """)
     IPage<SongAdminVO> getSongsWithArtistName(Page<SongAdminVO> page,
                                               @Param("artistId") Long artistId,
                                               @Param("songName") String songName,
-                                              @Param("album") String album);
+                                              @Param("album") String album,
+                                              @Param("onlyMissingLyric") Boolean onlyMissingLyric);
 
     /**
      * 获取随机歌曲列表

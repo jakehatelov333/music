@@ -49,6 +49,8 @@ export interface Song {
 
 export interface SongDetail extends Song {
   lyric: string | null
+  /** 4 表示已确认是伴奏或无需歌词 */
+  lyricStatus?: number | null
   comments: Comment[]
 }
 

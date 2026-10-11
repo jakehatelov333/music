@@ -6,6 +6,8 @@ import cn.edu.seig.vibemusic.model.vo.LyricsBatchTaskVO;
 import cn.edu.seig.vibemusic.model.vo.LyricsFetchVO;
 import cn.edu.seig.vibemusic.result.Result;
 
+import java.util.List;
+
 /**
  * 歌词补全服务。
  */
@@ -30,5 +32,17 @@ public interface ILyricsService {
      * 查询批量任务进度。
      */
     Result<LyricsBatchTaskVO> getTask(String taskId);
+
+    /**
+     * 查询当前正在执行的批量任务（无则 data 为 null），
+     * 供管理端刷新页面后恢复进度展示。
+     */
+    Result<LyricsBatchTaskVO> getCurrentTask();
+
+    /** 请求停止正在执行的批量任务。 */
+    Result<LyricsBatchTaskVO> cancelTask(String taskId);
+
+    /** 将选中的歌曲标记为伴奏/无需歌词。 */
+    Result<Integer> markInstrumental(List<Long> songIds);
 
 }

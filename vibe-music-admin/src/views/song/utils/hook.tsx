@@ -37,7 +37,8 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     // 左侧歌手树的id
     artistId: null,
     songName: null,
-    album: null
+    album: null,
+    onlyMissingLyric: false
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -127,6 +128,13 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
           return (
             <el-tag type="success" effect="light">
               已有
+            </el-tag>
+          );
+        }
+        if (status === 4) {
+          return (
+            <el-tag type="info" effect="light">
+              伴奏
             </el-tag>
           );
         }
@@ -335,7 +343,8 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
           album: row?.album ?? "",
           style: row?.style ?? [],
           releaseTime: row?.releaseTime ?? "",
-          lyric: row?.lyric ?? ""
+          lyric: row?.lyric ?? "",
+          instrumental: row?.lyricStatus === 4
         }
       },
       width: "46%",

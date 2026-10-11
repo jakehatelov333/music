@@ -3,7 +3,12 @@ import { onBeforeUnmount, ref } from "vue";
 import { useAlbum } from "./utils/hook";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import { getLyricsTask, submitLyricsBatch } from "@/api/lyrics";
+import {
+  cancelLyricsTask,
+  getLyricsTask,
+  submitLyricsBatch
+} from "@/api/lyrics";
+import { ElNotification } from "element-plus";
 import { message } from "@/utils/message";
 
 import Upload from "@iconify-icons/ri/upload-line";
@@ -25,7 +30,12 @@ const router = useRouter();
 // 补全本专辑歌词
 const albumBatchVisible = ref(false);
 const albumBatchSubmitting = ref(false);
+const albumBatchStopping = ref(false);
+/** 任务跑完前保持为 true，避免重复提交 */
+const albumBatchRunning = ref(false);
 const albumBatchTask = ref<any>(null);
+const albumBatchIndicatorDismissed = ref(false);
+const notifiedAlbumBatchTaskIds = new Set<string>();
 let albumBatchTimer: number | undefined;
 
 const {
@@ -65,6 +75,9 @@ const lyricStatusMeta = (
   if (status === 1 || status === 2) {
     return { label: "已有", type: "success" };
   }
+  if (status === 4) {
+    return { label: "伴奏", type: "info" };
+  }
   if (status === 3) {
     return { label: "无匹配", type: "info" };
   }
@@ -76,6 +89,12 @@ const lyricStatusMeta = (
 
 /** 一键补全本专辑缺失歌词 */
 async function handleAlbumLyrics() {
+  if (albumBatchRunning.value) {
+    message("已有批量补全任务正在执行，请等待完成后再提交", {
+      type: "warning"
+    });
+    return;
+  }
   const albumId = detailAlbum.value?.albumId;
   if (!albumId) {
     message("专辑信息尚未加载完成", { type: "warning" });
@@ -87,6 +106,8 @@ async function handleAlbumLyrics() {
     if (res.code === 0 && res.data?.taskId) {
       albumBatchTask.value = res.data;
       albumBatchVisible.value = true;
+      albumBatchIndicatorDismissed.value = false;
+      albumBatchRunning.value = true;
       startAlbumPolling(res.data.taskId, albumId);
     } else {
       message(res.message || "提交批量补全任务失败", { type: "error" });
@@ -99,6 +120,52 @@ async function handleAlbumLyrics() {
   }
 }
 
+function notifyAlbumBatchFinished(task: any) {
+  const taskId = task?.taskId;
+  if (taskId && notifiedAlbumBatchTaskIds.has(taskId)) return;
+  if (taskId) notifiedAlbumBatchTaskIds.add(taskId);
+
+  const cancelled = task?.status === "CANCELLED";
+  const processed = task?.done ?? 0;
+  const total = cancelled ? processed : (task?.total ?? processed);
+  ElNotification({
+    title: cancelled ? "批量补全已停止" : "批量补全歌词已完成",
+    message: `共处理 ${total} 首歌曲：成功 ${task?.success ?? 0}，失败 ${task?.failed ?? 0}，跳过 ${task?.skipped ?? 0}，无匹配 ${task?.noMatch ?? 0}`,
+    type: cancelled ? "warning" : "success",
+    position: "bottom-right",
+    duration: 8000,
+    showClose: true
+  });
+}
+
+async function handleStopAlbumLyrics() {
+  const taskId = albumBatchTask.value?.taskId;
+  if (!taskId || albumBatchStopping.value) return;
+
+  albumBatchStopping.value = true;
+  try {
+    const res: any = await cancelLyricsTask(taskId);
+    if (res.code === 0 && res.data) {
+      albumBatchTask.value = res.data;
+      if (res.data.status === "DONE" || res.data.status === "CANCELLED") {
+        stopAlbumPolling();
+        albumBatchRunning.value = false;
+        const albumId = detailAlbum.value?.albumId;
+        if (albumId) handleUpdate({ albumId });
+        notifyAlbumBatchFinished(res.data);
+      }
+      message(res.message || "已提交停止请求", { type: "warning" });
+    } else {
+      message(res.message || "停止批量搜索失败", { type: "error" });
+    }
+  } catch (error) {
+    console.error("停止专辑歌词搜索失败:", error);
+    message("停止批量搜索失败，请稍后重试", { type: "error" });
+  } finally {
+    albumBatchStopping.value = false;
+  }
+}
+
 function startAlbumPolling(taskId: string, albumId: number) {
   stopAlbumPolling();
   albumBatchTimer = window.setInterval(async () => {
@@ -106,14 +173,12 @@ function startAlbumPolling(taskId: string, albumId: number) {
       const res: any = await getLyricsTask(taskId);
       if (res.code === 0 && res.data) {
         albumBatchTask.value = res.data;
-        if (res.data.status === "DONE") {
+        if (res.data.status === "DONE" || res.data.status === "CANCELLED") {
           stopAlbumPolling();
+          albumBatchRunning.value = false;
           // 刷新详情中的歌词状态
           handleUpdate({ albumId });
-          message(
-            `补全完成：成功 ${res.data.success ?? 0}，无匹配 ${res.data.noMatch ?? 0}，跳过 ${res.data.skipped ?? 0}`,
-            { type: "success" }
-          );
+          notifyAlbumBatchFinished(res.data);
         }
       }
     } catch (error) {
@@ -323,6 +388,7 @@ onBeforeUnmount(stopAlbumPolling);
               size="small"
               :icon="useRenderIcon(LyricsIcon)"
               :loading="albumBatchSubmitting"
+              :disabled="albumBatchRunning"
               @click="handleAlbumLyrics"
             >
               补全本专辑歌词
@@ -356,9 +422,27 @@ onBeforeUnmount(stopAlbumPolling);
           <span>{{ albumBatchTask.title || "补全专辑歌词" }}</span>
           <span>{{ albumBatchTask.done }} / {{ albumBatchTask.total }}</span>
         </div>
+        <div
+          v-if="albumBatchTask.status === 'CANCELLING'"
+          class="batch-status batch-status--warning"
+        >
+          正在停止：当前歌曲的数据源请求结束后会停止后续搜索。
+        </div>
+        <div
+          v-else-if="albumBatchTask.status === 'CANCELLED'"
+          class="batch-status batch-status--warning"
+        >
+          搜索已停止，已完成的处理结果会保留。
+        </div>
         <el-progress
           :percentage="albumBatchTask.progress ?? 0"
-          :status="albumBatchTask.status === 'DONE' ? 'success' : ''"
+          :status="
+            albumBatchTask.status === 'DONE'
+              ? 'success'
+              : albumBatchTask.status === 'CANCELLED'
+                ? 'warning'
+                : ''
+          "
         />
         <div class="batch-stats">
           <span>成功 {{ albumBatchTask.success ?? 0 }}</span>
@@ -368,17 +452,78 @@ onBeforeUnmount(stopAlbumPolling);
         </div>
       </div>
       <template #footer>
+        <el-popconfirm
+          v-if="albumBatchTask?.status === 'RUNNING'"
+          title="停止后会保留已完成结果，尚未处理的歌曲不会继续搜索。确定停止吗？"
+          confirm-button-text="停止搜索"
+          cancel-button-text="继续搜索"
+          @confirm="handleStopAlbumLyrics"
+        >
+          <template #reference>
+            <el-button type="danger" :loading="albumBatchStopping">
+              停止搜索
+            </el-button>
+          </template>
+        </el-popconfirm>
         <el-button
-          v-if="albumBatchTask?.status !== 'DONE'"
+          v-else-if="albumBatchTask?.status === 'CANCELLING'"
+          type="warning"
+          loading
+          disabled
+        >
+          正在停止
+        </el-button>
+        <el-button
+          v-if="
+            albumBatchTask?.status === 'RUNNING' ||
+            albumBatchTask?.status === 'CANCELLING'
+          "
           @click="albumBatchVisible = false"
         >
           后台运行
         </el-button>
         <el-button type="primary" @click="albumBatchVisible = false">
-          {{ albumBatchTask?.status === "DONE" ? "完成" : "关闭" }}
+          {{
+            albumBatchTask?.status === "DONE" ||
+            albumBatchTask?.status === "CANCELLED"
+              ? "完成"
+              : "关闭"
+          }}
         </el-button>
       </template>
     </el-dialog>
+
+    <div
+      v-if="
+        albumBatchTask &&
+        ['RUNNING', 'CANCELLING'].includes(albumBatchTask.status) &&
+        !albumBatchVisible &&
+        !albumBatchIndicatorDismissed
+      "
+      class="batch-progress-float"
+    >
+      <button
+        class="batch-progress-orb"
+        type="button"
+        :style="{
+          '--batch-progress': `${Math.max(0, Math.min(100, albumBatchTask.progress ?? 0))}%`
+        }"
+        :aria-label="`重新打开批量补全歌词进度，当前 ${albumBatchTask.progress ?? 0}%`"
+        :title="`${albumBatchTask.title || '补全本专辑歌词'}：点击查看详情`"
+        @click="albumBatchVisible = true"
+      >
+        <span>{{ albumBatchTask.progress ?? 0 }}%</span>
+      </button>
+      <button
+        class="batch-progress-dismiss"
+        type="button"
+        aria-label="隐藏进度提示"
+        title="隐藏进度提示"
+        @click="albumBatchIndicatorDismissed = true"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </div>
   </div>
 </template>
 
@@ -407,5 +552,66 @@ onBeforeUnmount(stopAlbumPolling);
 .detail-songs-heading span { color: var(--el-text-color-secondary); }
 .detail-heading-spacer { flex: 1; }
 .batch-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; margin-bottom: 10px; }
+.batch-status { margin-bottom: 10px; font-size: 12px; line-height: 1.5; }
+.batch-status--warning { color: var(--el-color-warning); }
 .batch-stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--el-text-color-secondary); }
+.batch-progress-float {
+  position: fixed;
+  right: 28px;
+  bottom: 32px;
+  z-index: 2100;
+}
+.batch-progress-orb {
+  display: grid;
+  width: 62px;
+  height: 62px;
+  padding: 4px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--el-color-primary) var(--batch-progress),
+    var(--el-border-color-lighter) 0
+  );
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgb(31 45 61 / 18%);
+}
+.batch-progress-orb span {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--el-bg-color);
+  font-size: 13px;
+  font-weight: 600;
+}
+.batch-progress-orb:focus-visible,
+.batch-progress-dismiss:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+}
+.batch-progress-dismiss {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 50%;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  box-shadow: 0 1px 5px rgb(31 45 61 / 18%);
+}
+@media (max-width: 640px) {
+  .batch-progress-float {
+    right: 16px;
+    bottom: 20px;
+  }
+}
 </style>

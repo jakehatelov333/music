@@ -39,4 +39,7 @@ public class SongAndArtistDTO implements Serializable {
      */
     private String album;
 
+    /** 仅查询歌词文本为空且未被标记为伴奏/无需歌词的歌曲 */
+    private Boolean onlyMissingLyric;
+
 }

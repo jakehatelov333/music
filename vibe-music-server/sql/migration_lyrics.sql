@@ -7,9 +7,9 @@
 
 ALTER TABLE `tb_song`
   ADD COLUMN `lyric_source` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL
-      COMMENT '歌词来源: QQ_MUSIC / LRCLIB / MANUAL' AFTER `lyric`,
+      COMMENT '歌词来源: QQ_MUSIC / LRCLIB / MANUAL / INSTRUMENTAL' AFTER `lyric`,
   ADD COLUMN `lyric_status` tinyint NOT NULL DEFAULT 0
-      COMMENT '歌词状态: 0未获取 1已获取 2手动录入 3无匹配' AFTER `lyric_source`,
+      COMMENT '歌词状态: 0未获取 1已获取 2手动录入 3无匹配 4伴奏或无需歌词' AFTER `lyric_source`,
   ADD COLUMN `lyric_updated_at` datetime NULL DEFAULT NULL
       COMMENT '歌词更新时间' AFTER `lyric_status`;
 
