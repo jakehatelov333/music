@@ -47,7 +47,14 @@ public interface UserMusicProfileMapper {
             """)
     UserMusicProfile aggregateCounts(@Param("userId") Long userId);
 
-    /** 高频风格：来自「收藏歌曲 ∪ 自建歌单歌曲」。空风格不计入。 */
+    /**
+     * 高频风格的<b>原始值</b>统计：来自「收藏歌曲 ∪ 自建歌单歌曲」。空风格不计入。
+     *
+     * <p>注意 {@code tb_song.style} 是<b>逗号分隔多值</b>（如 {@code 欧美流行,电子}），
+     * 因此这里返回的 {@code name} 可能是混合串。拆分与合并计数由
+     * {@code UserMusicProfileService#expandStyles} 负责 —— SQL 里做字符串拆分不可移植
+     * （MySQL 与 H2 都没有通用写法）。
+     */
     @Select("""
             SELECT s.style AS name, COUNT(DISTINCT t.song_id) AS count
             FROM (

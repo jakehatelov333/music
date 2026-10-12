@@ -14,7 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 用户音乐画像服务。
@@ -34,6 +36,13 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class UserMusicProfileService {
+
+    /**
+     * 风格聚合前先扫描多少条原始风格行。必须显著大于 {@code topN}：
+     * 真实库里风格是多值逗号串，单个风格的总数要靠多条原始行累加，
+     * 取少了会让"累加后能进 TOP N"的风格被提前截断掉。
+     */
+    private static final int RAW_STYLE_SCAN = 100;
 
     private final UserMusicProfileMapper mapper;
     private final ObjectMapper objectMapper;
@@ -56,10 +65,47 @@ public class UserMusicProfileService {
         // 全新用户没有任何收藏与歌单时，聚合语句仍会返回一行全 0，这里只做兜底。
         if (facts == null) facts = new UserMusicProfile();
         facts.setUserId(userId);
-        facts.setTopStyles(writeTaste(mapper.topStyles(userId, topN)));
+        facts.setTopStyles(writeTaste(expandStyles(mapper.topStyles(userId, RAW_STYLE_SCAN), topN)));
         facts.setTopArtists(writeTaste(mapper.topArtists(userId, topN)));
         mapper.upsertFacts(facts, LocalDateTime.now());
         return mapper.find(userId);
+    }
+
+    /**
+     * 把"逗号分隔的多值风格"拆成单个风格再合并计数。
+     *
+     * <p><b>为什么必须拆：</b>真实库里 {@code tb_song.style} 是逗号分隔的多值
+     * （例如 {@code 欧美流行,电子}）。不拆的话画像里会出现
+     * 「常听风格：欧美流行、欧美流行,电子、…」—— 冗余且没法读。
+     *
+     * <p><b>为什么按原始行的计数直接累加是正确的：</b>SQL 侧用
+     * {@code COUNT(DISTINCT t.song_id)} 得到的是"具有该原始风格串的歌曲数"。
+     * 若 12 首歌的风格串都是 {@code 欧美流行,电子}，那么这 12 首歌确实每首都同时属于
+     * 欧美流行和电子，两边各加 12 是正确语义，不是重复计数。
+     *
+     * <p>因此 SQL 侧必须多取一些原始行（{@link #RAW_STYLE_SCAN}），否则会出现
+     * "单个风格加起来很高、但没有任何一条原始行进入 TOP N" 从而被漏掉的情况。
+     */
+    private List<TasteCount> expandStyles(List<TasteCount> raw, int limit) {
+        Map<String, Integer> totals = new HashMap<>();
+        for (TasteCount row : raw) {
+            if (row.getName() == null) continue;
+            for (String part : row.getName().split("[,，]")) {
+                String name = part.strip();
+                if (!name.isEmpty()) totals.merge(name, row.getCount(), Integer::sum);
+            }
+        }
+        return totals.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .map(entry -> {
+                    TasteCount item = new TasteCount();
+                    item.setName(entry.getKey());
+                    item.setCount(entry.getValue());
+                    return item;
+                })
+                .toList();
     }
 
     /**

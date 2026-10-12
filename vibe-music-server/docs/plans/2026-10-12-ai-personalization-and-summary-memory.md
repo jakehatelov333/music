@@ -291,7 +291,7 @@ public interface UserMusicProfileMapper {
             """)
     UserMusicProfile aggregateCounts(@Param("userId") Long userId);
 
-    /** 高频风格：来自收藏歌曲 ∪ 自建歌单歌曲。 */
+    /** 高频风格：来自「收藏歌曲 ∪ 自建歌单歌曲」。空风格不计入。 */
     @Select("""
             SELECT s.style AS name, COUNT(DISTINCT t.song_id) AS count
             FROM (
@@ -590,15 +590,59 @@ public class UserMusicProfileService {
                 LocalDateTime.now().minus(refreshTtlMinutes, ChronoUnit.MINUTES));
     }
 
+    /**
+     * 风格聚合前先扫描多少条原始风格行。必须显著大于 topN：真实库里风格是多值逗号串，
+     * 单个风格的总数要靠多条原始行累加，取少了会让"累加后能进 TOP N"的风格被提前截断。
+     */
+    private static final int RAW_STYLE_SCAN = 100;
+
     /** 重新聚合事实并 upsert，返回最新画像（不含 prefSummary 的重新生成）。 */
     public UserMusicProfile refresh(Long userId) {
         UserMusicProfile counts = mapper.aggregateCounts(userId);
         if (counts == null) counts = new UserMusicProfile();   // 全新用户：全 0
         counts.setUserId(userId);
-        counts.setTopStyles(writeTaste(mapper.topStyles(userId, topN)));
+        counts.setTopStyles(writeTaste(expandStyles(mapper.topStyles(userId, RAW_STYLE_SCAN), topN)));
         counts.setTopArtists(writeTaste(mapper.topArtists(userId, topN)));
         mapper.upsertFacts(counts, LocalDateTime.now());
         return mapper.find(userId);
+    }
+
+    /**
+     * 把"逗号分隔的多值风格"拆成单个风格再合并计数。
+     *
+     * <p><b>为什么必须拆（真实数据发现的缺陷）：</b>库里 {@code tb_song.style} 是逗号分隔多值
+     * （如 {@code 欧美流行,电子}）。不拆的话画像会变成
+     * 「常听风格：欧美流行、欧美流行,电子、欧美流行,嘻哈说唱…」—— 冗余、误导、没法读。
+     * 实测某用户未拆分时 TOP5 是 {@code 欧美流行(30)、欧美流行,电子(12)、…}，
+     * 拆分后才是 {@code 欧美流行(52)、电子(16)、华语流行(7)、嘻哈说唱(5)、节奏布鲁斯(4)}。
+     *
+     * <p><b>为什么按原始行的计数直接累加是正确的：</b>SQL 侧的
+     * {@code COUNT(DISTINCT t.song_id)} 是"具有该原始风格串的歌曲数"。若 12 首歌的风格串
+     * 都是 {@code 欧美流行,电子}，这 12 首歌确实每首都同属两个风格，两边各加 12 是正确语义，
+     * 不是重复计数。
+     *
+     * <p><b>为什么不放在 SQL 里：</b>字符串拆分在 MySQL 与 H2 都没有可移植写法。
+     */
+    private List<TasteCount> expandStyles(List<TasteCount> raw, int limit) {
+        Map<String, Integer> totals = new HashMap<>();
+        for (TasteCount row : raw) {
+            if (row.getName() == null) continue;
+            for (String part : row.getName().split("[,，]")) {
+                String name = part.strip();
+                if (!name.isEmpty()) totals.merge(name, row.getCount(), Integer::sum);
+            }
+        }
+        return totals.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .map(entry -> {
+                    TasteCount item = new TasteCount();
+                    item.setName(entry.getKey());
+                    item.setCount(entry.getValue());
+                    return item;
+                })
+                .toList();
     }
 
     /**
@@ -1743,7 +1787,9 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 | 项 | 判据 |
 |---|---|
 | 画像聚合正确 | `UserMusicProfileTest` 全绿；收藏与自建歌单两个来源去重 |
+| 多值风格拆分 | `tb_song.style` 为逗号分隔多值时，画像只出现单个风格，原始混合串不得出现 |
 | 画像刷新成本 | TTL 内 `read()` 只有主键查询；请求路径**零模型调用** |
+| 真实 MySQL 可跑 | 迁移脚本与三条聚合 SQL 在真实 MySQL 上实测通过（H2 与 MySQL 方言差异已排除） |
 | 提示词注入生效 | `SystemMessageInjectionTest` 断言模型收到的第一条消息含偏好块 |
 | 游客不注入 | 游客请求的系统消息不含画像，且不产生画像行 |
 | 摘要触发正确 | 未超阈值不调用模型；超阈值压缩最早一段并推进 `summary_upto_id` |
@@ -1758,6 +1804,8 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 
 | 风险 | 等级 | 缓解 |
 |---|---|---|
+| **`tb_song.style` 是逗号分隔多值**，直接 GROUP BY 会产出 `欧美流行,电子` 这类混合串 | **高（已发生）** | 已在服务层 `expandStyles` 拆分后合并计数；`RAW_STYLE_SCAN=100` 防止累加后被提前截断；有 2 条专门测试 |
+| H2(MySQL 模式) 与真实 MySQL 的方言差异可能让 SQL 只在测试里通过 | 中 | 迁移脚本与三条聚合 SQL 已在真实 MySQL 上实测；避开了 `VALUES(col)` 与方言函数 |
 | 删掉 `@SystemMessage` 后若 provider 未生效，助手会"失去人格" | 中 | `SystemMessageInjectionTest` 直接断言模型收到的系统消息，不依赖人工观察 |
 | 画像只覆盖"收藏 + 自建歌单"，新用户/只听不收藏的用户画像为空 | 中 | `renderPreferenceBlock` 在无数据时返回 null（不注入空块）；文档明确标注限制，不假装有播放历史 |
 | 摘要可能丢信息（压缩必然有损） | 中 | 摘要只做"锦上添花"：窗口内 20 条原样保留；摘要块显式声明"与本次要求冲突时以本次为准" |

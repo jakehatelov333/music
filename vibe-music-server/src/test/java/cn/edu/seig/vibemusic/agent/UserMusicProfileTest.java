@@ -170,4 +170,44 @@ class UserMusicProfileTest extends AbstractAgentTest {
                 .factsHash(profileService.refresh(1L)))
                 .isNotEqualTo(hash);
     }
+
+    /**
+     * 真实库 {@code tb_song.style} 是逗号分隔多值（例如 {@code 欧美流行,电子}）。
+     * 画像必须把它拆成单个风格，否则提示词里会出现「常听风格：欧美流行、欧美流行,电子」这种冗余串。
+     */
+    @Test
+    void splitsCommaSeparatedStylesIntoSeparatePreferences() {
+        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url) "
+                + "VALUES (15,'多风格歌','测试专辑A',1,1,'欧美流行,电子','03:00',"
+                + "'http://minio/15.jpg','http://minio/15.mp3')");
+        jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) VALUES "
+                + "(1,1,0,15,CURRENT_TIMESTAMP),(2,1,0,10,CURRENT_TIMESTAMP)");
+
+        var profile = profileService.read(1L);
+
+        // 单个风格分别出现，原始混合串不得出现
+        assertThat(profile.getTopStyles())
+                .contains("\"name\":\"欧美流行\"").contains("\"name\":\"电子\"")
+                .contains("\"name\":\"流行\"").doesNotContain("欧美流行,电子");
+        assertThat(profileService.renderPreferenceBlock(1L))
+                .contains("欧美流行").contains("电子").doesNotContain("欧美流行,电子");
+    }
+
+    /** 同一首歌在多条原始行里出现时，单个风格的计数应正确累加而不是重复计数。 */
+    @Test
+    void accumulatesStyleCountsAcrossMultipleRawRows() {
+        // 两首歌风格串都含「欧美流行」，但原始串不同：欧美流行,电子 / 欧美流行,嘻哈说唱
+        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url) "
+                + "VALUES (16,'A','测试专辑A',1,1,'欧美流行,电子','03:00','http://minio/16.jpg','http://minio/16.mp3'),"
+                + "(17,'B','测试专辑A',1,1,'欧美流行,嘻哈说唱','03:00','http://minio/17.jpg','http://minio/17.mp3')");
+        jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) VALUES "
+                + "(1,1,0,16,CURRENT_TIMESTAMP),(2,1,0,17,CURRENT_TIMESTAMP)");
+
+        String styles = profileService.read(1L).getTopStyles();
+
+        // 欧美流行 = 2（两首各贡献一次），电子 = 1，嘻哈说唱 = 1
+        assertThat(styles).contains("\"name\":\"欧美流行\",\"count\":2");
+        assertThat(styles).contains("\"name\":\"电子\",\"count\":1");
+        assertThat(styles).contains("\"name\":\"嘻哈说唱\",\"count\":1");
+    }
 }
