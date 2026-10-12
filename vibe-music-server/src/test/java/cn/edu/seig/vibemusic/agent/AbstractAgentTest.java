@@ -74,6 +74,9 @@ public abstract class AbstractAgentTest {
 
     /** 清空业务数据并写入固定夹具；评测集会在每个用例之间重复调用。 */
     protected void resetData() {
+        jdbc.update("DELETE FROM tb_user_music_profile");
+        jdbc.update("DELETE FROM ai_chat_state");
+        jdbc.update("DELETE FROM chat_messages");
         jdbc.update("DELETE FROM tb_ai_task_metric");
         jdbc.update("DELETE FROM tb_agent_pending_action");
         jdbc.update("DELETE FROM tb_playlist_create_request");
@@ -146,6 +149,21 @@ public abstract class AbstractAgentTest {
                 + "output_guarded BOOLEAN NOT NULL DEFAULT FALSE, "
                 + "latency_ms BIGINT NOT NULL DEFAULT 0, playlist_id BIGINT, created_at TIMESTAMP NOT NULL, "
                 + "UNIQUE(task_id))");
+        // 用户音乐画像：事实来自收藏与自建歌单（项目暂无播放历史表）。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_music_profile(user_id BIGINT PRIMARY KEY, "
+                + "top_styles CLOB, top_artists CLOB, fav_song_count INT NOT NULL DEFAULT 0, "
+                + "fav_playlist_count INT NOT NULL DEFAULT 0, own_playlist_count INT NOT NULL DEFAULT 0, "
+                + "own_playlist_song_count INT NOT NULL DEFAULT 0, pref_summary VARCHAR(500), "
+                + "summary_source_hash CHAR(64), version BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMP NOT NULL, "
+                + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
+        // 模型窗口 + 租约 + 滚动摘要（与 sql/phase2_chat_migration.sql、phase5_personalization.sql 对齐）。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS ai_chat_state(chat_id VARCHAR(255) PRIMARY KEY, "
+                + "context_json CLOB, context_version BIGINT NOT NULL DEFAULT 0, active_run_token VARCHAR(36), "
+                + "lease_expires_at TIMESTAMP, summary_text CLOB, summary_upto_id BIGINT NOT NULL DEFAULT 0, "
+                + "summary_updated_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS chat_messages(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "chat_id VARCHAR(255) NOT NULL, message_type VARCHAR(32) NOT NULL, content CLOB NOT NULL, "
+                + "created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)");
     }
 
     // ------------------------------------------------------------------ helpers
