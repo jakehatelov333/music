@@ -1,0 +1,34 @@
+[
+  {
+    "songId": 74,
+    "songName": "Don't Start Now",
+    "artistName": "Dua Lipa",
+    "album": "Don't Start Now",
+    "coverUrl": "http://localhost:9005/vibe-music-data/songCovers/682835cb-3a0f-456d-a30d-16283780d6e3-blob",
+    "audioUrl": "http://localhost:9005/vibe-music-data/songs/660fa0c6-cb1f-46b6-beeb-0ceb13409fc9-Dua Lipa - Don't Start Now.mp3"
+  },
+  {
+    "songId": 8,
+    "songName": "bad idea",
+    "artistName": "Ariana Grande",
+    "album": "thank u, next",
+    "coverUrl": "http://localhost:9005/vibe-music-data/songCovers/4889a18e-11dd-48e1-880b-cfa2966155b7-blob",
+    "audioUrl": "http://localhost:9005/vibe-music-data/songs/237599b5-f2c2-46b4-8147-af9abd6659ce-Ariana Grande - bad idea.mp3"
+  },
+  {
+    "songId": 128,
+    "songName": "What Do I Know?",
+    "artistName": "Ed Sheeran",
+    "album": "÷ (Deluxe",
+    "coverUrl": "http://localhost:9005/vibe-music-data/songCovers/e8bd4886-df06-402a-8104-7e8905e9100e-blob",
+    "audioUrl": "http://localhost:9005/vibe-music-data/songs/b71f8ec7-9892-416a-a32a-6b4603ec4d9a-Ed Sheeran - What Do I Know.mp3"
+  },
+  {
+    "songId": 529,
+    "songName": "Diamonds",
+    "artistName": "Rihanna",
+    "album": "Diamonds",
+    "coverUrl": "http://localhost:9005/vibe-music-data/songCovers/f21dcd37-df64-45f1-94e2-9cb7de94baa7-blob",
+    "audioUrl": "http://localhost:9005/vibe-music-data/songs/b95c5d9a-6f3d-449d-bdce-2ee25da241b8-Rihanna - Diamonds.mp3"
+  }
+]

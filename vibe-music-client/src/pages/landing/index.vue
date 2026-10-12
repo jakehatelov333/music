@@ -1,2031 +1,1293 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onBeforeUnmount, onMounted } from 'vue'
+import landingCss from './landing.css?inline'
 
-const router = useRouter()
-const landingRoot = ref<HTMLElement | null>(null)
-const visual = ref<HTMLElement | null>(null)
-const navScrolled = ref(false)
-const isPlaying = ref(true)
-const progress = ref(38)
-let observer: IntersectionObserver | undefined
-let frame = 0
-let pointer = { x: 0, y: 0 }
-let handleScroll: (() => void) | undefined
+/**
+ * 媒体资源基地址。
+ * 本地默认指向本机 MinIO；部署时通过环境变量 VITE_MEDIA_BASE 覆盖，
+ * 无需改动组件代码。曲目数据中的 coverPath / audioPath 均为相对该地址的路径。
+ */
+const MEDIA_BASE = (
+  import.meta.env.VITE_MEDIA_BASE || 'http://localhost:9005/vibe-music-data'
+).replace(/\/+$/, '')
 
-const navItems = [
-  { label: '首页', target: 'hero' },
-  { label: '功能特色', target: 'features' },
-  { label: 'AI 助手', target: 'workflow' },
-  { label: '技术架构', target: 'technology' },
-]
-
-const featureCards = [
-  {
-    icon: '✦',
-    label: 'AI 音乐助手',
-    title: '用一句话，说出你的音乐',
-    copy: '自然语言理解你的情绪、场景与偏好，给出真正贴合当下的推荐。',
-    accent: 'violet',
-  },
-  {
-    icon: '◈',
-    label: '智能发现',
-    title: '越听越懂你的品味',
-    copy: '从熟悉的旋律出发，探索那些你还没遇见、却会喜欢的声音。',
-    accent: 'cyan',
-  },
-  {
-    icon: '◉',
-    label: '高品质播放器',
-    title: '沉浸式聆听体验',
-    copy: '清晰、流畅、克制的播放器，让每一个音符都回到中心位置。',
-    accent: 'blue',
-  },
-  {
-    icon: '⌁',
-    label: '个性化歌单',
-    title: '把灵感收藏起来',
-    copy: '创建、收藏、分享你的专属歌单，让每一种心情都有声音可循。',
-    accent: 'pink',
-  },
-]
-
-const workflowNodes = [
-  {
-    step: '01',
-    icon: '⌕',
-    title: '用户问题',
-    detail: '自然语言',
-    body: '给我一些适合深夜学习的音乐',
-  },
-  {
-    step: '02',
-    icon: '✦',
-    title: '大模型',
-    detail: 'Qwen',
-    body: '理解意图与情绪，生成检索策略',
-  },
-  {
-    step: '03',
-    icon: '⌁',
-    title: '工具调用',
-    detail: 'MusicTools',
-    body: '搜索、筛选、组合真实音乐数据',
-  },
-  {
-    step: '04',
-    icon: '▦',
-    title: '业务系统',
-    detail: 'MySQL / Redis',
-    body: '稳定访问音乐库与用户偏好',
-  },
-  {
-    step: '05',
-    icon: '↗',
-    title: '生成回复',
-    detail: '流式输出',
-    body: '带着推荐理由，回答你的问题',
-  },
-]
-
-const techStack = [
-  'Spring Boot',
-  'MyBatis-Plus',
-  'Redis',
-  'MySQL',
-  'MinIO',
-  'LangChain4j',
-  'Qwen',
-]
-
-const scrollTo = (target: string) => {
-  document
-    .getElementById(target)
-    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+interface TrackSeed {
+  songId: number
+  songName: string
+  artistName: string
+  album: string
+  coverPath: string
+  audioPath: string
 }
 
-const enter = () => router.push('/login')
-
-const togglePlaying = () => {
-  isPlaying.value = !isPlaying.value
+interface Track extends TrackSeed {
+  coverUrl: string
+  audioUrl: string
 }
 
-const handlePointer = (event: PointerEvent) => {
-  if (
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
-    window.innerWidth < 900
-  )
-    return
-  const rect = visual.value?.getBoundingClientRect()
-  if (!rect) return
-  pointer = {
-    x: (event.clientX - rect.left) / rect.width - 0.5,
-    y: (event.clientY - rect.top) / rect.height - 0.5,
-  }
-  if (!frame)
-    frame = requestAnimationFrame(() => {
-      if (visual.value) {
-        visual.value.style.setProperty('--tilt-x', `${pointer.y * -3}deg`)
-        visual.value.style.setProperty('--tilt-y', `${pointer.x * 4}deg`)
-      }
-      frame = 0
-    })
-}
-
-const resetPointer = () => {
-  if (visual.value) {
-    visual.value.style.setProperty('--tilt-x', '0deg')
-    visual.value.style.setProperty('--tilt-y', '0deg')
-  }
-}
-
-onMounted(async () => {
-  await nextTick()
-  const root = landingRoot.value
-  if (!root) return
-  observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) entry.target.classList.add('is-visible')
-      })
+/** 固定展示的四首曲目（编辑精选）。 */
+const tracks: Track[] = (
+  [
+    {
+      songId: 74,
+      songName: "Don't Start Now",
+      artistName: 'Dua Lipa',
+      album: "Don't Start Now",
+      coverPath: 'songCovers/682835cb-3a0f-456d-a30d-16283780d6e3-blob',
+      audioPath:
+        "songs/660fa0c6-cb1f-46b6-beeb-0ceb13409fc9-Dua Lipa - Don't Start Now.mp3",
     },
-    { threshold: 0.12 }
-  )
-  root
-    .querySelectorAll('[data-reveal]')
-    .forEach((element) => observer?.observe(element))
-  handleScroll = () => {
-    navScrolled.value = window.scrollY > 24
-  }
-  window.addEventListener('scroll', handleScroll, { passive: true })
-  handleScroll()
+    {
+      songId: 8,
+      songName: 'bad idea',
+      artistName: 'Ariana Grande',
+      album: 'thank u, next',
+      coverPath: 'songCovers/4889a18e-11dd-48e1-880b-cfa2966155b7-blob',
+      audioPath:
+        'songs/237599b5-f2c2-46b4-8147-af9abd6659ce-Ariana Grande - bad idea.mp3',
+    },
+    {
+      songId: 128,
+      songName: 'What Do I Know?',
+      artistName: 'Ed Sheeran',
+      album: '÷ (Deluxe',
+      coverPath: 'songCovers/e8bd4886-df06-402a-8104-7e8905e9100e-blob',
+      audioPath:
+        'songs/b71f8ec7-9892-416a-a32a-6b4603ec4d9a-Ed Sheeran - What Do I Know.mp3',
+    },
+    {
+      songId: 529,
+      songName: 'Diamonds',
+      artistName: 'Rihanna',
+      album: 'Diamonds',
+      coverPath: 'songCovers/f21dcd37-df64-45f1-94e2-9cb7de94baa7-blob',
+      audioPath:
+        'songs/b95c5d9a-6f3d-449d-bdce-2ee25da241b8-Rihanna - Diamonds.mp3',
+    },
+  ] as TrackSeed[]
+).map((track) => ({
+  ...track,
+  coverUrl: `${MEDIA_BASE}/${track.coverPath}`,
+  audioUrl: `${MEDIA_BASE}/${track.audioPath}`,
+}))
+
+/** 与曲目一一对应的展示文案（固定内容）。 */
+const contexts = [
+  {
+    tag: '流行 · 活力时刻',
+    category: '给日常充电',
+    caption: '让明快的节奏，点亮今天',
+    context: '让节奏，唤醒好心情',
+  },
+  {
+    tag: '流行 · 随心聆听',
+    category: '流行心动',
+    caption: '跟着旋律，换一种心情',
+    context: '跟着旋律，找到你的节奏',
+  },
+  {
+    tag: '流行 · 轻松日常',
+    category: '轻松一点',
+    caption: '把日常，调到舒服的频率',
+    context: '给日常，留一点轻松',
+  },
+  {
+    tag: '流行 · 夜晚时光',
+    category: '夜晚时光',
+    caption: '留一首歌，陪今天慢慢收尾',
+    context: '给夜晚，留一首喜欢的歌',
+  },
+]
+
+/** AI 音乐助手的三组场景示例。 */
+const scenarios = {
+  focus: {
+    question: '准备看一会儿书，想听点不打扰的音乐。',
+    answer: '可以从轻柔的纯音乐开始。少一点人声，让旋律陪你慢慢进入专注。',
+    title: '给专注留一点空间',
+    style: '轻音乐 / 钢琴 / 低干扰',
+    reason: '还可以告诉我你喜欢的乐器或歌手。',
+    icon: 'headphones',
+    color: 'linear-gradient(150deg,#616b96,#2c3555)',
+  },
+  morning: {
+    question: '正在上班路上，来点轻快的音乐吧。',
+    answer:
+      '给路上加一点节奏。可以试试明快的流行或放克，让通勤也有个好心情。',
+    title: '让步伐，跟上节拍',
+    style: '流行 / 放克 / 明快节奏',
+    reason: '告诉我路上还有多久，也可以继续缩小选择。',
+    icon: 'sun',
+    color: 'linear-gradient(150deg,#b68053,#5b4445)',
+  },
+  night: {
+    question: '忙了一整天，现在只想放松一会儿。',
+    answer: '那就让音乐慢下来。温柔的人声、舒缓的旋律，很适合陪你结束今天。',
+    title: '给夜晚一段留白',
+    style: '轻柔人声 / 舒缓 / 慢节奏',
+    reason: '喜欢纯音乐的话，我们也可以换个方向。',
+    icon: 'moon',
+    color: 'linear-gradient(150deg,#766a9f,#37304d)',
+  },
+} as const
+
+type ScenarioKey = keyof typeof scenarios
+
+/** 统一收集监听器，便于组件卸载时一次性释放。 */
+const disposers: Array<() => void> = []
+const listen = (
+  target: EventTarget,
+  type: string,
+  handler: EventListenerOrEventListenerObject,
+  options?: AddEventListenerOptions
+) => {
+  target.addEventListener(type, handler, options)
+  disposers.push(() => target.removeEventListener(type, handler, options))
+}
+
+let previousTitle = ''
+
+// ---- 页面级样式：进入时立即注入（早于首次渲染，避免无样式闪烁），
+//      离开时移除，避免污染其它页面 ----
+const styleEl = document.createElement('style')
+styleEl.dataset.landingStyle = 'true'
+styleEl.textContent = landingCss
+document.head.append(styleEl)
+
+onMounted(() => {
+  previousTitle = document.title
+  document.title = 'Vibe Music · 让音乐贴近此刻'
+  document.documentElement.lang = 'zh-CN'
+
+  setupPlayer()
+  setupScenarios()
+  setupAmbient()
 })
 
 onBeforeUnmount(() => {
-  if (handleScroll) window.removeEventListener('scroll', handleScroll)
-  observer?.disconnect()
-  if (frame) cancelAnimationFrame(frame)
+  disposers.splice(0).forEach((dispose) => dispose())
+  styleEl.remove()
+  document.title = previousTitle
+  document.documentElement.lang = 'en'
 })
+
+/* ------------------------------------------------------------------ *
+ * 播放器
+ * ------------------------------------------------------------------ */
+function setupPlayer() {
+  const audio = document.getElementById('audio') as HTMLAudioElement | null
+  const play = document.getElementById('play') as HTMLButtonElement | null
+  const heroListen = document.getElementById('hero-listen') as HTMLButtonElement | null
+  const seek = document.getElementById('seek') as HTMLInputElement | null
+  const status = document.getElementById('player-status')
+  const grid = document.getElementById('music-grid')
+  if (!audio || !play || !heroListen || !seek || !status || !grid) return
+
+  let current = 0
+  let generation = 0
+  let pending = false
+
+  const formatTime = (value: number) =>
+    Number.isFinite(value)
+      ? `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`
+      : '—:—'
+
+  const icon = (name: string) => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('class', 'icon')
+    svg.setAttribute('aria-hidden', 'true')
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use')
+    use.setAttribute('href', `#i-${name}`)
+    svg.append(use)
+    return svg
+  }
+
+  const element = (tag: string, className: string, text?: string) => {
+    const node = document.createElement(tag)
+    node.className = className
+    if (text !== undefined) node.textContent = text
+    return node
+  }
+
+  function syncPlayback() {
+    const playing = !audio!.paused && !audio!.ended
+    const name = tracks[current]?.songName || '歌曲'
+    play!.replaceChildren(icon(playing ? 'pause' : 'play'))
+    play!.setAttribute('aria-label', `${playing ? '暂停' : '播放'} ${name}`)
+    heroListen!.replaceChildren(
+      icon(playing ? 'pause' : 'play'),
+      element('span', '', playing ? '暂停试听' : '先听一首')
+    )
+    document.getElementById('player')?.classList.toggle('is-playing', playing)
+    grid!.querySelectorAll('.song-card').forEach((card, index) => {
+      const active = index === current
+      card.classList.toggle('active', active)
+      const cardButton = card.querySelector('button')
+      cardButton?.setAttribute(
+        'aria-label',
+        `${active && playing ? '暂停' : '播放'} ${tracks[index].songName}，${tracks[index].artistName}`
+      )
+      card
+        .querySelector('.song-play')
+        ?.replaceChildren(icon(active && playing ? 'pause' : 'play'))
+    })
+  }
+
+  function syncTime() {
+    const duration = audio!.duration
+    const elapsed = audio!.currentTime
+    const percentage =
+      Number.isFinite(duration) && duration > 0 ? (elapsed / duration) * 100 : 0
+    const elapsedEl = document.getElementById('elapsed')
+    const durationEl = document.getElementById('duration')
+    if (elapsedEl) elapsedEl.textContent = formatTime(elapsed)
+    if (durationEl) durationEl.textContent = formatTime(duration)
+    seek!.disabled = !Number.isFinite(duration) || duration <= 0
+    seek!.value = String(percentage)
+    seek!.style.setProperty('--progress', `${percentage}%`)
+    seek!.setAttribute(
+      'aria-valuetext',
+      `${formatTime(elapsed)} / ${formatTime(duration)}`
+    )
+  }
+
+  async function startPlayback() {
+    if (pending) return
+    const selectedGeneration = generation
+    pending = true
+    status!.textContent = '正在加载音频…'
+    try {
+      await audio!.play()
+      if (selectedGeneration === generation)
+        status!.textContent = '正在播放 · 享受这一首'
+    } catch (error) {
+      if (
+        selectedGeneration === generation &&
+        (error as DOMException)?.name !== 'AbortError'
+      ) {
+        status!.textContent = '暂时无法播放，请稍后点击重试'
+      }
+    } finally {
+      if (selectedGeneration === generation) pending = false
+      syncPlayback()
+    }
+  }
+
+  function chooseTrack(index: number, shouldPlay = false) {
+    generation += 1
+    pending = false
+    audio!.pause()
+    current = (index + tracks.length) % tracks.length
+    const track = tracks[current]
+    const context = contexts[current]
+    audio!.src = track.audioUrl
+    const cover = document.getElementById('current-cover') as HTMLImageElement | null
+    if (cover) {
+      cover.src = track.coverUrl
+      cover.alt = `${track.songName} 专辑封面`
+    }
+    const titleEl = document.getElementById('current-title')
+    const artistEl = document.getElementById('current-artist')
+    const tagEl = document.getElementById('current-tag')
+    const contextEl = document.querySelector('.track-context')
+    if (titleEl) titleEl.textContent = track.songName
+    if (artistEl) artistEl.textContent = track.artistName
+    if (tagEl) tagEl.textContent = context.tag
+    if (contextEl) contextEl.textContent = context.context
+    status!.textContent = '已就绪 · 点击播放，听听看'
+    syncTime()
+    syncPlayback()
+    if (shouldPlay) void startPlayback()
+  }
+
+  function togglePlayback() {
+    if (pending) {
+      generation += 1
+      pending = false
+      audio!.pause()
+      status!.textContent = '已暂停 · 随时继续'
+    } else if (audio!.paused) {
+      void startPlayback()
+    } else {
+      audio!.pause()
+    }
+  }
+
+  function renderTracks() {
+    const fragment = document.createDocumentFragment()
+    tracks.forEach((track, index) => {
+      const card = element('article', 'song-card')
+      const button = element('button', 'song-cover-button') as HTMLButtonElement
+      button.type = 'button'
+      const cover = element('img', '') as HTMLImageElement
+      cover.src = track.coverUrl
+      cover.alt = `${track.songName} 专辑封面`
+      cover.width = 400
+      cover.height = 360
+      cover.loading = 'lazy'
+      const category = element(
+        'span',
+        'song-category',
+        contexts[index].category
+      )
+      const control = element('span', 'song-play')
+      control.append(icon('play'))
+      button.append(cover, category, control)
+      button.addEventListener('click', () =>
+        index === current ? togglePlayback() : chooseTrack(index, true)
+      )
+      const meta = element('div', 'song-meta')
+      meta.append(
+        element('h3', '', track.songName),
+        element('p', '', track.artistName)
+      )
+      card.append(
+        button,
+        meta,
+        element('p', 'song-caption', contexts[index].caption)
+      )
+      fragment.append(card)
+    })
+    grid!.replaceChildren(fragment)
+    grid!.setAttribute('aria-busy', 'false')
+  }
+
+  listen(play, 'click', togglePlayback)
+  listen(heroListen, 'click', togglePlayback)
+  listen(document.getElementById('next')!, 'click', () =>
+    chooseTrack(current + 1, !audio.paused || pending)
+  )
+  listen(document.getElementById('previous')!, 'click', () =>
+    chooseTrack(current - 1, !audio.paused || pending)
+  )
+  listen(document.getElementById('mute')!, 'click', (event) => {
+    audio.muted = !audio.muted
+    const target = event.currentTarget as HTMLElement
+    target.setAttribute('aria-pressed', String(audio.muted))
+    target.setAttribute('aria-label', audio.muted ? '取消静音' : '静音')
+  })
+  listen(seek, 'input', () => {
+    if (Number.isFinite(audio.duration))
+      audio.currentTime = (Number(seek.value) / 100) * audio.duration
+    syncTime()
+  })
+  listen(audio, 'loadedmetadata', syncTime)
+  listen(audio, 'durationchange', syncTime)
+  listen(audio, 'timeupdate', syncTime)
+  listen(audio, 'play', syncPlayback)
+  listen(audio, 'playing', () => {
+    status.textContent = '正在播放 · 享受这一首'
+  })
+  listen(audio, 'pause', () => {
+    syncPlayback()
+    status.textContent = '已暂停 · 随时继续'
+  })
+  listen(audio, 'ended', () => {
+    syncPlayback()
+    status.textContent = '这首听完了 · 试试下一首'
+  })
+  listen(audio, 'waiting', () => {
+    if (!audio.paused) status.textContent = '正在缓冲…'
+  })
+  listen(audio, 'error', () => {
+    status.textContent = '音频暂时不可用，请重试或切换歌曲'
+    syncPlayback()
+  })
+
+  // 游客模式：先体验再登录
+  document.querySelectorAll<HTMLElement>('[data-explore]').forEach((link) => {
+    listen(link, 'click', () => {
+      try {
+        sessionStorage.setItem('vibe-music-guest-mode', 'true')
+      } catch {
+        window.location.assign('/login')
+      }
+    })
+  })
+
+  renderTracks()
+  chooseTrack(0)
+  play.disabled = false
+  heroListen.disabled = false
+  const nextBtn = document.getElementById('next') as HTMLButtonElement | null
+  const prevBtn = document.getElementById('previous') as HTMLButtonElement | null
+  if (nextBtn) nextBtn.disabled = false
+  if (prevBtn) prevBtn.disabled = false
+
+  // 离开页面时停止播放，避免后台继续出声
+  disposers.push(() => {
+    audio.pause()
+    audio.removeAttribute('src')
+  })
+}
+
+/* ------------------------------------------------------------------ *
+ * AI 场景示例
+ * ------------------------------------------------------------------ */
+function setupScenarios() {
+  document.querySelectorAll<HTMLElement>('[data-scenario]').forEach((button) => {
+    listen(button, 'click', () => {
+      const scenario = scenarios[button.dataset.scenario as ScenarioKey]
+      if (!scenario) return
+      document
+        .querySelectorAll<HTMLElement>('[data-scenario]')
+        .forEach((item) => {
+          item.classList.toggle('active', item === button)
+          item.setAttribute('aria-pressed', String(item === button))
+        })
+      for (const field of [
+        'question',
+        'answer',
+        'title',
+        'style',
+        'reason',
+      ] as const) {
+        const el = document.getElementById(`scenario-${field}`)
+        if (el) el.textContent = scenario[field]
+      }
+      const art = document.getElementById('scenario-art')
+      if (art) {
+        art.style.background = scenario.color
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+        svg.setAttribute('class', 'icon')
+        svg.setAttribute('aria-hidden', 'true')
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use')
+        use.setAttribute('href', `#i-${scenario.icon}`)
+        svg.append(use)
+        art.replaceChildren(svg)
+      }
+    })
+  })
+}
+
+/* ------------------------------------------------------------------ *
+ * 背景声波动效
+ * ------------------------------------------------------------------ */
+function setupAmbient() {
+  const canvas = document.getElementById('ambient-canvas') as HTMLCanvasElement | null
+  const toggle = document.getElementById('motion-toggle') as HTMLButtonElement | null
+  const label = document.getElementById('motion-label')
+  const audio = document.getElementById('audio')
+  const context = canvas?.getContext('2d', { alpha: true })
+  if (!canvas || !context || !toggle || !label) return
+
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+  const coarsePointer = window.matchMedia('(pointer: coarse)')
+  const storageKey = 'vibe-music-motion'
+  let preference = true
+  try {
+    preference = sessionStorage.getItem(storageKey) !== 'off'
+  } catch {
+    // 浏览器存储不可用时动效仍可用。
+  }
+
+  let width = 1
+  let height = 1
+  let scale = 1
+  let compact = false
+  let enabled = false
+  let disposed = false
+  let frame = 0
+  let lastFrame = 0
+  let clock = 0
+  let phase = 0
+  let energy = 0
+  let playing = false
+  let backgroundGradient: CanvasGradient
+  let lineGradients: CanvasGradient[] = []
+  const ripples: Array<{ x: number; y: number; started: number }> = []
+  const pointer = {
+    x: 0,
+    y: 0,
+    targetX: 0,
+    targetY: 0,
+    strength: 0,
+    active: false,
+  }
+  const frameInterval = 1000 / 30
+  const blockers =
+    'a,button,input,select,textarea,summary,[role="button"],[contenteditable],.music-player,.conversation,.ai-float,.song-card'
+
+  function resize() {
+    width = Math.max(1, window.innerWidth)
+    height = Math.max(1, window.innerHeight)
+    compact = width < 720 || coarsePointer.matches
+    // 限制高分屏上的后备缓冲尺寸。
+    scale = Math.min(
+      window.devicePixelRatio || 1,
+      compact ? 1.25 : 1.5,
+      Math.sqrt(3000000 / (width * height))
+    )
+    canvas!.width = Math.max(1, Math.round(width * scale))
+    canvas!.height = Math.max(1, Math.round(height * scale))
+    context!.setTransform(scale, 0, 0, scale, 0, 0)
+    pointer.x = pointer.targetX = width * 0.68
+    pointer.y = pointer.targetY = height * 0.38
+    pointer.active = false
+    pointer.strength = 0
+    ripples.length = 0
+
+    backgroundGradient = context!.createRadialGradient(
+      width * 0.79,
+      height * 0.36,
+      0,
+      width * 0.79,
+      height * 0.36,
+      Math.max(width * 0.65, height * 0.7)
+    )
+    backgroundGradient.addColorStop(0, 'rgba(119, 87, 194, 0.14)')
+    backgroundGradient.addColorStop(0.55, 'rgba(69, 119, 170, 0.055)')
+    backgroundGradient.addColorStop(1, 'rgba(60, 96, 145, 0)')
+    lineGradients = [
+      ['183, 151, 250', '114, 189, 228'],
+      ['119, 185, 221', '192, 149, 238'],
+    ].map(([left, right]) => {
+      const gradient = context!.createLinearGradient(0, 0, width, 0)
+      gradient.addColorStop(0, `rgba(${left}, 0.68)`)
+      gradient.addColorStop(0.2, `rgba(${left}, 0.4)`)
+      gradient.addColorStop(0.43, `rgba(${left}, 0.18)`)
+      gradient.addColorStop(0.67, `rgba(${right}, 0.25)`)
+      gradient.addColorStop(1, `rgba(${right}, 0.68)`)
+      return gradient
+    })
+    render()
+  }
+
+  function waveY(x: number, strand: number, band: number) {
+    const t = x / width
+    const base = height * (band === 0 ? 0.34 : 0.84)
+    const amplitude = (compact ? 45 : 80) * (1 + energy * 0.3)
+    const drift =
+      Math.sin(t * Math.PI * 2.1 + phase * 0.6 + band * 2.3) * amplitude
+    const detail =
+      Math.sin(t * Math.PI * 4.4 - phase * 0.45 + strand * 0.12) *
+      amplitude *
+      0.3
+    const slope = (t - 0.5) * height * (band === 0 ? -0.31 : 0.19)
+    const offset = strand * (compact ? 9 : 12)
+    const y = base + drift + detail + slope + offset
+    const dx = x - pointer.x
+    const dy = y - pointer.y
+    const attraction = Math.exp(-(dx * dx + dy * dy) / 90000) * pointer.strength
+    return y + (pointer.y - y) * attraction * 0.4
+  }
+
+  function render() {
+    context!.clearRect(0, 0, width, height)
+    context!.globalAlpha = 1
+    context!.fillStyle = backgroundGradient
+    context!.fillRect(0, 0, width, height)
+
+    const strands = compact ? 4 : 6
+    const step = compact ? 20 : 18
+    for (let band = 0; band < 2; band += 1) {
+      context!.strokeStyle = lineGradients[band]
+      for (let strand = 0; strand < strands; strand += 1) {
+        const leading = strand === 1 || strand === strands - 1
+        const opacity = Math.min(
+          1,
+          (leading ? 0.95 : 0.56 + (strand / strands) * 0.24) *
+            (1 + energy * 0.1)
+        )
+        context!.beginPath()
+        context!.moveTo(0, waveY(0, strand, band))
+        for (let x = step; x < width; x += step)
+          context!.lineTo(x, waveY(x, strand, band))
+        context!.lineTo(width, waveY(width, strand, band))
+        if (leading) {
+          context!.lineWidth = compact ? 5 : 7
+          context!.globalAlpha = opacity * 0.14
+          context!.stroke()
+        }
+        context!.lineWidth = leading ? (compact ? 1.6 : 2) : 1.1
+        context!.globalAlpha = opacity
+        context!.stroke()
+      }
+      // 少量移动高光，让线条读起来像声音，而不是粒子场。
+      const highlights = compact ? 2 : 4
+      context!.fillStyle = band === 0 ? '#ddc7ff' : '#b8e2f5'
+      for (let i = 0; i < highlights; i += 1) {
+        const strand = i % strands
+        const x = ((i / highlights + band * 0.17 + phase * 0.033) % 1) * width
+        const edge = Math.abs(x / width - 0.5) * 2
+        context!.globalAlpha = 0.28 + edge * 0.4
+        context!.beginPath()
+        context!.arc(
+          x,
+          waveY(x, strand, band),
+          compact ? 1.6 : 2,
+          0,
+          Math.PI * 2
+        )
+        context!.fill()
+      }
+    }
+
+    if (pointer.strength > 0.015) {
+      const radius = compact ? 180 : 290
+      const glow = context!.createRadialGradient(
+        pointer.x,
+        pointer.y,
+        0,
+        pointer.x,
+        pointer.y,
+        radius
+      )
+      glow.addColorStop(0, 'rgba(162, 124, 228, 0.28)')
+      glow.addColorStop(0.45, 'rgba(116, 141, 211, 0.11)')
+      glow.addColorStop(1, 'rgba(108, 112, 189, 0)')
+      context!.globalAlpha = pointer.strength
+      context!.fillStyle = glow
+      context!.fillRect(
+        pointer.x - radius,
+        pointer.y - radius,
+        radius * 2,
+        radius * 2
+      )
+    }
+
+    for (let i = ripples.length - 1; i >= 0; i -= 1) {
+      const ripple = ripples[i]
+      const progress = (clock - ripple.started) / 1800
+      if (progress >= 1) {
+        ripples.splice(i, 1)
+        continue
+      }
+      const radius = 12 + (1 - Math.pow(1 - progress, 2)) * (compact ? 160 : 260)
+      const fade = Math.pow(1 - progress, 1.35)
+      context!.strokeStyle = '#d5b8ff'
+      context!.lineWidth = compact ? 1.5 : 2
+      context!.globalAlpha = fade * 0.72
+      context!.beginPath()
+      context!.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2)
+      context!.stroke()
+      context!.lineWidth = 1.2
+      context!.globalAlpha = fade * 0.32
+      context!.beginPath()
+      context!.arc(ripple.x, ripple.y, radius * 0.72, 0, Math.PI * 2)
+      context!.stroke()
+    }
+    context!.globalAlpha = 1
+  }
+
+  function tick(now: number) {
+    frame = 0
+    if (!enabled || document.hidden || disposed) return
+    if (!lastFrame) lastFrame = now - frameInterval
+    const elapsed = now - lastFrame
+    if (elapsed >= frameInterval - 0.5) {
+      const delta = Math.min(elapsed, 75)
+      lastFrame = now
+      clock += delta
+      energy += ((playing ? 1 : 0) - energy) * 0.04
+      phase += delta * (0.00032 + energy * 0.00011)
+      pointer.x += (pointer.targetX - pointer.x) * 0.12
+      pointer.y += (pointer.targetY - pointer.y) * 0.12
+      pointer.strength += ((pointer.active ? 1 : 0) - pointer.strength) * 0.08
+      render()
+    }
+    frame = requestAnimationFrame(tick)
+  }
+
+  function stop() {
+    if (frame) cancelAnimationFrame(frame)
+    frame = 0
+    lastFrame = 0
+  }
+
+  function resume() {
+    if (!frame && enabled && !document.hidden && !disposed)
+      frame = requestAnimationFrame(tick)
+  }
+
+  function updatePreference() {
+    enabled = preference && !reducedMotion.matches
+    toggle!.disabled = reducedMotion.matches
+    toggle!.setAttribute('aria-pressed', String(enabled))
+    toggle!.setAttribute(
+      'aria-label',
+      reducedMotion.matches
+        ? '背景已静止，遵循系统减少动态效果设置'
+        : enabled
+          ? '暂停背景动效'
+          : '开启背景动效'
+    )
+    label!.textContent = reducedMotion.matches
+      ? '系统已减少动态'
+      : enabled
+        ? '背景动效：开'
+        : '背景动效：关'
+    toggle!.title = reducedMotion.matches
+      ? '已遵循系统的减少动态效果设置'
+      : enabled
+        ? '暂停流动声波、鼠标光晕与点击涟漪'
+        : '开启流动声波、鼠标光晕与点击涟漪'
+    if (enabled) resume()
+    else {
+      stop()
+      pointer.active = false
+      pointer.strength = 0
+      ripples.length = 0
+      render()
+    }
+  }
+
+  listen(
+    window,
+    'pointermove',
+    (event) => {
+      const pointerEvent = event as PointerEvent
+      if (!enabled || pointerEvent.pointerType === 'touch') return
+      pointer.targetX = pointerEvent.clientX
+      pointer.targetY = pointerEvent.clientY
+      pointer.active = true
+    },
+    { passive: true }
+  )
+  listen(document.documentElement, 'pointerleave', () => {
+    pointer.active = false
+  })
+  listen(window, 'blur', () => {
+    pointer.active = false
+  })
+  listen(
+    window,
+    'click',
+    (event) => {
+      const mouseEvent = event as MouseEvent
+      if (
+        !enabled ||
+        mouseEvent.detail === 0 ||
+        !(mouseEvent.target instanceof Element) ||
+        mouseEvent.target.closest(blockers) ||
+        window.getSelection()?.toString()
+      )
+        return
+      if (ripples.length >= 5) ripples.shift()
+      ripples.push({
+        x: mouseEvent.clientX,
+        y: mouseEvent.clientY,
+        started: clock,
+      })
+    },
+    { passive: true }
+  )
+  listen(toggle, 'click', () => {
+    if (reducedMotion.matches) return
+    preference = !preference
+    try {
+      sessionStorage.setItem(storageKey, preference ? 'on' : 'off')
+    } catch {
+      /* 仅本次会话生效。 */
+    }
+    updatePreference()
+  })
+  listen(window, 'resize', resize, { passive: true })
+  listen(coarsePointer, 'change', resize)
+  listen(reducedMotion, 'change', updatePreference)
+  listen(document, 'visibilitychange', () => {
+    if (document.hidden) stop()
+    else resume()
+  })
+  listen(window, 'pagehide', () => {
+    disposed = true
+    stop()
+  })
+  listen(window, 'pageshow', () => {
+    disposed = false
+    resume()
+  })
+  if (audio) {
+    listen(audio, 'playing', () => {
+      playing = true
+    })
+    for (const event of ['pause', 'ended', 'waiting', 'emptied', 'error'])
+      listen(audio, event, () => {
+        playing = false
+      })
+  }
+
+  resize()
+  toggle.hidden = false
+  updatePreference()
+
+  disposers.push(() => {
+    disposed = true
+    stop()
+    ripples.length = 0
+  })
+}
 </script>
 
 <template>
-  <main ref="landingRoot" class="landing-page">
-    <nav
-      class="landing-nav"
-      :class="{ 'landing-nav--scrolled': navScrolled }"
-      aria-label="主导航"
-    >
-      <button
-        class="brand"
-        type="button"
-        aria-label="回到首页"
-        @click="scrollTo('hero')"
-      >
-        <span class="brand__mark">♪</span>
-        <span>Vibe Music</span>
-      </button>
-      <div class="nav-links">
-        <button
-          v-for="item in navItems"
-          :key="item.target"
-          type="button"
-          @click="scrollTo(item.target)"
+  <div class="landing-page">
+    <canvas id="ambient-canvas" aria-hidden="true"></canvas>
+    <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <symbol id="i-play" viewBox="0 0 24 24">
+          <path d="m9 5 11 7-11 7Z" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24">
+          <path d="M8 5v14M16 5v14" stroke-width="4" />
+        </symbol>
+        <symbol id="i-next" viewBox="0 0 24 24">
+          <path d="m5 6 10 6-10 6Z" fill="currentColor" stroke="none" />
+          <path d="M19 6v12" />
+        </symbol>
+        <symbol id="i-prev" viewBox="0 0 24 24">
+          <path d="m19 6-10 6 10 6Z" fill="currentColor" stroke="none" />
+          <path d="M5 6v12" />
+        </symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M4 12h15m-6-6 6 6-6 6" />
+        </symbol>
+        <symbol id="i-down" viewBox="0 0 24 24">
+          <path d="m6 9 6 6 6-6" />
+        </symbol>
+        <symbol id="i-heart" viewBox="0 0 24 24">
+          <path
+            d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.4a5.5 5.5 0 0 0 0-7.8Z"
+          />
+        </symbol>
+        <symbol id="i-spark" viewBox="0 0 24 24">
+          <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" />
+          <path
+            d="m20 2 .5 1.5L22 4l-1.5.5L20 6l-.5-1.5L18 4l1.5-.5Z"
+            fill="currentColor"
+            stroke="none"
+          />
+        </symbol>
+        <symbol id="i-headphones" viewBox="0 0 24 24">
+          <path d="M4 14v-3a8 8 0 0 1 16 0v3" />
+          <rect x="3" y="12" width="5" height="9" rx="2" />
+          <rect x="16" y="12" width="5" height="9" rx="2" />
+        </symbol>
+        <symbol id="i-volume" viewBox="0 0 24 24">
+          <path
+            d="m11 4-6 5H2v6h3l6 5Zm5 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"
+          />
+        </symbol>
+        <symbol id="i-list" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h10M4 18h10m4-5 4 3-4 3Z" />
+        </symbol>
+        <symbol id="i-disc" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <circle cx="12" cy="12" r="2" />
+          <path d="M12 6a6 6 0 0 1 6 6" />
+        </symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24">
+          <path d="M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10Z" />
+        </symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"
+          />
+        </symbol>
+        <symbol id="i-book" viewBox="0 0 24 24">
+          <path
+            d="M12 5v15M12 5C8 2 4 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-2-1-6-2-10 1Z"
+          />
+        </symbol>
+        <symbol id="i-logo" viewBox="0 0 32 32">
+          <path
+            d="M5 13v6m5-12v18m6-21v24m6-19v14m5-10v6"
+            stroke-width="3.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+      </defs>
+    </svg>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top" aria-label="Vibe Music 首页"
+          ><span class="brand-mark"
+            ><svg class="icon"><use href="#i-logo" /></svg></span
+          >Vibe Music<span class="brand-period">.</span></a
         >
-          {{ item.label }}
-        </button>
-      </div>
-      <button class="nav-cta" type="button" @click="enter">
-        立即体验 <span>↗</span>
-      </button>
-    </nav>
-
-    <section id="hero" class="hero section-shell">
-      <div class="hero__aurora hero__aurora--violet" aria-hidden="true"></div>
-      <div class="hero__aurora hero__aurora--blue" aria-hidden="true"></div>
-      <span class="note note--one" aria-hidden="true">♪</span
-      ><span class="note note--two" aria-hidden="true">♫</span
-      ><span class="note note--three" aria-hidden="true">·</span>
-      <div class="hero__copy">
-        <div class="eyebrow hero__eyebrow">
-          <span class="eyebrow__dot"></span> AI POWERED MUSIC EXPERIENCE
-        </div>
-        <h1>Vibe Music<span class="hero__title-accent">.</span></h1>
-        <p class="hero__lead">
-          让 AI 帮你发现<br class="desktop-break" />更好的音乐
-        </p>
-        <p class="hero__description">
-          不止是推荐。Vibe Music
-          通过自然语言理解你的每一种心情、场景与灵感，帮你遇见下一首会喜欢的歌。
-        </p>
-        <div class="hero__actions">
-          <button class="button button--primary" type="button" @click="enter">
-            立即体验 <span>→</span>
-          </button>
-          <button
-            class="button button--ghost"
-            type="button"
-            @click="scrollTo('features')"
-          >
-            了解更多 <span>↓</span>
-          </button>
-        </div>
-        <div class="hero__meta">
-          <span class="avatar-stack"><i></i><i></i><i></i></span
-          ><span>与 10,000+ 位音乐爱好者一起探索</span>
+        <nav class="main-nav" aria-label="主导航">
+          <a href="#discover">发现音乐</a><a href="#ai">AI 音乐助手</a
+          ><a href="#collection">我的音乐生活</a>
+        </nav>
+        <div class="header-actions">
+          <a class="login-link" href="/login">登录 / 注册</a
+          ><a class="button button-small button-outline" href="/" data-explore
+            >进入音乐<svg class="icon"><use href="#i-arrow" /></svg
+          ></a>
         </div>
       </div>
-
-      <div
-        ref="visual"
-        class="hero-visual"
-        @pointermove="handlePointer"
-        @pointerleave="resetPointer"
-      >
-        <div class="visual-shadow" aria-hidden="true"></div>
-        <div class="music-window">
-          <div class="window-topbar">
-            <span class="window-dots"><i></i><i></i><i></i></span
-            ><span class="window-title">VIBE MUSIC</span
-            ><span class="window-action">•••</span>
+    </header>
+    <main id="main">
+      <section class="hero shell" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="hero-kicker">
+            <span class="tiny-wave" aria-hidden="true"
+              ><i></i><i></i><i></i><i></i></span
+            >每一种心情，都有它的旋律
+          </p>
+          <h1 id="hero-title">让音乐，<br />贴近此刻的你。</h1>
+          <p class="hero-description">
+            发现下一首喜欢的歌，<br />也可以和 AI 聊聊，找到适合当下的声音。
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="/" data-explore
+              >探索音乐<svg class="icon"><use href="#i-arrow" /></svg></a
+            ><button class="button button-text" id="hero-listen" type="button">
+              <svg class="icon"><use href="#i-play" /></svg
+              ><span>先听一首</span>
+            </button>
           </div>
-          <div class="music-window__body">
-            <aside class="mock-sidebar">
-              <div class="mock-brand"><span>♪</span> vibe</div>
-              <div class="mock-nav mock-nav--active">◫ <span>首页</span></div>
-              <div class="mock-nav">⌕ <span>发现</span></div>
-              <div class="mock-nav">♡ <span>我的音乐</span></div>
-              <div class="mock-nav">＋ <span>创建歌单</span></div>
-              <div class="mock-sidebar__label">你的歌单</div>
-              <div class="mock-playlist">
-                <i></i><span>Late Night Focus</span>
-              </div>
-              <div class="mock-playlist">
-                <i></i><span>Sunday Morning</span>
-              </div>
-            </aside>
-            <div class="mock-content">
-              <div class="mock-search">
-                <span>⌕</span> 搜索你想听的音乐 <kbd>⌘ K</kbd>
-              </div>
-              <div class="mock-hero-card">
-                <div>
-                  <small>为今天的你</small
-                  ><strong>Find your<br /><em>next vibe.</em></strong
-                  ><span>基于你的聆听习惯，为你挑选</span>
+          <p class="hero-footnote">
+            <svg class="icon"><use href="#i-headphones" /></svg
+            >无需登录，先从一首歌开始
+          </p>
+        </div>
+        <div class="hero-stage">
+          <div class="stage-aura" aria-hidden="true"></div>
+          <section class="music-player" aria-label="音乐试听播放器" id="player">
+            <div class="player-top">
+              <span class="mini-brand"
+                ><svg class="icon"><use href="#i-logo" /></svg>Vibe Music</span
+              ><span class="player-top-label">此刻想听</span
+              ><span class="live-dot" title="本地曲库"></span>
+            </div>
+            <div class="player-body">
+              <div class="album-layout">
+                <div class="album-art">
+                  <img
+                    id="current-cover"
+                    :src="tracks[0].coverUrl"
+                    :alt="`${tracks[0].songName} 专辑封面`"
+                    fetchpriority="high"
+                    width="220"
+                    height="220"
+                  /><span class="cover-shine" aria-hidden="true"></span>
                 </div>
-                <div class="mock-orbit">
-                  <div class="orbit-ring"></div>
-                  <div class="orbit-disc">♪</div>
+                <div class="track-info">
+                  <span class="track-context">{{ contexts[0].context }}</span>
+                  <h2 id="current-title">{{ tracks[0].songName }}</h2>
+                  <p id="current-artist">{{ tracks[0].artistName }}</p>
+                  <span class="track-tag" id="current-tag">{{
+                    contexts[0].tag
+                  }}</span
+                  ><a class="save-track" href="/login"
+                    ><svg class="icon"><use href="#i-heart" /></svg
+                    >登录后收藏</a
+                  >
                 </div>
               </div>
-              <div class="mock-section-head">
-                <strong>为你推荐</strong><span>查看全部 →</span>
-              </div>
-              <div class="track-grid">
-                <div
-                  v-for="(track, index) in [
-                    'Midnight City',
-                    'Space Song',
-                    'Afterglow',
-                    'Bloom',
-                  ]"
-                  :key="track"
-                  class="track-card"
-                >
-                  <div class="track-cover" :class="`track-cover--${index + 1}`">
-                    <span>{{ ['M', 'S', 'A', 'B'][index] }}</span>
+              <div class="playback">
+                <label class="sr-only" for="seek">播放进度</label
+                ><input
+                  id="seek"
+                  class="seek"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value="0"
+                  step="0.1"
+                  disabled
+                  aria-valuetext="尚未播放"
+                />
+                <div class="time-row">
+                  <span id="elapsed">0:00</span><span id="duration">—:—</span>
+                </div>
+                <div class="transport">
+                  <button
+                    class="icon-button volume-toggle"
+                    id="mute"
+                    type="button"
+                    aria-label="静音"
+                    aria-pressed="false"
+                  >
+                    <svg class="icon"><use href="#i-volume" /></svg>
+                  </button>
+                  <div class="transport-main">
+                    <button
+                      class="icon-button"
+                      id="previous"
+                      type="button"
+                      aria-label="上一首"
+                      disabled
+                    >
+                      <svg class="icon"><use href="#i-prev" /></svg></button
+                    ><button
+                      class="play-button"
+                      id="play"
+                      type="button"
+                      :aria-label="`播放 ${tracks[0].songName}`"
+                      disabled
+                    >
+                      <svg class="icon"><use href="#i-play" /></svg></button
+                    ><button
+                      class="icon-button"
+                      id="next"
+                      type="button"
+                      aria-label="下一首"
+                      disabled
+                    >
+                      <svg class="icon"><use href="#i-next" /></svg>
+                    </button>
                   </div>
-                  <strong>{{ track }}</strong
-                  ><small>{{
-                    ['M83', 'Beach House', 'Ed Sheeran', 'Odesza'][index]
-                  }}</small>
+                  <a
+                    class="icon-button queue-link"
+                    href="#discover"
+                    aria-label="浏览更多歌曲"
+                    ><svg class="icon"><use href="#i-list" /></svg
+                  ></a>
                 </div>
               </div>
-              <div class="mock-player">
-                <button
-                  type="button"
-                  :aria-label="isPlaying ? '暂停播放' : '开始播放'"
-                  @click="togglePlaying"
-                >
-                  {{ isPlaying ? 'Ⅱ' : '▶' }}
-                </button>
-                <div class="player-track">
-                  <strong>Midnight City</strong><span>M83</span>
-                </div>
-                <div class="player-progress">
-                  <i :style="{ width: `${progress}%` }"></i>
-                </div>
-                <span class="player-time">1:42 / 4:03</span
-                ><span class="player-volume">⌁</span>
+              <div class="player-bottom">
+                <span class="equalizer" aria-hidden="true"
+                  ><i></i><i></i><i></i><i></i></span
+                ><span id="player-status" role="status">正在准备音乐…</span
+                ><span class="quality-label">在这里，听见喜欢</span>
               </div>
             </div>
-          </div>
+          </section>
+          <aside class="ai-float" aria-label="AI 推荐对话示例">
+            <div class="ai-float-heading">
+              <span class="spark-box"
+                ><svg class="icon"><use href="#i-spark" /></svg></span
+              ><strong>你的 AI 音乐搭子</strong
+              ><span class="example-label">对话示例</span>
+            </div>
+            <p class="sample-question">“想听点轻快的，给今天充充电。”</p>
+            <p class="sample-answer">
+              试试 Dua Lipa，让明快的节奏<br
+                class="float-break"
+              />陪你进入好状态。
+            </p>
+            <a href="#ai"
+              >看看它怎么找歌<svg class="icon"><use href="#i-arrow" /></svg
+            ></a>
+          </aside>
         </div>
-        <div class="ai-chat">
-          <div class="ai-chat__head">
-            <span class="ai-avatar">✦</span>
-            <div>
-              <strong>AI 音乐助手</strong><span>在线 · 随时为你推荐</span>
-            </div>
-            <span class="ai-chat__more">•••</span>
+      </section>
+      <section
+        class="discover shell"
+        id="discover"
+        aria-labelledby="discover-title"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-label">发现音乐</p>
+            <h2 id="discover-title">下一首，或许就会喜欢。</h2>
+            <p>从一首歌出发，遇见更多好声音。</p>
           </div>
-          <div class="ai-chat__messages">
-            <div class="chat-bubble chat-bubble--user">
-              给我推荐一些适合<br />深夜学习的音乐
-            </div>
-            <div class="chat-bubble chat-bubble--ai">
-              当然可以，我为你找到了一些<br />适合专注学习的音乐 <span>✦</span>
-            </div>
-            <small class="recommend-label">为你推荐</small>
-            <div class="recommend-item">
-              <span class="recommend-cover recommend-cover--one">R</span
-              ><span
-                ><strong>River Flows in You</strong
-                ><small>Yiruma · Piano</small></span
-              ><button type="button" aria-label="播放 River Flows in You">
-                ▶
+          <a class="text-link" href="/" data-explore
+            >浏览更多音乐<svg class="icon"><use href="#i-arrow" /></svg
+          ></a>
+        </div>
+        <div
+          class="music-grid"
+          id="music-grid"
+          aria-label="精选歌曲"
+          aria-busy="true"
+        >
+          <p class="loading-placeholder">正在载入曲库…</p>
+        </div>
+      </section>
+      <section class="ai-section" id="ai" aria-labelledby="ai-title">
+        <div class="shell ai-section-inner">
+          <div class="ai-copy">
+            <p class="section-label">
+              <svg class="icon"><use href="#i-spark" /></svg>AI 音乐助手
+            </p>
+            <h2 id="ai-title">不用知道歌名，<br />说说你现在的心情。</h2>
+            <p class="section-description">
+              想专注一会儿，还是让一天慢下来？<br />把场景告诉
+              AI，一起找到合适的音乐。
+            </p>
+            <div
+              class="scenario-buttons"
+              role="group"
+              aria-label="选择对话示例"
+            >
+              <button
+                class="scenario-button active"
+                type="button"
+                data-scenario="focus"
+                aria-pressed="true"
+              >
+                <svg class="icon"><use href="#i-book" /></svg>专注学习</button
+              ><button
+                class="scenario-button"
+                type="button"
+                data-scenario="morning"
+                aria-pressed="false"
+              >
+                <svg class="icon"><use href="#i-sun" /></svg>通勤路上</button
+              ><button
+                class="scenario-button"
+                type="button"
+                data-scenario="night"
+                aria-pressed="false"
+              >
+                <svg class="icon"><use href="#i-moon" /></svg>夜晚放松
               </button>
             </div>
-            <div class="recommend-item">
-              <span class="recommend-cover recommend-cover--two">C</span
-              ><span
-                ><strong>Clair de Lune</strong
-                ><small>Debussy · Classical</small></span
-              ><button type="button" aria-label="播放 Clair de Lune">▶</button>
+            <a class="text-link ai-login" href="/login"
+              >登录，聊聊你想听的<svg class="icon"><use href="#i-arrow" /></svg
+            ></a>
+          </div>
+          <div class="conversation" aria-label="AI 推荐场景示例">
+            <div class="conversation-header">
+              <span
+                ><span class="spark-box"
+                  ><svg class="icon"><use href="#i-spark" /></svg></span
+                ><strong>AI 音乐助手</strong></span
+              ><span class="example-label">场景示例</span>
+            </div>
+            <div
+              class="conversation-content"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <p class="user-bubble" id="scenario-question">
+                {{ scenarios.focus.question }}
+              </p>
+              <div class="assistant-message">
+                <svg class="icon"><use href="#i-spark" /></svg>
+                <div>
+                  <p id="scenario-answer">{{ scenarios.focus.answer }}</p>
+                  <div class="recommendation-note">
+                    <span class="recommendation-art" id="scenario-art"
+                      ><svg class="icon"><use href="#i-headphones" /></svg
+                    ></span>
+                    <div>
+                      <strong id="scenario-title">{{
+                        scenarios.focus.title
+                      }}</strong
+                      ><span id="scenario-style">{{
+                        scenarios.focus.style
+                      }}</span>
+                    </div>
+                  </div>
+                  <p class="assistant-reason" id="scenario-reason">
+                    {{ scenarios.focus.reason }}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <a class="chat-entry" href="/login"
+              ><span>描述你的心情，开始一次音乐对话</span
+              ><span class="chat-send"
+                ><svg class="icon"><use href="#i-arrow" /></svg></span
+            ></a>
+          </div>
+        </div>
+      </section>
+      <section
+        class="collection shell"
+        id="collection"
+        aria-labelledby="collection-title"
+      >
+        <div class="collection-intro">
+          <p class="section-label">我的音乐生活</p>
+          <h2 id="collection-title">喜欢的声音，<br />值得再听一遍。</h2>
+          <p class="section-description">
+            把偶然听到的喜欢，<br />变成随时都能回来的地方。
+          </p>
+        </div>
+        <div class="collection-features">
+          <article class="collection-feature">
+            <span class="feature-symbol"
+              ><svg class="icon"><use href="#i-heart" /></svg
+            ></span>
+            <div>
+              <h3>收藏每一次心动</h3>
+              <p>喜欢的歌曲，收进自己的音乐收藏。</p>
+            </div>
+          </article>
+          <article class="collection-feature">
+            <span class="feature-symbol"
+              ><svg class="icon"><use href="#i-list" /></svg
+            ></span>
+            <div>
+              <h3>让歌单装下日常</h3>
+              <p>为通勤、学习或放松，整理一份专属歌单。</p>
+            </div>
+          </article>
+          <article class="collection-feature">
+            <span class="feature-symbol"
+              ><svg class="icon"><use href="#i-disc" /></svg
+            ></span>
+            <div>
+              <h3>跟着旋律，发现更多</h3>
+              <p>从歌曲走进专辑，继续探索喜欢的歌手。</p>
+            </div>
+          </article>
+          <a class="text-link" href="/login"
+            >登录，建立你的音乐收藏<svg class="icon">
+              <use href="#i-arrow" /></svg
+          ></a>
+        </div>
+      </section>
+      <section class="closing shell" aria-labelledby="closing-title">
+        <div class="closing-wave" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
+          ><i></i>
+        </div>
+        <div>
+          <h2 id="closing-title">把此刻，交给音乐。</h2>
+          <p>你的下一首喜欢，就从这里开始。</p>
+        </div>
+        <a class="button button-primary" href="/" data-explore
+          >开始探索<svg class="icon"><use href="#i-arrow" /></svg
+        ></a>
+      </section>
+      <section class="about shell" id="about">
+        <details>
+          <summary>
+            <span>关于 Vibe Music</span
+            ><span class="about-summary"
+              >音乐与 AI，在这里相遇<svg class="icon">
+                <use href="#i-down" /></svg
+            ></span>
+          </summary>
+          <div class="about-content">
+            <p>
+              Vibe Music 将音乐发现、在线播放、个人歌单与 AI
+              音乐对话放在一起。AI
+              助手通过理解你的描述，调用音乐检索工具，再结合曲库信息给出回答。
+            </p>
+            <div class="architecture">
+              <div>
+                <span>使用界面</span><strong>Vue 3 · TypeScript</strong>
+              </div>
+              <div>
+                <span>音乐服务</span><strong>Spring Boot · MyBatis-Plus</strong>
+              </div>
+              <div><span>AI 对话</span><strong>LangChain4j · Qwen</strong></div>
+              <div>
+                <span>数据与媒体</span><strong>MySQL · Redis · MinIO</strong>
+              </div>
             </div>
           </div>
-          <div class="ai-chat__input">描述你的心情或场景 <span>↗</span></div>
-        </div>
-      </div>
-    </section>
-
-    <section id="features" class="features section-shell section-pad">
-      <div class="section-intro" data-reveal>
-        <div class="eyebrow">ONE PLATFORM, EVERY MOOD</div>
-        <h2>全方位的<br /><em>音乐体验</em></h2>
-        <p>
-          从发现到播放，从搜索到创作，<br />Vibe Music 为你提供完整的音乐体验。
-        </p>
-      </div>
-      <div class="feature-grid">
-        <article
-          v-for="(card, index) in featureCards"
-          :key="card.label"
-          class="feature-card"
-          :class="`feature-card--${card.accent}`"
-          data-reveal
-          :style="{ '--delay': `${index * 90}ms` }"
-        >
-          <div class="feature-card__top">
-            <span class="feature-icon">{{ card.icon }}</span
-            ><span class="feature-number">0{{ index + 1 }}</span>
-          </div>
-          <span class="feature-label">{{ card.label }}</span>
-          <h3>{{ card.title }}</h3>
-          <p>{{ card.copy }}</p>
-          <span class="feature-arrow">↗</span>
-        </article>
-      </div>
-    </section>
-
-    <section id="workflow" class="workflow section-shell section-pad">
-      <div class="workflow__heading" data-reveal>
-        <div>
-          <div class="eyebrow">BEYOND CHAT</div>
-          <h2>大模型 <em>+</em> 工具调用</h2>
-        </div>
-        <p>
-          AI 不只是聊天。Vibe Music
-          让大模型与业务系统协同工作，真正理解音乐数据并执行搜索。
-        </p>
-      </div>
-      <div class="workflow-line" data-reveal>
-        <div class="workflow-line__track"></div>
-        <div
-          v-for="(node, index) in workflowNodes"
-          :key="node.step"
-          class="workflow-node"
-          :style="{ '--delay': `${index * 100}ms` }"
-        >
-          <div class="workflow-node__head">
-            <span>{{ node.step }}</span
-            ><i>{{ node.icon }}</i>
-          </div>
-          <strong>{{ node.title }}</strong
-          ><em>{{ node.detail }}</em>
-          <p>{{ node.body }}</p>
-          <span v-if="index < workflowNodes.length - 1" class="workflow-arrow"
-            >→</span
-          >
-        </div>
-      </div>
-      <div class="workflow-note" data-reveal>
-        <span>LIVE DATA FLOW</span><i></i><i></i><i></i>
-        <p>每一次回答，都来自真实的音乐业务能力</p>
-      </div>
-    </section>
-
-    <section id="technology" class="technology section-shell section-pad">
-      <div class="technology__copy" data-reveal>
-        <div class="eyebrow">BUILT FOR YOUR VIBE</div>
-        <h2>稳定可靠的<br /><em>技术架构</em></h2>
-        <p>基于成熟的后端技术栈，构建高性能、可扩展的 AI 音乐平台。</p>
-        <div class="tech-signal">
-          <span></span><span></span><span></span
-          ><small>系统运行稳定 · 持续进化中</small>
-        </div>
-      </div>
-      <div class="tech-stack" data-reveal>
-        <div
-          v-for="(tech, index) in techStack"
-          :key="tech"
-          class="tech-chip"
-          :style="{ '--delay': `${index * 60}ms` }"
-        >
-          <span>{{ ['SB', 'MP', 'R', 'SQL', 'M', 'LC', 'Q'][index] }}</span
-          >{{ tech }}
-        </div>
-        <div class="tech-stack__orb" aria-hidden="true">
-          <div></div>
-          <span>VIBE<br />CORE</span>
-        </div>
-      </div>
-    </section>
-
-    <section id="cta" class="cta section-shell section-pad">
-      <div class="cta__aurora" aria-hidden="true"></div>
-      <div class="cta__content" data-reveal>
-        <div class="eyebrow">YOUR NEXT SONG IS WAITING</div>
-        <h2>准备好开启<br /><em>你的音乐之旅了吗？</em></h2>
-        <p>立即体验 Vibe Music，和 AI 一起发现更多好音乐。</p>
-        <button
-          class="button button--primary button--large"
-          type="button"
-          @click="enter"
-        >
-          立即体验 Vibe Music <span>↗</span>
-        </button>
-      </div>
-      <div class="cta-wave" aria-hidden="true">
-        <i
-          v-for="n in 38"
-          :key="n"
-          :style="{ height: `${16 + Math.sin(n * 0.68) * 13 + (n % 4) * 7}px` }"
-        ></i>
-      </div>
-    </section>
-
-    <footer class="landing-footer section-shell">
-      <div class="footer-brand">
-        <span class="brand__mark">♪</span>
-        <div><strong>Vibe Music</strong><small>AI 让音乐更懂你</small></div>
-      </div>
-      <div class="footer-links">
-        <button
-          v-for="item in navItems.slice(1)"
-          :key="item.target"
-          type="button"
-          @click="scrollTo(item.target)"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-      <span class="footer-copy">© 2026 Vibe Music</span>
+        </details>
+      </section>
+    </main>
+    <footer class="shell site-footer">
+      <a class="brand" href="#top"
+        ><span class="brand-mark"
+          ><svg class="icon"><use href="#i-logo" /></svg></span
+        >Vibe Music<span class="brand-period">.</span></a
+      ><span>让音乐贴近此刻。</span><small>© 2026 Vibe Music</small>
     </footer>
-  </main>
+    <button
+      class="motion-toggle"
+      id="motion-toggle"
+      type="button"
+      aria-label="暂停背景动效"
+      aria-pressed="true"
+      hidden
+    >
+      <svg class="icon" aria-hidden="true"><use href="#i-logo" /></svg>
+      <span id="motion-label">背景动效：开</span>
+      <span class="motion-indicator" aria-hidden="true"></span>
+    </button>
+    <audio id="audio" preload="metadata"></audio>
+  </div>
 </template>
-
-<style scoped>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-
-:global(html) {
-  scroll-behavior: smooth;
-}
-:global(body) {
-  margin: 0;
-  overflow-x: hidden;
-}
-
-.landing-page {
-  --bg: #060914;
-  --surface: rgba(18, 24, 46, 0.66);
-  --line: rgba(163, 177, 221, 0.18);
-  --text: #f7f8ff;
-  --muted: #9ca8c4;
-  --purple: #9b7bff;
-  --cyan: #6ce5ff;
-  position: relative;
-  overflow: hidden;
-  color: var(--text);
-  background: var(--bg);
-  font-family: Manrope, Inter, sans-serif;
-}
-.landing-page::before {
-  content: '';
-  position: fixed;
-  z-index: 0;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.17;
-  background-image: radial-gradient(
-    rgba(255, 255, 255, 0.55) 0.5px,
-    transparent 0.5px
-  );
-  background-size: 4px 4px;
-  mask-image: linear-gradient(to bottom, black, transparent 70%);
-}
-.section-shell {
-  position: relative;
-  z-index: 1;
-  width: min(1180px, calc(100% - 64px));
-  margin: 0 auto;
-}
-.section-pad {
-  padding: 150px 0;
-}
-.landing-nav {
-  position: fixed;
-  z-index: 20;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: min(1180px, calc(100% - 64px));
-  height: 74px;
-  margin: 0 auto;
-  transition: 0.3s ease;
-}
-.landing-nav::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 0 -40px;
-  opacity: 0;
-  border-bottom: 1px solid transparent;
-  background: rgba(6, 9, 20, 0.72);
-  backdrop-filter: blur(18px);
-  transition: 0.3s ease;
-}
-.landing-nav--scrolled::before {
-  opacity: 1;
-  border-color: var(--line);
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 800;
-  font-size: 16px;
-}
-.brand__mark {
-  display: grid;
-  place-items: center;
-  width: 31px;
-  height: 31px;
-  border-radius: 10px;
-  color: white;
-  background: linear-gradient(140deg, #8c6fff, #2f91fc);
-  box-shadow: 0 5px 20px rgba(117, 88, 255, 0.36);
-  font-size: 21px;
-}
-.nav-links {
-  display: flex;
-  gap: 30px;
-  margin-left: 90px;
-}
-.nav-links button,
-.footer-links button {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: color 0.2s ease;
-}
-.nav-links button:hover,
-.footer-links button:hover {
-  color: white;
-}
-.nav-cta {
-  border: 1px solid rgba(145, 125, 255, 0.4);
-  border-radius: 8px;
-  padding: 10px 15px;
-  color: white;
-  background: rgba(110, 91, 220, 0.16);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: 0.2s ease;
-}
-.nav-cta:hover {
-  border-color: var(--purple);
-  background: rgba(133, 106, 255, 0.3);
-  box-shadow: 0 0 24px rgba(128, 96, 255, 0.2);
-}
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 0.86fr) minmax(520px, 1.14fr);
-  align-items: center;
-  min-height: 800px;
-  padding-top: 110px;
-}
-.hero__aurora {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-  filter: blur(12px);
-  animation: breathe 11s ease-in-out infinite alternate;
-}
-.hero__aurora--violet {
-  width: 660px;
-  height: 660px;
-  top: 30px;
-  right: 4%;
-  background: radial-gradient(circle, rgba(82, 58, 203, 0.38), transparent 68%);
-}
-.hero__aurora--blue {
-  width: 500px;
-  height: 500px;
-  top: 300px;
-  left: -20%;
-  background: radial-gradient(
-    circle,
-    rgba(16, 146, 211, 0.16),
-    transparent 70%
-  );
-  animation-delay: -4s;
-}
-.hero__copy {
-  position: relative;
-  z-index: 2;
-  padding: 50px 0 0;
-}
-.eyebrow {
-  color: #8d9bff;
-  font-family: 'DM Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  line-height: 1.5;
-}
-.hero__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #adb5ff;
-}
-.eyebrow__dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #b59aff;
-  box-shadow: 0 0 12px #9c7aff;
-}
-h1,
-h2,
-h3,
-p {
-  margin-top: 0;
-}
-.hero h1 {
-  margin: 24px 0 8px;
-  font-size: clamp(58px, 7vw, 96px);
-  font-weight: 800;
-  letter-spacing: -0.07em;
-  line-height: 0.98;
-}
-.hero__title-accent {
-  color: #9879ff;
-}
-.hero__lead {
-  margin-bottom: 20px;
-  font-size: clamp(27px, 3.2vw, 42px);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1.14;
-}
-.hero__description {
-  max-width: 410px;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.85;
-}
-.hero__actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 32px;
-}
-.button {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 45px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 0 19px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: 0.25s ease;
-}
-.button span {
-  font-size: 17px;
-  line-height: 1;
-}
-.button--primary {
-  color: white;
-  background: linear-gradient(100deg, #8060ef, #4b87ef);
-  box-shadow: 0 12px 30px rgba(93, 81, 226, 0.28);
-}
-.button--primary:hover {
-  transform: translateY(-3px);
-  filter: brightness(1.12);
-  box-shadow: 0 17px 35px rgba(98, 90, 255, 0.42);
-}
-.button--ghost {
-  border-color: var(--line);
-  color: #ccd4ed;
-  background: rgba(25, 32, 59, 0.4);
-}
-.button--ghost:hover {
-  border-color: rgba(157, 135, 255, 0.55);
-  color: white;
-  background: rgba(32, 37, 74, 0.68);
-}
-.hero__meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 30px;
-  color: #74809e;
-  font-size: 10px;
-}
-.avatar-stack {
-  display: flex;
-  padding-left: 4px;
-}
-.avatar-stack i {
-  width: 17px;
-  height: 17px;
-  margin-left: -4px;
-  border: 2px solid var(--bg);
-  border-radius: 50%;
-  background: linear-gradient(130deg, #b4a1ff, #5542a4);
-}
-.avatar-stack i:nth-child(2) {
-  background: linear-gradient(130deg, #8ee6ed, #3479ae);
-}
-.avatar-stack i:nth-child(3) {
-  background: linear-gradient(130deg, #ffe0aa, #cc795f);
-}
-.note {
-  position: absolute;
-  z-index: 1;
-  color: #8e7ee8;
-  font-size: 25px;
-  opacity: 0.34;
-  animation: float 7s ease-in-out infinite;
-}
-.note--one {
-  top: 26%;
-  left: -2%;
-}
-.note--two {
-  top: 65%;
-  right: 45%;
-  animation-delay: -3s;
-  font-size: 18px;
-}
-.note--three {
-  bottom: 12%;
-  left: 42%;
-  animation-delay: -1s;
-}
-.hero-visual {
-  position: relative;
-  z-index: 2;
-  height: 555px;
-  perspective: 1200px;
-  transform: translateY(16px);
-}
-.music-window {
-  position: absolute;
-  top: 25px;
-  left: 12px;
-  width: 83%;
-  min-width: 465px;
-  height: 460px;
-  overflow: hidden;
-  border: 1px solid rgba(173, 184, 234, 0.28);
-  border-radius: 13px;
-  background: rgba(20, 27, 52, 0.82);
-  box-shadow:
-    0 40px 100px rgba(0, 0, 0, 0.4),
-    0 0 50px rgba(87, 84, 255, 0.12);
-  transform: rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg))
-    translateY(0);
-  transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
-  animation: windowFloat 8s ease-in-out infinite;
-  backdrop-filter: blur(16px);
-}
-.window-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 39px;
-  border-bottom: 1px solid rgba(166, 179, 223, 0.14);
-  padding: 0 14px;
-  color: #8995b3;
-  font-family: 'DM Mono', monospace;
-  font-size: 8px;
-  letter-spacing: 0.14em;
-}
-.window-dots {
-  display: flex;
-  gap: 4px;
-}
-.window-dots i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #506184;
-}
-.window-dots i:first-child {
-  background: #8972e8;
-}
-.window-action {
-  letter-spacing: 0.2em;
-}
-.music-window__body {
-  display: flex;
-  height: calc(100% - 39px);
-}
-.mock-sidebar {
-  width: 125px;
-  flex: none;
-  border-right: 1px solid rgba(166, 179, 223, 0.11);
-  padding: 20px 13px;
-  color: #76829f;
-  font-size: 9px;
-}
-.mock-brand {
-  margin-bottom: 27px;
-  color: #e4e9ff;
-  font-size: 12px;
-  font-weight: 800;
-}
-.mock-brand span {
-  margin-right: 6px;
-  color: #a18dff;
-  font-size: 18px;
-}
-.mock-nav {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  padding: 9px;
-  border-radius: 6px;
-  margin-bottom: 4px;
-}
-.mock-nav--active {
-  color: #d7d1ff;
-  background: linear-gradient(90deg, rgba(123, 100, 239, 0.32), transparent);
-}
-.mock-sidebar__label {
-  margin: 28px 9px 12px;
-  color: #505c79;
-  font-family: 'DM Mono', monospace;
-  font-size: 7px;
-  letter-spacing: 0.12em;
-}
-.mock-playlist {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  margin: 11px 9px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 8px;
-}
-.mock-playlist i {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  border-radius: 3px;
-  background: linear-gradient(130deg, #a887ff, #272e70);
-}
-.mock-playlist:nth-of-type(2) i {
-  background: linear-gradient(130deg, #68d6ce, #274d77);
-}
-.mock-content {
-  position: relative;
-  flex: 1;
-  padding: 20px 20px 0;
-}
-.mock-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 27px;
-  border: 1px solid rgba(159, 171, 217, 0.13);
-  border-radius: 6px;
-  padding: 0 10px;
-  color: #7f8eae;
-  background: rgba(7, 12, 30, 0.36);
-  font-size: 8px;
-}
-.mock-search span {
-  color: #9ca6ca;
-  font-size: 14px;
-}
-.mock-search kbd {
-  margin-left: auto;
-  border: 1px solid rgba(180, 189, 225, 0.15);
-  border-radius: 3px;
-  padding: 2px 4px;
-  color: #687491;
-  font: inherit;
-  font-size: 7px;
-}
-.mock-hero-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 134px;
-  overflow: hidden;
-  border-radius: 8px;
-  margin-top: 16px;
-  padding: 0 24px;
-  background: linear-gradient(110deg, #2b296c, #5a4cbd 55%, #202a5c);
-}
-.mock-hero-card small {
-  display: block;
-  margin-bottom: 6px;
-  color: #c9c8eb;
-  font-size: 8px;
-}
-.mock-hero-card strong {
-  display: block;
-  color: #fff;
-  font-size: 21px;
-  letter-spacing: -0.06em;
-  line-height: 1.03;
-}
-.mock-hero-card em {
-  color: #bcaaff;
-  font-style: normal;
-}
-.mock-hero-card span {
-  display: block;
-  margin-top: 10px;
-  color: #d0cbed;
-  font-size: 7px;
-}
-.mock-orbit {
-  position: relative;
-  width: 112px;
-  height: 112px;
-}
-.orbit-ring {
-  position: absolute;
-  inset: 4px;
-  border: 1px solid rgba(214, 203, 255, 0.25);
-  border-radius: 50%;
-  transform: rotate(26deg) scaleX(0.52);
-  box-shadow: 0 0 25px rgba(201, 188, 255, 0.22);
-}
-.orbit-disc {
-  display: grid;
-  place-items: center;
-  position: absolute;
-  inset: 21px;
-  border-radius: 50%;
-  color: #fff;
-  background: radial-gradient(
-    circle at 35% 26%,
-    #d8ceff,
-    #8270de 35%,
-    #282456 67%,
-    #151636 70%
-  );
-  box-shadow: 8px 10px 22px rgba(9, 7, 28, 0.4);
-  font-size: 30px;
-}
-.mock-section-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin: 18px 0 11px;
-}
-.mock-section-head strong {
-  font-size: 11px;
-}
-.mock-section-head span {
-  color: #8490ae;
-  font-size: 7px;
-}
-.track-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-}
-.track-card {
-  min-width: 0;
-}
-.track-cover {
-  display: grid;
-  place-items: center;
-  aspect-ratio: 1;
-  overflow: hidden;
-  border-radius: 6px;
-  color: rgba(255, 255, 255, 0.7);
-  background: linear-gradient(145deg, #8872dc, #272744);
-  font-size: 25px;
-  font-weight: 800;
-}
-.track-cover--2 {
-  background: linear-gradient(145deg, #6c9dbd, #172347);
-}
-.track-cover--3 {
-  background: linear-gradient(145deg, #d08688, #392351);
-}
-.track-cover--4 {
-  background: linear-gradient(145deg, #c8a15c, #1e4665);
-}
-.track-card strong,
-.track-card small {
-  display: block;
-  overflow: hidden;
-  margin-top: 7px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.track-card strong {
-  color: #dce2f5;
-  font-size: 8px;
-}
-.track-card small {
-  margin-top: 3px;
-  color: #77839d;
-  font-size: 7px;
-}
-.mock-player {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 42px;
-  border-top: 1px solid rgba(167, 180, 227, 0.16);
-  padding: 0 15px;
-  background: rgba(9, 14, 31, 0.85);
-}
-.mock-player button {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 50%;
-  color: #fff;
-  background: #876df6;
-  cursor: pointer;
-  font-size: 8px;
-}
-.player-track {
-  display: flex;
-  flex-direction: column;
-  width: 88px;
-}
-.player-track strong {
-  font-size: 8px;
-}
-.player-track span,
-.player-time {
-  color: #697694;
-  font-size: 7px;
-}
-.player-progress {
-  flex: 1;
-  height: 2px;
-  border-radius: 4px;
-  background: #36405f;
-}
-.player-progress i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #9c87ff;
-  animation: progress 6s linear infinite alternate;
-}
-.player-volume {
-  color: #7581a0;
-  font-size: 15px;
-}
-.ai-chat {
-  position: absolute;
-  z-index: 3;
-  top: 108px;
-  right: -13px;
-  width: 218px;
-  overflow: hidden;
-  border: 1px solid rgba(175, 186, 249, 0.35);
-  border-radius: 13px;
-  background: rgba(16, 23, 48, 0.88);
-  box-shadow:
-    0 26px 70px rgba(2, 4, 18, 0.5),
-    0 0 38px rgba(109, 90, 244, 0.2);
-  animation: chatFloat 7s ease-in-out infinite reverse;
-  backdrop-filter: blur(20px);
-}
-.ai-chat__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid rgba(166, 179, 223, 0.13);
-  padding: 12px;
-}
-.ai-avatar {
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 7px;
-  color: #fff;
-  background: linear-gradient(135deg, #9274ff, #4b7fe3);
-  font-size: 13px;
-}
-.ai-chat__head strong,
-.ai-chat__head span {
-  display: block;
-}
-.ai-chat__head strong {
-  font-size: 9px;
-}
-.ai-chat__head div span {
-  margin-top: 2px;
-  color: #74809e;
-  font-size: 7px;
-}
-.ai-chat__more {
-  margin-left: auto;
-  color: #74809e;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-}
-.ai-chat__messages {
-  padding: 13px 12px 10px;
-}
-.chat-bubble {
-  width: fit-content;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 8px;
-  line-height: 1.55;
-}
-.chat-bubble--user {
-  margin-left: auto;
-  color: #ded8ff;
-  background: rgba(112, 91, 223, 0.35);
-}
-.chat-bubble--ai {
-  margin-top: 9px;
-  color: #b5c0dc;
-  background: rgba(112, 128, 167, 0.15);
-}
-.chat-bubble--ai span {
-  color: #a692ff;
-}
-.recommend-label {
-  display: block;
-  margin: 12px 0 7px;
-  color: #6d7895;
-  font-size: 7px;
-}
-.recommend-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 7px;
-}
-.recommend-cover {
-  display: grid;
-  place-items: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 5px;
-  color: rgba(255, 255, 255, 0.8);
-  background: linear-gradient(135deg, #bd937d, #39487e);
-  font-size: 11px;
-  font-weight: 700;
-}
-.recommend-cover--two {
-  background: linear-gradient(135deg, #93aac8, #313a72);
-}
-.recommend-item > span:nth-child(2) {
-  min-width: 0;
-}
-.recommend-item strong,
-.recommend-item small {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.recommend-item strong {
-  color: #e3e7f6;
-  font-size: 8px;
-}
-.recommend-item small {
-  margin-top: 3px;
-  color: #75819c;
-  font-size: 7px;
-}
-.recommend-item button {
-  margin-left: auto;
-  border: 0;
-  color: #9c89ff;
-  background: transparent;
-  cursor: pointer;
-  font-size: 8px;
-}
-.ai-chat__input {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-top: 1px solid rgba(166, 179, 223, 0.13);
-  padding: 11px 12px;
-  color: #64708e;
-  font-size: 8px;
-}
-.ai-chat__input span {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  color: white;
-  background: #7963df;
-  font-size: 12px;
-}
-.section-intro {
-  display: flex;
-  justify-content: space-between;
-  align-items: end;
-  margin-bottom: 48px;
-}
-.section-intro h2,
-.workflow h2,
-.technology h2,
-.cta h2 {
-  margin: 15px 0 0;
-  font-size: clamp(38px, 5vw, 63px);
-  letter-spacing: -0.065em;
-  line-height: 1.03;
-}
-.section-intro h2 em,
-.workflow h2 em,
-.technology h2 em,
-.cta h2 em {
-  color: #9f87ff;
-  font-style: normal;
-}
-.section-intro p {
-  margin: 0 9% 2px 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.7;
-}
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 13px;
-}
-.feature-card {
-  position: relative;
-  min-height: 250px;
-  border: 1px solid rgba(158, 174, 224, 0.16);
-  border-radius: 13px;
-  padding: 20px;
-  background: linear-gradient(
-    145deg,
-    rgba(24, 31, 58, 0.75),
-    rgba(13, 18, 36, 0.64)
-  );
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  transition:
-    transform 0.28s ease,
-    border-color 0.28s ease,
-    box-shadow 0.28s ease;
-}
-.feature-card:hover {
-  transform: translateY(-7px);
-  border-color: rgba(154, 130, 255, 0.54);
-  box-shadow:
-    0 17px 35px rgba(3, 6, 20, 0.35),
-    0 0 26px rgba(113, 83, 255, 0.12);
-}
-.feature-card__top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.feature-icon {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  color: #bdadff;
-  background: rgba(117, 92, 238, 0.15);
-  font-size: 20px;
-  transition: transform 0.3s ease;
-}
-.feature-card:hover .feature-icon {
-  transform: scale(1.08) rotate(-5deg);
-}
-.feature-card--cyan .feature-icon {
-  color: #8be8ee;
-  background: rgba(76, 197, 219, 0.14);
-}
-.feature-card--blue .feature-icon {
-  color: #89bdff;
-  background: rgba(72, 134, 247, 0.14);
-}
-.feature-card--pink .feature-icon {
-  color: #f3a8d5;
-  background: rgba(218, 94, 177, 0.14);
-}
-.feature-number {
-  color: #526080;
-  font:
-    10px 'DM Mono',
-    monospace;
-}
-.feature-label {
-  display: block;
-  margin-top: 28px;
-  color: #8c99bb;
-  font:
-    10px 'DM Mono',
-    monospace;
-  letter-spacing: 0.04em;
-}
-.feature-card h3 {
-  margin: 9px 0 10px;
-  font-size: 17px;
-  letter-spacing: -0.04em;
-}
-.feature-card p {
-  max-width: 220px;
-  color: #8995b0;
-  font-size: 11px;
-  line-height: 1.7;
-}
-.feature-arrow {
-  position: absolute;
-  right: 20px;
-  bottom: 18px;
-  color: #a38dff;
-  font-size: 17px;
-}
-.workflow {
-  overflow: hidden;
-}
-.workflow__heading {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-}
-.workflow__heading p {
-  max-width: 350px;
-  margin-bottom: 5px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.7;
-}
-.workflow-line {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 14px;
-  position: relative;
-  margin-top: 70px;
-}
-.workflow-line__track {
-  position: absolute;
-  top: 32px;
-  left: 5%;
-  right: 5%;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(138, 112, 255, 0),
-    rgba(138, 112, 255, 0.7),
-    rgba(112, 224, 245, 0.7),
-    rgba(138, 112, 255, 0)
-  );
-  background-size: 200% 100%;
-  animation: dataFlow 4s linear infinite;
-}
-.workflow-node {
-  position: relative;
-  z-index: 1;
-  min-height: 180px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 15px;
-  background: rgba(17, 23, 44, 0.76);
-}
-.workflow-node__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 26px;
-  color: #6c7796;
-  font:
-    9px 'DM Mono',
-    monospace;
-}
-.workflow-node__head i {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid rgba(148, 128, 255, 0.36);
-  border-radius: 8px;
-  color: #b09cff;
-  background: rgba(119, 97, 230, 0.16);
-  font-size: 14px;
-  font-style: normal;
-}
-.workflow-node strong,
-.workflow-node em {
-  display: block;
-}
-.workflow-node strong {
-  font-size: 14px;
-}
-.workflow-node em {
-  margin-top: 4px;
-  color: #a28cff;
-  font:
-    10px 'DM Mono',
-    monospace;
-  font-style: normal;
-}
-.workflow-node p {
-  margin: 18px 0 0;
-  color: #7d89a6;
-  font-size: 10px;
-  line-height: 1.6;
-}
-.workflow-arrow {
-  position: absolute;
-  z-index: 2;
-  top: 25px;
-  right: -17px;
-  color: #9181ef;
-  font-size: 18px;
-  text-shadow: 0 0 12px #6c5bd5;
-  animation: arrowPulse 1.8s ease-in-out infinite;
-}
-.workflow-note {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 26px;
-  color: #687594;
-  font:
-    9px 'DM Mono',
-    monospace;
-}
-.workflow-note > span {
-  color: #76dfe4;
-  letter-spacing: 0.12em;
-}
-.workflow-note i {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #6de0e7;
-  animation: dotPulse 1.2s ease-in-out infinite;
-}
-.workflow-note i:nth-of-type(2) {
-  animation-delay: 0.25s;
-}
-.workflow-note i:nth-of-type(3) {
-  animation-delay: 0.5s;
-}
-.workflow-note p {
-  margin: 0 0 0 auto;
-  font-family: Manrope, sans-serif;
-  font-size: 11px;
-}
-.technology {
-  display: grid;
-  grid-template-columns: 0.8fr 1.2fr;
-  align-items: center;
-  gap: 90px;
-}
-.technology__copy p {
-  max-width: 330px;
-  margin-top: 25px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.8;
-}
-.tech-signal {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 32px;
-  color: #72809d;
-  font:
-    9px 'DM Mono',
-    monospace;
-}
-.tech-signal span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #60d8dc;
-  box-shadow: 0 0 10px #60d8dc;
-}
-.tech-signal small {
-  margin-left: 7px;
-  font-size: 9px;
-}
-.tech-stack {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  position: relative;
-  padding: 15px;
-}
-.tech-chip {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 55px;
-  border: 1px solid rgba(153, 168, 215, 0.16);
-  border-radius: 9px;
-  padding: 0 13px;
-  color: #c4cee6;
-  background: rgba(23, 30, 56, 0.7);
-  font-size: 11px;
-}
-.tech-chip span {
-  display: grid;
-  place-items: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 7px;
-  color: #aca2ff;
-  background: rgba(120, 98, 227, 0.15);
-  font:
-    9px 'DM Mono',
-    monospace;
-}
-.tech-chip:nth-child(2n) span {
-  color: #8edadd;
-  background: rgba(84, 188, 194, 0.13);
-}
-.tech-stack__orb {
-  display: grid;
-  place-items: center;
-  position: absolute;
-  right: 6%;
-  bottom: -34px;
-  width: 127px;
-  height: 127px;
-  border: 1px solid rgba(148, 132, 255, 0.35);
-  border-radius: 50%;
-  color: #b3a2ff;
-  background: radial-gradient(
-    circle,
-    rgba(97, 79, 214, 0.32),
-    rgba(19, 23, 55, 0.55) 65%,
-    transparent 66%
-  );
-  box-shadow: 0 0 50px rgba(103, 82, 242, 0.18);
-  font:
-    10px 'DM Mono',
-    monospace;
-  text-align: center;
-  letter-spacing: 0.12em;
-}
-.tech-stack__orb::before,
-.tech-stack__orb::after {
-  content: '';
-  position: absolute;
-  border: 1px solid rgba(140, 122, 255, 0.2);
-  border-radius: 50%;
-}
-.tech-stack__orb::before {
-  inset: 13px;
-  transform: rotate(38deg) scaleX(0.45);
-}
-.tech-stack__orb::after {
-  inset: -9px;
-  transform: rotate(-32deg) scaleX(0.4);
-}
-.tech-stack__orb div {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #74e4e9;
-  box-shadow: 0 0 13px #74e4e9;
-  top: 16px;
-  right: 20px;
-}
-.cta {
-  min-height: 560px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  border-top: 1px solid rgba(132, 146, 207, 0.1);
-  border-bottom: 1px solid rgba(132, 146, 207, 0.1);
-  text-align: center;
-}
-.cta__aurora {
-  position: absolute;
-  width: 760px;
-  height: 420px;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse,
-    rgba(87, 65, 216, 0.31),
-    transparent 66%
-  );
-  filter: blur(10px);
-}
-.cta__content {
-  position: relative;
-  z-index: 2;
-}
-.cta h2 {
-  margin-top: 17px;
-  font-size: clamp(42px, 6vw, 70px);
-}
-.cta p {
-  margin: 23px 0 28px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.button--large {
-  min-height: 50px;
-  padding: 0 24px;
-}
-.cta-wave {
-  display: flex;
-  align-items: end;
-  justify-content: center;
-  gap: 5px;
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 108px;
-  opacity: 0.42;
-  mask-image: linear-gradient(to top, black, transparent);
-}
-.cta-wave i {
-  width: 2px;
-  border-radius: 3px 3px 0 0;
-  background: linear-gradient(to top, #6d57df, #69d7df);
-  animation: wave 1.9s ease-in-out infinite alternate;
-}
-.cta-wave i:nth-child(3n) {
-  animation-delay: -0.7s;
-}
-.cta-wave i:nth-child(4n) {
-  animation-delay: -1.2s;
-}
-.landing-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 100px;
-}
-.footer-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.footer-brand strong,
-.footer-brand small {
-  display: block;
-}
-.footer-brand strong {
-  font-size: 13px;
-}
-.footer-brand small {
-  margin-top: 4px;
-  color: #71809d;
-  font-size: 9px;
-}
-.footer-links {
-  display: flex;
-  gap: 25px;
-}
-.footer-copy {
-  color: #596681;
-  font:
-    9px 'DM Mono',
-    monospace;
-}
-[data-reveal] {
-  opacity: 0;
-  transform: translateY(28px);
-  transition:
-    opacity 0.7s ease,
-    transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
-  transition-delay: var(--delay, 0ms);
-}
-.is-visible[data-reveal] {
-  opacity: 1;
-  transform: translateY(0);
-}
-@keyframes breathe {
-  from {
-    transform: translate(0, 0) scale(1);
-  }
-  to {
-    transform: translate(25px, -20px) scale(1.08);
-  }
-}
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0) rotate(-5deg);
-  }
-  50% {
-    transform: translateY(-20px) rotate(8deg);
-  }
-}
-@keyframes windowFloat {
-  0%,
-  100% {
-    transform: rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg))
-      translateY(0);
-  }
-  50% {
-    transform: rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg))
-      translateY(-8px);
-  }
-}
-@keyframes chatFloat {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-11px);
-  }
-}
-@keyframes progress {
-  from {
-    width: 38%;
-  }
-  to {
-    width: 62%;
-  }
-}
-@keyframes dataFlow {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: -100% 0;
-  }
-}
-@keyframes arrowPulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateX(0);
-  }
-  50% {
-    opacity: 1;
-    transform: translateX(4px);
-  }
-}
-@keyframes dotPulse {
-  0%,
-  100% {
-    opacity: 0.25;
-    transform: scale(0.8);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.5);
-  }
-}
-@keyframes wave {
-  from {
-    transform: scaleY(0.7);
-  }
-  to {
-    transform: scaleY(1.15);
-  }
-}
-@media (max-width: 1050px) {
-  .hero {
-    grid-template-columns: 0.9fr 1.1fr;
-  }
-  .hero-visual {
-    transform: scale(0.87) translate(30px, 10px);
-    transform-origin: center right;
-  }
-  .music-window {
-    left: 0;
-  }
-  .ai-chat {
-    right: -2px;
-  }
-  .nav-links {
-    margin-left: 20px;
-    gap: 18px;
-  }
-  .technology {
-    gap: 45px;
-  }
-}
-@media (max-width: 820px) {
-  .section-shell {
-    width: min(100% - 40px, 600px);
-  }
-  .landing-nav {
-    width: calc(100% - 40px);
-  }
-  .nav-links {
-    display: none;
-  }
-  .hero {
-    display: block;
-    min-height: auto;
-    padding: 140px 0 50px;
-  }
-  .hero__copy {
-    padding: 0;
-  }
-  .hero__description {
-    max-width: 520px;
-  }
-  .hero-visual {
-    width: 650px;
-    max-width: 100%;
-    height: 475px;
-    margin: 50px auto 0;
-    transform: scale(0.77);
-    transform-origin: top left;
-  }
-  .music-window {
-    width: 85%;
-  }
-  .ai-chat {
-    right: -4px;
-  }
-  .section-pad {
-    padding: 95px 0;
-  }
-  .section-intro,
-  .workflow__heading {
-    display: block;
-  }
-  .section-intro p,
-  .workflow__heading p {
-    margin-top: 22px;
-  }
-  .feature-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .workflow-line {
-    grid-template-columns: repeat(5, minmax(150px, 1fr));
-    width: 840px;
-  }
-  .workflow {
-    overflow-x: auto;
-  }
-  .technology {
-    grid-template-columns: 1fr;
-  }
-  .tech-stack {
-    max-width: 620px;
-  }
-  .cta {
-    min-height: 470px;
-  }
-  .landing-footer {
-    flex-wrap: wrap;
-    gap: 20px;
-    padding: 28px 0;
-  }
-}
-@media (max-width: 520px) {
-  .section-shell {
-    width: calc(100% - 36px);
-  }
-  .landing-nav {
-    width: calc(100% - 36px);
-  }
-  .brand {
-    font-size: 14px;
-  }
-  .nav-cta {
-    padding: 9px 11px;
-  }
-  .hero h1 {
-    font-size: 58px;
-  }
-  .hero__lead {
-    font-size: 30px;
-  }
-  .desktop-break {
-    display: none;
-  }
-  .hero__actions {
-    flex-wrap: wrap;
-  }
-  .hero__meta {
-    font-size: 9px;
-  }
-  .hero-visual {
-    width: 610px;
-    height: 410px;
-    margin-top: 38px;
-    transform: scale(0.59);
-  }
-  .music-window {
-    left: 0;
-  }
-  .ai-chat {
-    right: 0;
-  }
-  .feature-grid {
-    grid-template-columns: 1fr;
-  }
-  .feature-card {
-    min-height: 210px;
-  }
-  .workflow-line {
-    margin-top: 45px;
-  }
-  .workflow-note {
-    flex-wrap: wrap;
-  }
-  .workflow-note p {
-    width: 100%;
-    margin: 8px 0 0;
-  }
-  .tech-stack {
-    grid-template-columns: repeat(2, 1fr);
-    padding: 0;
-  }
-  .tech-stack__orb {
-    right: -8px;
-    bottom: -52px;
-    transform: scale(0.75);
-  }
-  .cta h2 {
-    font-size: 41px;
-  }
-  .footer-links {
-    order: 3;
-    width: 100%;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .footer-copy {
-    margin-left: auto;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  :global(html) {
-    scroll-behavior: auto;
-  }
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-  }
-  [data-reveal] {
-    opacity: 1;
-    transform: none;
-  }
-}
-</style>
