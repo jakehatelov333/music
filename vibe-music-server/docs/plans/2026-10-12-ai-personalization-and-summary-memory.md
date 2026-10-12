@@ -2,6 +2,51 @@
 
 > **REQUIRED SUB-SKILL:** 执行本方案时使用 `superpowers:executing-plans`（或 `subagent-driven-development`）。
 
+## 进度总览（截至 2026-10-12 21:10）
+
+**9 个 Task：已完成 5 · 部分完成 1 · 未开始 3。**
+测试基线：`mvn -o test` **126 条全绿** · 评测 **46/46**（零漂移）· 7 个 commit 在 `test1`（**未推远端**）。
+
+| # | 任务 | 状态 | 提交 | 备注 |
+| --- | --- | --- | --- | --- |
+| 1 | 数据库迁移脚本 + 测试基座 schema | ✅ **已完成** | `1b916c3` | 迁移已应用到本地 MySQL |
+| 2 | 画像实体 + Mapper（SQL 事实聚合） | ✅ **已完成** | `a30c2fe` | 含跨来源去重；单测覆盖 |
+| 3 | `UserMusicProfileService`（TTL + 偏好块） | ✅ **已完成** | `7510f5e` | 请求路径**零模型调用** |
+| 4 | 偏好概述异步生成（qwen-flash + 指纹缓存） | ⬜ **未开始** | — | `MusicTasteSummaryService` 尚未创建 |
+| 5 | 滚动摘要记忆（`ChatSummaryService`） | ⬜ **未开始** | — | 类尚未创建；`AgentSystemPrompt.chatId` 已为它预留 |
+| 6 | 动态系统提示词组装（`AgentSystemPrompt`） | ✅ **已完成** | `28dbf0d` | **只注入画像**，摘要槽位留给 Task 5 |
+| 7 | 接入 `AiAssistantFactory` + 4 处调用点 | ✅ **已完成** | `28dbf0d` | 评测基座注入 `StaticSystemPrompt`，基线零漂移 |
+| 8 | 会话结束后异步整理 + `GET /ai/profile` | ⬜ **未开始** | — | 画像目前**没有任何接口可查看** |
+| 9 | 配置 / 文档 / 最终验收 | 🟡 **部分完成** | `ba73d25` | 见下方「Task 9 明细」 |
+
+### 执行期间新增的任务（不在原计划内）
+
+| 任务 | 状态 | 提交 | 说明 |
+| --- | --- | --- | --- |
+| 真实端到端验证（Task 7b） | ✅ **已完成** | — | 真实 qwen-flash + 真实 MySQL，证据见文末「实施记录」 |
+| 修复：多值风格未拆分，画像输出混合串 | ✅ **已修复** | `a4363f5` | 真数据发现的缺陷，H2 夹具测不出 |
+| 修复：画像注入导致工具预算超限（503） | ✅ **已修复** | `07e6090` | 真数据发现的回归，对照实验定性 |
+
+### Task 9 明细（部分完成）
+
+| 步骤 | 状态 | 说明 |
+| --- | --- | --- |
+| Step 1 配置项 | 🟡 **部分** | `ai.max-tool-calls` 已 4→6；**`ai.profile.*` 与 `ai.summary.*` 尚未写进 `application.yml`**（目前仅靠 `@Value` 默认值兜底，可运行但不可调） |
+| Step 2 写 `docs/agent-personalization.md` | ⬜ **未开始** | 目前只有本方案文档文末的「实施记录」章节 |
+| Step 3 全量回归 + 评测 | ✅ **已完成** | 126 条全绿；评测 46/46 |
+| Step 4 真实端到端 | ✅ **已完成** | 见文末「实施记录」 |
+| Step 5 Commit | ✅ **已完成** | 7 个 commit |
+
+### 已知未解决（独立课题，不属于上述 9 个 Task）
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| `AiRunBudget` 预算耗尽时降级作答而非 503 | ⬜ **未解决** | 当前靠提示词约束 + 提高预算缓解，**根因未解** |
+| 真实模型侧批量准确率统计 | ⬜ **未解决** | 沿用既有结论，无在线评测数据 |
+| 确认成功后回写 `tb_ai_task_metric.playlist_id` | ⬜ **未解决** | 第三批遗留，与本次无关 |
+
+---
+
 **目标：** 让 AI 助手"记得住人、忘不掉事"——把用户的音乐偏好沉淀成可复用的画像并注入系统提示词，把超出窗口的历史压缩成滚动摘要，使长对话不因 20 条窗口而失忆。
 
 **架构：**
@@ -54,7 +99,7 @@
 
 ---
 
-## Task 1: 数据库迁移脚本 + 测试基座 schema
+## ✅ Task 1（已完成 · 1b916c3）: 数据库迁移脚本 + 测试基座 schema
 
 **Files:**
 
@@ -182,7 +227,7 @@ git commit -m "feat(ai): 新增用户画像表与摘要记忆列的迁移脚本"
 ---
 
 
-## Task 2: 画像实体 + Mapper（纯 SQL 事实聚合）
+## ✅ Task 2（已完成 · a30c2fe）: 画像实体 + Mapper（纯 SQL 事实聚合）
 
 **Files:**
 
@@ -462,7 +507,7 @@ git commit -m "feat(ai): 新增用户音乐画像聚合与持久化"
 ---
 
 
-## Task 3: UserMusicProfileService（TTL 刷新 + 提示词块渲染）
+## ✅ Task 3（已完成 · 7510f5e）: UserMusicProfileService（TTL 刷新 + 提示词块渲染）
 
 **Files:**
 
@@ -757,7 +802,7 @@ git commit -m "feat(ai): 用户画像 TTL 刷新与偏好块渲染"
 
 ---
 
-## Task 4: 偏好概述的异步生成（qwen-flash + 指纹缓存）
+## ⬜ Task 4（未开始）: 偏好概述的异步生成（qwen-flash + 指纹缓存）
 
 **Files:**
 
@@ -914,7 +959,7 @@ git commit -m "feat(ai): qwen-flash 生成用户偏好概述并按事实指纹�
 ---
 
 
-## Task 5: 滚动摘要记忆（ChatSummaryService）
+## ⬜ Task 5（未开始）: 滚动摘要记忆（ChatSummaryService）
 
 **Files:**
 
@@ -1257,7 +1302,7 @@ git commit -m "feat(ai): 新增滚动摘要记忆并保证 CAS 幂等"
 
 ---
 
-## Task 6: 动态系统提示词组装（AgentSystemPrompt）
+## ✅ Task 6（已完成 · 28dbf0d）: 动态系统提示词组装（AgentSystemPrompt）
 
 **Files:**
 
@@ -1452,7 +1497,7 @@ git commit -m "feat(ai): 系统提示词改为运行时组装并注入画像与�
 ---
 
 
-## Task 7: 接入 AiAssistantFactory（含 4 处调用点适配）
+## ✅ Task 7（已完成 · 28dbf0d）: 接入 AiAssistantFactory（含 4 处调用点适配）
 
 **Files:**
 
@@ -1612,7 +1657,7 @@ git commit -m "feat(ai): 助手装配接入动态系统提示词，评测基座�
 
 ---
 
-## Task 8: 会话结束后异步触发摘要 + 只读画像接口
+## ⬜ Task 8（未开始）: 会话结束后异步触发摘要 + 只读画像接口
 
 **Files:**
 
@@ -1713,7 +1758,7 @@ git commit -m "feat(ai): 会话结束后异步整理记忆与画像，新增只�
 
 ---
 
-## Task 9: 配置项、文档与最终验收
+## 🟡 Task 9（部分完成 · ba73d25）: 配置项、文档与最终验收
 
 **Files:**
 
@@ -1855,7 +1900,7 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 | 4 偏好概述（qwen-flash） | — | ⬜ 未做 |
 | 5 滚动摘要记忆 | — | ⬜ 未做 |
 | 8 异步整理 + `GET /ai/profile` | — | ⬜ 未做 |
-| 9 配置/文档/最终验收 | — | 部分（配置已加，文档见本节） |
+| 9 配置/文档/最终验收 | `ba73d25` | 🟡 回归+评测+真实端到端已完成；**`ai.profile.*`/`ai.summary.*` 配置项与 `docs/agent-personalization.md` 未做** |
 
 **测试**：`mvn -o test` **126 条全绿**；评测 **46/46**（基线零漂移）。
 
