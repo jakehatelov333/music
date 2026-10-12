@@ -294,6 +294,15 @@ public abstract class AbstractAgentTest {
 
         @Bean AgentSongQueryService songQuery(AgentSongMapper mapper) { return new AgentSongQueryService(mapper); }
 
+        @Bean cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profileService(
+                UserMusicProfileMapper mapper, ObjectMapper json) {
+            var service = new cn.edu.seig.vibemusic.service.agent.UserMusicProfileService(mapper, json);
+            // @Value 字段在纯 Java 配置里不会自动注入，这里显式给值（与 PendingActionService 同样的做法）。
+            org.springframework.test.util.ReflectionTestUtils.setField(service, "refreshTtlMinutes", 10);
+            org.springframework.test.util.ReflectionTestUtils.setField(service, "topN", 5);
+            return service;
+        }
+
         @Bean cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder metricsRecorder(AiTaskMetricMapper mapper) {
             return new cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder(mapper);
         }
