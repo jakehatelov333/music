@@ -58,9 +58,7 @@ class AgentSseProtocolTest extends AbstractAgentTest {
     void setUpMvc() {
         executor = Executors.newFixedThreadPool(2);
         timer = Executors.newSingleThreadScheduledExecutor();
-        mvc = MockMvcBuilders.standaloneSetup(new AiController(mock(cn.edu.seig.vibemusic.service.IAiService.class),
-                        new AiSessionService(mock(org.springframework.data.redis.core.StringRedisTemplate.class)),
-                        factory(), recorder, executor, timer))
+        mvc = MockMvcBuilders.standaloneSetup(controller(factory()))
                 .addFilter(new org.springframework.web.filter.CharacterEncodingFilter("UTF-8", true))
                 .setMessageConverters(
                         // 独立 MockMvc 不会装配 Boot 的 UTF-8 StringHttpMessageConverter，
@@ -77,6 +75,19 @@ class AgentSseProtocolTest extends AbstractAgentTest {
         executor.shutdownNow();
         timer.shutdownNow();
         ThreadLocalUtil.remove();
+    }
+
+    /**
+     * 构造真实控制器。记忆维护（摘要/画像）用 mock 替身：
+     * 本测试聚焦 SSE 协议，摘要与画像由 ChatSummaryServiceTest 等专项覆盖。
+     */
+    private AiController controller(AiAssistantFactory factory) {
+        return new AiController(mock(cn.edu.seig.vibemusic.service.IAiService.class),
+                new AiSessionService(mock(org.springframework.data.redis.core.StringRedisTemplate.class)),
+                factory, recorder, executor, timer,
+                mock(cn.edu.seig.vibemusic.service.agent.ChatSummaryService.class),
+                mock(cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService.class),
+                mock(cn.edu.seig.vibemusic.service.agent.UserMusicProfileService.class));
     }
 
     private AiAssistantFactory factory() {
@@ -101,9 +112,7 @@ class AgentSseProtocolTest extends AbstractAgentTest {
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 15);
         ReflectionTestUtils.setField(factory, "maxToolCalls", 4);
         ReflectionTestUtils.setField(factory, "modelName", "qwen-flash-sse");
-        mvc = MockMvcBuilders.standaloneSetup(new AiController(mock(cn.edu.seig.vibemusic.service.IAiService.class),
-                        new AiSessionService(mock(org.springframework.data.redis.core.StringRedisTemplate.class)),
-                        factory, recorder, executor, timer))
+        mvc = MockMvcBuilders.standaloneSetup(controller(factory))
                 .addFilter(new org.springframework.web.filter.CharacterEncodingFilter("UTF-8", true))
                 .setMessageConverters(
                         // 独立 MockMvc 不会装配 Boot 的 UTF-8 StringHttpMessageConverter，

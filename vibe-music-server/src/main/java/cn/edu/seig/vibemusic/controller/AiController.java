@@ -4,12 +4,16 @@ import cn.edu.seig.vibemusic.model.agent.AgentEvent;
 import cn.edu.seig.vibemusic.model.agent.AgentEventSink;
 import cn.edu.seig.vibemusic.model.dto.AiChatRequest;
 import cn.edu.seig.vibemusic.model.entity.ChatMessage;
+import cn.edu.seig.vibemusic.model.entity.UserMusicProfile;
 import cn.edu.seig.vibemusic.security.AiSessionService;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IAiService;
 import cn.edu.seig.vibemusic.service.agent.AgentFailureCategory;
 import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
 import cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder;
+import cn.edu.seig.vibemusic.service.agent.ChatSummaryService;
+import cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService;
+import cn.edu.seig.vibemusic.service.agent.UserMusicProfileService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -89,6 +93,9 @@ public class AiController {
     private final AgentMetricsRecorder metricRecorder;
     private final ExecutorService aiExecutor;
     private final ScheduledExecutorService aiTimer;
+    private final ChatSummaryService chatSummaries;
+    private final MusicTasteSummaryService tasteSummaries;
+    private final UserMusicProfileService musicProfiles;
 
     @PostMapping("/chat")
     public String chat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
@@ -118,6 +125,8 @@ public class AiController {
             metricRecorder.record(metrics);
             run.close();
             if (task != null) task.cancel(true);
+            // 放在 run.close() 之后：会话租约已释放，摘要任务读到的历史才是完整的。
+            scheduleMemoryMaintenance(chatId, PlaylistAccessService.optionalUserId());
         }
     }
 
@@ -247,7 +256,36 @@ public class AiController {
         return metricRecorder.recentForUser(PlaylistAccessService.requireUserId(), limit);
     }
 
+    /**
+     * 当前登录用户自己的音乐画像。只读、只返回自己的数据。
+     * 游客访问会因 {@code requireUserId()} 返回 401 —— 画像是用户数据，不对匿名开放。
+     */
+    @GetMapping("/profile")
+    public UserMusicProfile profile() {
+        return musicProfiles.read(PlaylistAccessService.requireUserId());
+    }
+
     // ------------------------------------------------------------------ 内部
+
+    /**
+     * 会话结束后异步维护记忆与画像。
+     *
+     * <p><b>为什么放在这里而不是工具里：</b>摘要与画像都是"事后整理"，
+     * 与本次回答的正确性无关。放在请求路径里只会让用户多等一次模型调用。
+     *
+     * <p>延迟 1 秒是为了错开流式连接的收尾；失败只记日志
+     * （两个服务内部均已兜底），绝不影响已经返回给用户的结果。
+     */
+    private void scheduleMemoryMaintenance(String chatId, Long userId) {
+        try {
+            aiTimer.schedule(() -> {
+                chatSummaries.maybeSummarize(chatId);
+                if (userId != null) tasteSummaries.refreshSummary(userId);
+            }, 1, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException e) {
+            log.warn("记忆维护任务提交失败，跳过本次整理");
+        }
+    }
 
     /** 一次流式任务的结算器：保证“写指标 + 释放租约 + 关闭事件通道”只执行一次。 */
     private final class StreamSession {
@@ -294,6 +332,9 @@ public class AiController {
             if (running != null) running.cancel(true);
             run.close();
             metricRecorder.record(run.metrics());
+            // 结算之后异步整理记忆与画像：这是"事后整理"，与本次回答的正确性无关，
+            // 放在请求路径里只会让用户多等一次模型调用。
+            scheduleMemoryMaintenance(run.metrics().chatId(), run.metrics().userId());
             return true;
         }
     }

@@ -8,6 +8,9 @@ import cn.edu.seig.vibemusic.interceptor.LoginInterceptor;
 import cn.edu.seig.vibemusic.interceptor.RateLimitInterceptor;
 import cn.edu.seig.vibemusic.service.IAiService;
 import cn.edu.seig.vibemusic.service.MusicAssistant;
+import cn.edu.seig.vibemusic.service.agent.ChatSummaryService;
+import cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService;
+import cn.edu.seig.vibemusic.service.agent.UserMusicProfileService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import cn.edu.seig.vibemusic.service.ai.AiRunBudget;
 import cn.edu.seig.vibemusic.util.JwtUtil;
@@ -42,6 +45,9 @@ class AiControllerSecurityTest {
     @SuppressWarnings("unchecked") private final ValueOperations<String, String> values = mock(ValueOperations.class);
     private final AiAssistantFactory factory = mock(AiAssistantFactory.class);
     private final RedisRateLimiter limiter = mock(RedisRateLimiter.class);
+    private final ChatSummaryService chatSummaries = mock(ChatSummaryService.class);
+    private final MusicTasteSummaryService tasteSummaries = mock(MusicTasteSummaryService.class);
+    private final UserMusicProfileService musicProfiles = mock(UserMusicProfileService.class);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private MockMvc mvc;
@@ -59,7 +65,8 @@ class AiControllerSecurityTest {
         ReflectionTestUtils.setField(login, "rolePermissionManager", roles);
         ReflectionTestUtils.setField(login, "objectMapper", new ObjectMapper());
         mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis), factory,
-                        mock(cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder.class), executor, timer))
+                        mock(cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder.class), executor, timer,
+                        chatSummaries, tasteSummaries, musicProfiles))
                 .addInterceptors(login, new RateLimitInterceptor(limiter, new ObjectMapper()))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
@@ -169,5 +176,27 @@ class AiControllerSecurityTest {
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("event:error")))
                 .andExpect(content().string(not(containsString("api-key-secret"))));
+    }
+
+    /** 画像是用户数据，不对匿名开放。 */
+    @Test void profileEndpointRequiresLogin() throws Exception {
+        mvc.perform(get("/ai/profile")).andExpect(status().isUnauthorized());
+        verifyNoInteractions(musicProfiles);
+    }
+
+    /** 只读且只返回自己的画像。 */
+    @Test void profileEndpointReturnsOnlyOwnProfile() throws Exception {
+        var profile = new cn.edu.seig.vibemusic.model.entity.UserMusicProfile();
+        profile.setUserId(7L);
+        profile.setFavSongCount(3);
+        profile.setPrefSummary("偏爱流行与民谣。");
+        when(musicProfiles.read(7L)).thenReturn(profile);
+
+        mvc.perform(get("/ai/profile").header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(7))
+                .andExpect(jsonPath("$.favSongCount").value(3))
+                .andExpect(jsonPath("$.prefSummary").value("偏爱流行与民谣。"));
+        verify(musicProfiles).read(7L);
     }
 }
