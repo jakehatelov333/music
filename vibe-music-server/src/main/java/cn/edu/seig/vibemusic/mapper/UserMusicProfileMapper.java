@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -115,4 +116,23 @@ public interface UserMusicProfileMapper {
                 version = version + 1, updated_at = #{now}
             """)
     int upsertFacts(@Param("p") UserMusicProfile profile, @Param("now") LocalDateTime now);
+
+    /**
+     * 仅当指纹与传入值不同（或从未生成过）时写入偏好概述。
+     *
+     * <p>指纹条件同时承担两个职责：
+     * <ul>
+     *     <li><b>省钱</b>——事实没变就不重复调模型；</li>
+     *     <li><b>防并发覆盖</b>——两个异步任务拿着不同指纹同时回来时，
+     *         先写者生效，后写者条件不命中直接跳过，不会把更新的概述覆盖回旧内容。</li>
+     * </ul>
+     */
+    @Update("""
+            UPDATE tb_user_music_profile
+            SET pref_summary = #{summary}, summary_source_hash = #{hash}
+            WHERE user_id = #{userId}
+              AND (summary_source_hash IS NULL OR summary_source_hash <> #{hash})
+            """)
+    int updateSummaryIfStale(@Param("userId") Long userId, @Param("summary") String summary,
+                             @Param("hash") String hash);
 }

@@ -214,4 +214,42 @@ class UserMusicProfileTest extends AbstractAgentTest {
         assertThat(styles).contains("\"name\":\"电子\",\"count\":1");
         assertThat(styles).contains("\"name\":\"嘻哈说唱\",\"count\":1");
     }
+
+    // ------------------------------------------------------------------ 偏好概述（qwen-flash + 指纹缓存）
+
+    /**
+     * 事实变化才重新生成概述；事实没变时即使重复触发也不调模型。
+     * 注意 generate(String) 在 0.36.2 是直接返回 String 的 default 方法，桩要返回字符串。
+     */
+    @Test
+    void generatesSummaryOnlyWhenFactsChanged() {
+        seedFavoritesAndPlaylist();
+        var model = org.mockito.Mockito.mock(dev.langchain4j.model.dashscope.QwenChatModel.class);
+        org.mockito.Mockito.when(model.generate(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn("该用户偏爱流行与民谣。");
+        var service = new cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService(
+                profileService, profiles, model);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "maxChars", 300);
+
+        assertThat(service.refreshSummary(1L)).isTrue();
+        assertThat(profiles.find(1L).getPrefSummary()).isEqualTo("该用户偏爱流行与民谣。");
+        // 事实没变 -> 不再调用模型
+        assertThat(service.refreshSummary(1L)).isFalse();
+        org.mockito.Mockito.verify(model, org.mockito.Mockito.times(1))
+                .generate(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    /** 模型故障只记日志返回 false：概述是锦上添花，不能被写坏、更不能抛出。 */
+    @Test
+    void summaryFailureDoesNotBreakOrCorruptProfile() {
+        seedFavoritesAndPlaylist();
+        var model = org.mockito.Mockito.mock(dev.langchain4j.model.dashscope.QwenChatModel.class);
+        org.mockito.Mockito.when(model.generate(org.mockito.ArgumentMatchers.anyString()))
+                .thenThrow(new RuntimeException("provider down"));
+        var service = new cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService(
+                profileService, profiles, model);
+
+        assertThat(service.refreshSummary(1L)).isFalse();        // 不抛异常
+        assertThat(profiles.find(1L).getPrefSummary()).isNull(); // 不被写坏
+    }
 }
