@@ -1,7 +1,11 @@
 import { http } from '@/utils/http'
 import { UserStore } from '@/stores/modules/user'
+import type { PendingAction } from '@/api/agent'
 
 export type AiChatResponse = string
+
+/** 后端基地址，与 utils/http 保持一致。 */
+const API_BASE = 'http://localhost:8080'
 
 export const aiSimpleChat = (query: string) =>
   http<AiChatResponse>('post', '/ai/chat', {
@@ -23,12 +27,98 @@ export const aiRecent = (limit = 10) =>
     timeout: 30000,
   })
 
+/** 当前登录用户自己的 Agent 任务指标（真实耗时、模型调用次数与 Token 用量）。 */
+export const aiMetrics = (limit = 10) =>
+  http<any>('get', '/ai/chat/metrics', {
+    params: { limit },
+    withCredentials: true,
+    timeout: 20000,
+  })
+
+/** 工具调用事件：同一 toolCallId 的 start / end 配对。 */
+export interface AgentToolEvent {
+  taskId: string
+  toolCallId: string
+  tool: string
+  phase: 'start' | 'end'
+  ok?: boolean | null
+  code?: string | null
+  message?: string | null
+  total?: number | null
+  kind?: string | null
+  durationMs?: number | null
+}
+
+/** 结构化歌曲数据事件。 */
+export interface AgentSongsEvent {
+  taskId: string
+  toolCallId: string
+  ok: boolean
+  code: string
+  message: string
+  total: number
+  kind: string
+  data: Array<{
+    songId: number
+    songName: string
+    artistName: string | null
+    album: string | null
+    style: string | null
+    duration: string | null
+    coverUrl: string | null
+    audioUrl: string | null
+  }>
+}
+
+/** 任务结束汇总事件。 */
+export interface AgentTaskEvent {
+  taskId: string
+  ok: boolean
+  code: string
+  message: string
+  data: {
+    taskId: string
+    model: string
+    success: boolean
+    failureCategory: string | null
+    modelCalls: number
+    toolCalls: number
+    toolFailures: number
+    resultCount: number
+    latencyMs: number
+    inputTokens: number | null
+    outputTokens: number | null
+    tokenSource: string
+    playlistId: number | null
+  }
+}
+
 export interface SSECallbacks {
   onToken: (token: string) => void
   onDone: (fullText: string) => void
   onError: (error: Error) => void
+  /** Agent 开始处理，携带本次任务的 taskId。 */
+  onStart?: (payload: { taskId: string; model: string }) => void
+  /** 工具开始/结束。 */
+  onTool?: (payload: AgentToolEvent) => void
+  /** 结构化歌曲数据，用于渲染歌曲卡片。 */
+  onSongs?: (payload: AgentSongsEvent) => void
+  /** 等待用户确认，携带服务端持久化的待确认任务。 */
+  onConfirm?: (payload: PendingAction) => void
+  /** 任务结束汇总（成功/失败/取消），用于展示真实耗时与用量。 */
+  onTask?: (payload: AgentTaskEvent) => void
 }
 
+/**
+ * 消费 /ai/chat/stream 的 SSE。
+ *
+ * 事件协议（事件名 = event 名，data 为纯文本；结构化事件是 JSON 字符串）：
+ * `start` / `tool` / `songs` / `confirm` / `task` / `token` / `done` / `error`。
+ *
+ * 兼容性：`token`/`done`/`error` 的语义与载荷与旧版完全一致，新增事件是叠加的。
+ * 健壮性：无论正常结束、服务端报错、解析异常还是连接中断，都会且只会回调一次终态
+ * （onDone 或 onError），页面不会永久停留在加载状态。
+ */
 export const aiStreamChat = (
   query: string,
   callbacks: SSECallbacks,
@@ -41,7 +131,7 @@ export const aiStreamChat = (
   }
   if (token) headers.Authorization = token
 
-  fetch('http://localhost:8080/ai/chat/stream', {
+  fetch(`${API_BASE}/ai/chat/stream`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ query }),
@@ -60,19 +150,61 @@ export const aiStreamChat = (
       let currentEvent = ''
       let dataLines: string[] = []
       let completed = false
+
+      const parseJson = <T,>(raw: string): T | null => {
+        try {
+          return JSON.parse(raw) as T
+        } catch {
+          return null
+        }
+      }
+
       const dispatch = () => {
         const data = dataLines.join('\n')
-        if (currentEvent === 'token') callbacks.onToken(data)
-        else if (currentEvent === 'done') {
-          completed = true
-          callbacks.onDone(data)
-        } else if (currentEvent === 'error') {
-          completed = true
-          callbacks.onError(new Error(data || 'AI 回复失败'))
+        switch (currentEvent) {
+          case 'token':
+            callbacks.onToken(data)
+            break
+          case 'done':
+            completed = true
+            callbacks.onDone(data)
+            break
+          case 'error':
+            completed = true
+            callbacks.onError(new Error(data || 'AI 回复失败'))
+            break
+          case 'start': {
+            const payload = parseJson<{ taskId: string; model: string }>(data)
+            if (payload) callbacks.onStart?.(payload)
+            break
+          }
+          case 'tool': {
+            const payload = parseJson<AgentToolEvent>(data)
+            if (payload) callbacks.onTool?.(payload)
+            break
+          }
+          case 'songs': {
+            const payload = parseJson<AgentSongsEvent>(data)
+            if (payload) callbacks.onSongs?.(payload)
+            break
+          }
+          case 'confirm': {
+            const payload = parseJson<{ data: PendingAction }>(data)
+            if (payload?.data) callbacks.onConfirm?.(payload.data)
+            break
+          }
+          case 'task': {
+            const payload = parseJson<AgentTaskEvent>(data)
+            if (payload) callbacks.onTask?.(payload)
+            break
+          }
+          default:
+            break
         }
         currentEvent = ''
         dataLines = []
       }
+
       try {
         while (!completed) {
           const { done, value } = await reader.read()

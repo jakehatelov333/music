@@ -1,17 +1,57 @@
 <script setup lang="ts">
 import { aiRecent, aiStreamChat } from '@/api/ai'
+import type { AgentSongsEvent, AgentTaskEvent, AgentToolEvent } from '@/api/ai'
+import {
+  cancelPendingAction,
+  confirmPendingAction,
+  listPendingActions,
+  updatePendingAction,
+} from '@/api/agent'
+import type { AgentSongRef, PendingAction } from '@/api/agent'
 import { UserStore } from '@/stores/modules/user'
 
 const userStore = UserStore()
+const router = useRouter()
+const audio = AudioStore()
+const { loadTrack, play } = useAudioPlayer()
+
+type Block =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'tool'
+      toolCallId: string
+      tool: string
+      label: string
+      done: boolean
+      ok?: boolean | null
+      code?: string | null
+      durationMs?: number | null
+      total?: number | null
+    }
+  | { kind: 'songs'; songs: AgentSongRef[]; message: string }
+  | { kind: 'confirm'; action: PendingAction; busy: boolean; error: string | null }
+  | { kind: 'notice'; text: string; tone: 'info' | 'error' }
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  blocks: Block[]
+  task?: AgentTaskEvent | null
+}
 
 const visible = ref(false)
 const minimized = ref(false)
 const loading = ref(false)
 const input = ref('')
-const messages = ref<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+const messages = ref<ChatMessage[]>([])
 const abortController = ref<AbortController | null>(null)
+const taskId = ref<string | null>(null)
 
-// 拖拽相关
+/** 确认卡片的本地编辑态，按 taskId 保存；提交时与服务端版本号一起校验。 */
+const edits = reactive<
+  Record<string, { title: string; isPublic: boolean; songIds: number[] }>
+>({})
+
+// ---------------------------------------------------------------- 拖拽（保持原有行为）
 const pos = reactive({ x: 0, y: 0 })
 const dragging = ref(false)
 const dragOffset = { x: 0, y: 0 }
@@ -28,24 +68,23 @@ const loadPos = () => {
         pos.y = v.y
       }
     } catch {
-      // 本地布局或历史读取失败时保留当前界面，仍可继续聊天。
+      // 本地布局读取失败时保留当前界面，仍可继续聊天。
     }
   } else {
-    // 默认右下角
     const margin = 16
-    const width = 320
-    const height = Math.min(Math.round(window.innerHeight * 0.6), 520)
+    const width = 360
+    const height = Math.min(Math.round(window.innerHeight * 0.7), 620)
     pos.x = Math.max(0, window.innerWidth - width - margin)
-    pos.y = Math.max(0, window.innerHeight - height - 24 * 4) // 约等于 bottom-24
+    pos.y = Math.max(0, window.innerHeight - height - 24 * 4)
   }
 }
 
 const clampToViewport = () => {
-  const width = widgetRef.value?.offsetWidth ?? 320
+  const width = widgetRef.value?.offsetWidth ?? 360
   const height =
-    widgetRef.value?.offsetHeight ?? Math.round(window.innerHeight * 0.6)
-  pos.x = Math.min(Math.max(0, pos.x), window.innerWidth - width)
-  pos.y = Math.min(Math.max(0, pos.y), window.innerHeight - height)
+    widgetRef.value?.offsetHeight ?? Math.round(window.innerHeight * 0.7)
+  pos.x = Math.min(Math.max(0, pos.x), Math.max(0, window.innerWidth - width))
+  pos.y = Math.min(Math.max(0, pos.y), Math.max(0, window.innerHeight - height))
 }
 
 const onMouseMove = (e: MouseEvent) => {
@@ -107,36 +146,199 @@ watch(
     abortController.value = null
     messages.value = []
     loading.value = false
+    taskId.value = null
+    Object.keys(edits).forEach((key) => delete edits[key])
   },
   { flush: 'sync' }
 )
 
+// ---------------------------------------------------------------- 歌曲与确认卡片
+const toMs = (duration: string | null) => {
+  if (!duration) return 0
+  const parts = duration.split(':').map((v) => Number(v) || 0)
+  if (parts.length === 3) return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000
+  if (parts.length === 2) return (parts[0] * 60 + parts[1]) * 1000
+  return parts[0] * 1000
+}
+
+const playSong = async (song: AgentSongRef) => {
+  if (!song.audioUrl) return
+  audio.addTracks({
+    id: String(song.songId),
+    title: song.songName,
+    artist: song.artistName || '未知歌手',
+    album: song.album || '',
+    cover: song.coverUrl || '',
+    url: song.audioUrl,
+    duration: toMs(song.duration),
+    likeStatus: 0,
+  })
+  await loadTrack()
+  play()
+}
+
+const ensureEdit = (action: PendingAction) => {
+  if (!edits[action.taskId]) {
+    edits[action.taskId] = {
+      title: action.title,
+      isPublic: action.isPublic ?? false,
+      songIds: action.songs.map((s) => s.songId),
+    }
+  }
+  return edits[action.taskId]
+}
+
+const editSongs = (action: PendingAction) =>
+  action.songs.filter((s) => ensureEdit(action).songIds.includes(s.songId))
+
+const removeSong = (action: PendingAction, songId: number) => {
+  const edit = ensureEdit(action)
+  edit.songIds = edit.songIds.filter((id) => id !== songId)
+}
+
+const isDirty = (action: PendingAction) => {
+  const edit = ensureEdit(action)
+  const original = action.songs.map((s) => s.songId)
+  return (
+    edit.title !== action.title ||
+    edit.isPublic !== (action.isPublic ?? false) ||
+    edit.songIds.length !== original.length ||
+    edit.songIds.some((id) => !original.includes(id))
+  )
+}
+
+/** 确认：先提交本地改动（如果有）拿到新版本号，再用该版本号确认，避免“确认旧内容执行新内容”。 */
+const confirmAction = async (block: Extract<Block, { kind: 'confirm' }>) => {
+  const action = block.action
+  const edit = ensureEdit(action)
+  if (edit.songIds.length === 0) {
+    block.error = '歌单至少需要一首歌曲'
+    return
+  }
+  block.busy = true
+  block.error = null
+  try {
+    let version = action.version
+    if (isDirty(action)) {
+      const updated = await updatePendingAction(action.taskId, {
+        title: edit.title,
+        introduction: action.introduction || '',
+        style: action.style || '',
+        isPublic: edit.isPublic,
+        songIds: edit.songIds,
+        version: action.version,
+      })
+      if (updated.code !== 0) throw new Error(updated.message || '修改预览失败')
+      version = updated.data!.version
+    }
+    const res = await confirmPendingAction(action.taskId, version)
+    if (res.code !== 0) throw new Error(res.message || '创建失败')
+    block.action = res.data!
+    delete edits[action.taskId]
+  } catch (error: any) {
+    block.error = error?.message || '创建失败，请稍后重试'
+    // 状态可能已被其他操作改变，拉一次真实状态而不是本地猜测。
+    try {
+      const latest = await listPendingActions()
+      const found = (latest.data || []).find((a) => a.taskId === action.taskId)
+      if (found) block.action = found
+      else
+        block.action = {
+          ...action,
+          status: 'EXPIRED',
+          statusDescription: '已过期',
+        }
+    } catch {
+      // 查询失败时保留原状态，用户可再次点击确认重试。
+    }
+  } finally {
+    block.busy = false
+  }
+}
+
+const cancelAction = async (block: Extract<Block, { kind: 'confirm' }>) => {
+  block.busy = true
+  block.error = null
+  try {
+    const res = await cancelPendingAction(block.action.taskId)
+    if (res.code !== 0) throw new Error(res.message || '取消失败')
+    block.action = res.data!
+    delete edits[block.action.taskId]
+  } catch (error: any) {
+    block.error = error?.message || '取消失败，请稍后重试'
+  } finally {
+    block.busy = false
+  }
+}
+
+const openPlaylist = (playlistId: number) => {
+  visible.value = false
+  router.push(`/playlist/${playlistId}`)
+}
+
+// ---------------------------------------------------------------- 会话
+const blockFor = (blocks: Block[], toolCallId: string) =>
+  blocks.find(
+    (b): b is Extract<Block, { kind: 'tool' }> =>
+      b.kind === 'tool' && b.toolCallId === toolCallId
+  )
+
 const open = async () => {
   visible.value = true
-  if (messages.value.length === 0) {
-    try {
-      const identity = userStore.userInfo?.token
-      const list = await aiRecent(10)
-      if (identity !== userStore.userInfo?.token || messages.value.length > 0)
-        return
-      if (Array.isArray(list)) {
-        messages.value = list
-          .filter(
-            (m: any) =>
-              m.messageType === 'USER' || m.messageType === 'ASSISTANT'
-          )
-          .map((m: any) => ({
-            role:
-              m.messageType === 'USER'
-                ? ('user' as const)
-                : ('assistant' as const),
-            content: m.content,
-          }))
-          .reverse()
-      }
-    } catch {
-      // 本地布局或历史读取失败时保留当前界面，仍可继续聊天。
+  if (messages.value.length > 0) return
+  try {
+    const identity = userStore.userInfo?.token
+    const list = await aiRecent(10)
+    if (identity !== userStore.userInfo?.token || messages.value.length > 0) return
+    if (Array.isArray(list)) {
+      messages.value = list
+        .filter(
+          (m: any) =>
+            m.messageType === 'USER' || m.messageType === 'ASSISTANT'
+        )
+        .map((m: any) => ({
+          role: m.messageType === 'USER' ? ('user' as const) : ('assistant' as const),
+          blocks: [{ kind: 'text', text: m.content } as Block],
+          task: null,
+        }))
+        .reverse()
     }
+  } catch {
+    // 历史读取失败不影响继续聊天。
+  }
+  await restorePending()
+}
+
+/** 页面刷新后按服务端持久化的状态重建确认卡片。 */
+const restorePending = async () => {
+  if (!userStore.userInfo?.token) return
+  try {
+    const res = await listPendingActions()
+    if (res.code !== 0 || !res.data?.length) return
+    const existing = new Set(
+      messages.value.flatMap((m) =>
+        m.blocks
+          .filter((b): b is Extract<Block, { kind: 'confirm' }> => b.kind === 'confirm')
+          .map((b) => b.action.taskId)
+      )
+    )
+    const restored = res.data.filter((a) => !existing.has(a.taskId))
+    if (restored.length === 0) return
+    messages.value.push({
+      role: 'assistant',
+      blocks: [
+        { kind: 'notice', text: '你还有待确认的歌单操作：', tone: 'info' },
+        ...restored.map((action) => ({
+          kind: 'confirm' as const,
+          action,
+          busy: false,
+          error: null,
+        })),
+      ],
+      task: null,
+    })
+  } catch {
+    // 未登录或网络异常时静默跳过。
   }
 }
 
@@ -158,47 +360,97 @@ const send = () => {
   if (!text || loading.value) return
   if (text.length > 2000) return
 
-  if (abortController.value) {
-    abortController.value.abort()
-  }
-
-  messages.value.push({ role: 'user', content: text })
+  abortController.value?.abort()
+  messages.value.push({ role: 'user', blocks: [{ kind: 'text', text }] })
   input.value = ''
   loading.value = true
 
   const controller = new AbortController()
   abortController.value = controller
 
-  const assistantIdx = messages.value.length
-  messages.value.push({ role: 'assistant', content: '' })
+  const message: ChatMessage = { role: 'assistant', blocks: [], task: null }
+  messages.value.push(message)
+  const blocks = message.blocks
+  const finish = () => {
+    if (controller.signal.aborted) return
+    loading.value = false
+    abortController.value = null
+    if (blocks.length === 0) blocks.push({ kind: 'text', text: '（AI 未生成回复）' })
+  }
 
   aiStreamChat(
     text,
     {
-      onToken: (token: string) => {
+      onStart: (payload) => {
         if (controller.signal.aborted) return
-        messages.value[assistantIdx].content += token
+        taskId.value = payload.taskId
       },
-      onDone: (fullText: string) => {
+      onTool: (payload: AgentToolEvent) => {
         if (controller.signal.aborted) return
-        if (fullText) messages.value[assistantIdx].content = fullText
-        if (!messages.value[assistantIdx].content) {
-          messages.value[assistantIdx].content = '（AI 未生成回复）'
+        const existing = blockFor(blocks, payload.toolCallId)
+        if (payload.phase === 'start') {
+          if (existing) {
+            existing.done = false
+            existing.label = payload.message || existing.label
+          } else {
+            blocks.push({
+              kind: 'tool',
+              toolCallId: payload.toolCallId,
+              tool: payload.tool,
+              label: payload.message || '正在调用工具…',
+              done: false,
+              ok: null,
+              code: null,
+              durationMs: null,
+              total: null,
+            })
+          }
+        } else if (existing) {
+          existing.done = true
+          existing.ok = payload.ok ?? null
+          existing.code = payload.code ?? null
+          existing.durationMs = payload.durationMs ?? null
+          existing.total = payload.total ?? null
+          existing.label = payload.message || existing.label
         }
-        loading.value = false
-        abortController.value = null
       },
-      onError: (error: Error) => {
+      onSongs: (payload: AgentSongsEvent) => {
         if (controller.signal.aborted) return
-        if (messages.value[assistantIdx].content) {
-          messages.value[assistantIdx].content +=
-            '\n\n[回复中断: ' + error.message + ']'
-        } else {
-          messages.value[assistantIdx].content =
-            '抱歉，AI 回复出错: ' + error.message
+        if (!payload.data?.length) return
+        blocks.push({
+          kind: 'songs',
+          songs: payload.data,
+          message: payload.message,
+        })
+      },
+      onConfirm: (action: PendingAction) => {
+        if (controller.signal.aborted) return
+        blocks.push({ kind: 'confirm', action, busy: false, error: null })
+        ensureEdit(action)
+      },
+      onTask: (payload: AgentTaskEvent) => {
+        if (controller.signal.aborted) return
+        message.task = payload
+      },
+      onToken: (token) => {
+        if (controller.signal.aborted) return
+        const last = blocks[blocks.length - 1]
+        if (last && last.kind === 'text') last.text += token
+        else blocks.push({ kind: 'text', text: token })
+      },
+      onDone: (fullText) => {
+        if (controller.signal.aborted) return
+        if (fullText) {
+          const last = blocks[blocks.length - 1]
+          if (last && last.kind === 'text') last.text = fullText
+          else blocks.push({ kind: 'text', text: fullText })
         }
-        loading.value = false
-        abortController.value = null
+        finish()
+      },
+      onError: (error) => {
+        if (controller.signal.aborted) return
+        blocks.push({ kind: 'notice', text: `回复中断：${error.message}`, tone: 'error' })
+        finish()
       },
     },
     controller.signal
@@ -222,7 +474,7 @@ defineExpose({ open, close })
   <div
     v-if="visible"
     ref="widgetRef"
-    class="fixed z-40 w-[320px] max-h-[60vh] bg-white border rounded-xl shadow-xl flex flex-col overflow-hidden"
+    class="fixed z-40 w-[360px] max-h-[70vh] bg-white border rounded-xl shadow-xl flex flex-col overflow-hidden"
     :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
   >
     <div
@@ -230,7 +482,7 @@ defineExpose({ open, close })
       @mousedown="startDrag"
       @touchstart.prevent="startDrag"
     >
-      <div class="font-medium">Vibe AI 助手</div>
+      <div class="font-medium text-sm">Vibe AI 助手</div>
       <div class="flex items-center gap-2">
         <button
           class="text-sm text-muted-foreground hover:text-foreground"
@@ -248,25 +500,214 @@ defineExpose({ open, close })
       </div>
     </div>
 
-    <div
-      v-show="!minimized"
-      class="flex-1 overflow-auto p-3 space-y-3 bg-white"
-    >
-      <div v-for="(m, i) in messages" :key="i" class="text-sm">
+    <div v-show="!minimized" class="flex-1 overflow-auto p-3 space-y-3 bg-white">
+      <div v-for="(m, mi) in messages" :key="mi" class="text-sm space-y-2">
         <div :class="m.role === 'user' ? 'text-right' : 'text-left'">
           <span
-            :class="
-              m.role === 'user'
-                ? 'inline-block bg-primary text-white'
-                : 'inline-block bg-muted'
-            "
-            class="px-3 py-2 rounded-lg max-w-[90%] whitespace-pre-wrap"
-            >{{ m.content }}</span
+            v-if="m.role === 'user'"
+            class="inline-block bg-primary text-white px-3 py-2 rounded-lg max-w-[90%] whitespace-pre-wrap"
+            >{{ m.blocks[0].kind === 'text' ? m.blocks[0].text : '' }}</span
           >
         </div>
+
+        <template v-if="m.role === 'assistant'">
+          <template v-for="(b, bi) in m.blocks" :key="bi">
+            <!-- 普通文本 -->
+            <div v-if="b.kind === 'text'" class="text-left">
+              <span
+                class="inline-block bg-muted px-3 py-2 rounded-lg max-w-[95%] whitespace-pre-wrap"
+                >{{ b.text }}</span
+              >
+            </div>
+
+            <!-- 工具执行状态 -->
+            <div
+              v-else-if="b.kind === 'tool'"
+              class="flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <icon-tabler:loader-2
+                v-if="!b.done"
+                class="animate-spin w-3.5 h-3.5"
+              />
+              <icon-tabler:circle-check
+                v-else-if="b.ok"
+                class="w-3.5 h-3.5 text-green-600"
+              />
+              <icon-tabler:alert-circle v-else class="w-3.5 h-3.5 text-amber-500" />
+              <span>{{ b.label }}</span>
+              <span v-if="b.done && b.durationMs != null" class="opacity-60"
+                >{{ b.durationMs }}ms</span
+              >
+              <span v-if="b.done && b.code && !b.ok" class="opacity-60"
+                >[{{ b.code }}]</span
+              >
+            </div>
+
+            <!-- 结构化歌曲卡片 -->
+            <div
+              v-else-if="b.kind === 'songs'"
+              class="border rounded-lg divide-y overflow-hidden"
+            >
+              <div
+                class="px-2 py-1.5 text-xs text-muted-foreground bg-muted/40 flex items-center justify-between"
+              >
+                <span>{{ b.message }}</span>
+                <span>{{ b.songs.length }} 首</span>
+              </div>
+              <div
+                v-for="song in b.songs"
+                :key="song.songId"
+                class="px-2 py-1.5 flex items-center gap-2 hover:bg-muted/40"
+              >
+                <img
+                  v-if="song.coverUrl"
+                  :src="song.coverUrl"
+                  class="w-8 h-8 rounded object-cover"
+                  alt=""
+                />
+                <div
+                  v-else
+                  class="w-8 h-8 rounded bg-muted flex items-center justify-center"
+                >
+                  <icon-tabler:music class="w-4 h-4 text-muted-foreground" />
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="truncate text-xs font-medium">{{ song.songName }}</div>
+                  <div class="truncate text-[11px] text-muted-foreground">
+                    {{ song.artistName || '未知歌手' }}
+                    <span v-if="song.duration"> · {{ song.duration }}</span>
+                  </div>
+                </div>
+                <button
+                  class="p-1 rounded hover:bg-muted"
+                  :disabled="!song.audioUrl"
+                  title="播放"
+                  @click="playSong(song)"
+                >
+                  <icon-tabler:player-play class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <!-- 待确认卡片 -->
+            <div
+              v-else-if="b.kind === 'confirm'"
+              class="border-2 border-primary/40 rounded-lg p-2 space-y-2"
+            >
+              <template v-if="b.action.status === 'PENDING'">
+                <div class="text-xs font-medium">待确认：创建歌单</div>
+                <input
+                  v-model="ensureEdit(b.action).title"
+                  maxlength="255"
+                  class="w-full px-2 py-1 text-xs border rounded outline-none"
+                  placeholder="歌单名称"
+                />
+                <div class="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>共 {{ editSongs(b.action).length }} 首歌曲</span>
+                  <label class="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      v-model="ensureEdit(b.action).isPublic"
+                    />
+                    公开
+                  </label>
+                </div>
+                <div class="max-h-40 overflow-auto divide-y border rounded">
+                  <div
+                    v-for="song in editSongs(b.action)"
+                    :key="song.songId"
+                    class="px-2 py-1 flex items-center gap-2"
+                  >
+                    <span class="flex-1 truncate text-[11px]"
+                      >{{ song.songName }} — {{ song.artistName || '未知歌手' }}</span
+                    >
+                    <button
+                      class="p-0.5 rounded hover:bg-muted"
+                      title="播放"
+                      @click="playSong(song)"
+                    >
+                      <icon-tabler:player-play class="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      class="p-0.5 rounded hover:bg-muted text-red-500"
+                      title="移除"
+                      @click="removeSong(b.action, song.songId)"
+                    >
+                      <icon-tabler:trash class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <p v-if="b.error" class="text-[11px] text-red-500">{{ b.error }}</p>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="flex-1 px-2 py-1.5 text-xs rounded bg-primary text-white disabled:opacity-60"
+                    :disabled="b.busy"
+                    @click="confirmAction(b)"
+                  >
+                    {{ b.busy ? '处理中…' : '确认创建' }}
+                  </button>
+                  <button
+                    class="flex-1 px-2 py-1.5 text-xs rounded border disabled:opacity-60"
+                    :disabled="b.busy"
+                    @click="cancelAction(b)"
+                  >
+                    取消
+                  </button>
+                </div>
+              </template>
+
+              <template v-else-if="b.action.status === 'SUCCEEDED'">
+                <div class="flex items-center gap-1 text-xs text-green-700">
+                  <icon-tabler:circle-check class="w-4 h-4" />
+                  已创建歌单「{{ b.action.title }}」，共
+                  {{ b.action.songCount }} 首歌曲
+                </div>
+                <button
+                  v-if="b.action.playlistId"
+                  class="w-full px-2 py-1.5 text-xs rounded bg-primary text-white"
+                  @click="openPlaylist(b.action.playlistId!)"
+                >
+                  查看歌单
+                </button>
+              </template>
+
+              <template v-else>
+                <div class="flex items-center gap-1 text-xs text-amber-600">
+                  <icon-tabler:alert-circle class="w-4 h-4" />
+                  {{ b.action.statusDescription || b.action.status }}
+                  <span v-if="b.action.errorMessage">：{{ b.action.errorMessage }}</span>
+                </div>
+              </template>
+            </div>
+
+            <!-- 提示 -->
+            <div
+              v-else-if="b.kind === 'notice'"
+              class="text-[11px]"
+              :class="b.tone === 'error' ? 'text-red-500' : 'text-muted-foreground'"
+            >
+              {{ b.text }}
+            </div>
+          </template>
+
+          <!-- 任务指标（真实耗时与用量） -->
+          <div
+            v-if="m.task"
+            class="text-[10px] text-muted-foreground/80 border-t pt-1"
+          >
+            任务 {{ m.task.data.taskId.slice(0, 8) }} · 模型调用
+            {{ m.task.data.modelCalls }} 次 · 工具 {{ m.task.data.toolCalls }} 次 ·
+            耗时 {{ m.task.data.latencyMs }}ms
+            <span v-if="m.task.data.inputTokens != null">
+              · Token {{ m.task.data.inputTokens }}/{{ m.task.data.outputTokens }}
+            </span>
+            <span v-else>· Token 用量不可获取</span>
+          </div>
+        </template>
       </div>
+
       <div v-if="loading" class="text-xs text-muted-foreground">
-        AI 正在思考...
+        AI 正在处理...
       </div>
     </div>
 
@@ -275,12 +716,12 @@ defineExpose({ open, close })
         v-model="input"
         maxlength="2000"
         type="text"
-        placeholder="问点与音乐相关的问题试试..."
+        placeholder="试试：帮我建一个适合开车听的中文歌单"
         @keyup.enter="send"
-        class="flex-1 px-3 py-2 rounded-md bg-white border outline-none"
+        class="flex-1 px-3 py-2 rounded-md bg-white border outline-none text-sm"
       />
       <button
-        class="px-3 h-9 rounded-md bg-primary text-white disabled:opacity-60"
+        class="px-3 h-9 rounded-md bg-primary text-white disabled:opacity-60 text-sm"
         :disabled="loading"
         @click="send"
       >
