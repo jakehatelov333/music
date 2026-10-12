@@ -408,6 +408,54 @@ export const deletePlaylists = (ids: Array<number>) => {
   });
 };
 
+/** 歌单管理-获取歌单详情（含草稿，返回歌曲列表） */
+export const getPlaylistDetail = (id: number) => {
+  const userData = getToken();
+  return http.request<Result>("get", `/admin/getPlaylistDetail/${id}`, {
+    headers: { Authorization: userData.accessToken }
+  });
+};
+
+/** 歌单管理-发布歌单（平台歌单发布后固定为公开） */
+export const publishPlaylist = (id: number) => {
+  const userData = getToken();
+  return http.request<Result>("patch", `/admin/publishPlaylist/${id}`, {
+    headers: { Authorization: userData.accessToken }
+  });
+};
+
+/** 歌单管理-撤回为草稿 */
+export const unpublishPlaylist = (id: number) => {
+  const userData = getToken();
+  return http.request<Result>("patch", `/admin/unpublishPlaylist/${id}`, {
+    headers: { Authorization: userData.accessToken }
+  });
+};
+
+/** 歌单管理-为歌单添加歌曲 */
+export const addPlaylistSongs = (id: number, songIds: Array<number>) => {
+  const userData = getToken();
+  return http.request<Result>("post", `/admin/addPlaylistSongs/${id}`, {
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: userData.accessToken
+    },
+    data: { songIds }
+  });
+};
+
+/** 歌单管理-从歌单移除歌曲 */
+export const removePlaylistSong = (playlistId: number, songId: number) => {
+  const userData = getToken();
+  return http.request<Result>(
+    "delete",
+    `/admin/removePlaylistSong/${playlistId}/${songId}`,
+    {
+      headers: { Authorization: userData.accessToken }
+    }
+  );
+};
+
 /** 反馈管理-获取反馈列表 */
 export const getFeedbackList = (data: object) => {
   const userData = getToken();

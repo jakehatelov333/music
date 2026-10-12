@@ -109,9 +109,11 @@ public interface SearchMapper {
                 p.title,
                 p.cover_url AS coverUrl
             FROM tb_playlist p
-            WHERE p.title LIKE CONCAT('%', #{keyword}, '%')
+            WHERE p.is_public = 1
+              AND (p.status IS NULL OR p.status = 'PUBLISHED')
+              AND (p.title LIKE CONCAT('%', #{keyword}, '%')
                OR p.style LIKE CONCAT('%', #{keyword}, '%')
-               OR p.introduction LIKE CONCAT('%', #{keyword}, '%')
+               OR p.introduction LIKE CONCAT('%', #{keyword}, '%'))
             ORDER BY
                 CASE
                     WHEN p.title = #{keyword} THEN 0

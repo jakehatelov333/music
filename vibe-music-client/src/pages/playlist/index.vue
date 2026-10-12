@@ -71,6 +71,9 @@ const getPlaylists = async () => {
           nickname: selected.value === 'favorite' ? 'Vibe Music' : 'Vibe Music',
           avatarUrl: coverImg
         },
+        // 后端返回：当前用户是否创建 / 是否收藏，用于卡片角标
+        owned: item.owned === true,
+        favorite: item.favorite === true,
         playCount: 0,
         subscribedCount: 0
       }))
@@ -173,6 +176,17 @@ onMounted(() => {
               <div class="relative">
                 <el-image lazy :alt="playlist.name" class="w-full aspect-square object-cover"
                   :src="playlist.coverImgUrl + '?param=330y330'" />
+                <!-- 标识：我创建的歌单会被排到列表最后，收藏过的歌单给出角标 -->
+                <div class="absolute top-2 left-2 flex flex-col items-start gap-1">
+                  <span v-if="playlist.owned"
+                    class="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground shadow">
+                    我创建的
+                  </span>
+                  <span v-if="playlist.favorite"
+                    class="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground shadow">
+                    已收藏
+                  </span>
+                </div>
                 <button
                   class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-secondary text-secondary-foreground hover:bg-secondary/80 h-10 w-10 absolute bottom-2 right-2 rounded-full">
                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"

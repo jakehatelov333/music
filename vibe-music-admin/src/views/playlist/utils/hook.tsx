@@ -1,5 +1,6 @@
 import "./reset.css";
 import editForm from "../form/index.vue";
+import songsForm from "../form/songs.vue";
 import { message } from "@/utils/message";
 import playlistCover from "@/assets/song.jpg";
 import { addDialog } from "@/components/ReDialog";
@@ -13,16 +14,22 @@ import {
   updatePlaylist,
   updatePlaylistCover,
   deletePlaylist,
-  deletePlaylists
+  deletePlaylists,
+  publishPlaylist,
+  unpublishPlaylist
 } from "@/api/system";
 import { type Ref, h, ref, toRaw, computed, reactive, onMounted } from "vue";
+import { ElMessageBox } from "element-plus";
 
 export function usePlaylist(tableRef: Ref) {
   const form = reactive({
     pageNum: 1,
     pageSize: 10,
     title: null,
-    style: null
+    style: null,
+    // 发布状态与来源是两个独立维度，分别筛选
+    status: null,
+    source: null
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -65,19 +72,56 @@ export function usePlaylist(tableRef: Ref) {
     {
       label: "歌单",
       prop: "title",
-      minWidth: 300
+      minWidth: 200
     },
     {
       label: "风格",
       prop: "style",
-      minWidth: 180,
+      minWidth: 130,
       cellRenderer: ({ row }) => (row.style ? <el-tag>{row.style}</el-tag> : "")
+    },
+    {
+      label: "来源",
+      prop: "ownerName",
+      width: 130,
+      cellRenderer: ({ row }) =>
+        row.ownerUserId ? (
+          <el-tag type="warning">用户 · {row.ownerName || row.ownerUserId}</el-tag>
+        ) : (
+          <el-tag type="info">平台</el-tag>
+        )
+    },
+    {
+      label: "发布状态",
+      prop: "status",
+      width: 100,
+      cellRenderer: ({ row }) => (
+        <el-tag type={row.status === "PUBLISHED" ? "success" : "info"}>
+          {row.status === "PUBLISHED" ? "已发布" : "草稿"}
+        </el-tag>
+      )
+    },
+    {
+      label: "可见性",
+      prop: "isPublic",
+      width: 90,
+      cellRenderer: ({ row }) => (
+        <el-tag type={row.isPublic ? "primary" : "warning"}>
+          {row.isPublic ? "公开" : "私人"}
+        </el-tag>
+      )
+    },
+    {
+      label: "歌曲数",
+      prop: "songCount",
+      width: 90,
+      align: "center"
     },
     {
       label: "简介",
       prop: "introduction",
-      minWidth: 300,
-      width: 420,
+      minWidth: 240,
+      width: 320,
       formatter: ({ introduction }) => {
         if (!introduction) {
           return "";
@@ -95,7 +139,7 @@ export function usePlaylist(tableRef: Ref) {
     {
       label: "操作",
       fixed: "right",
-      width: 180,
+      width: 210,
       slot: "operation"
     }
   ];
@@ -109,10 +153,6 @@ export function usePlaylist(tableRef: Ref) {
     ];
   });
 
-  function handleUpdate(row) {
-    console.log(row);
-  }
-
   function handleDelete(row) {
     deletePlaylist(row.playlistId).then(res => {
       if (res.code === 0) {
@@ -121,20 +161,18 @@ export function usePlaylist(tableRef: Ref) {
         });
         onSearch();
       } else {
-        message("删除歌单失败", { type: "error" });
+        message(res.message || "删除歌单失败", { type: "error" });
       }
     });
   }
 
   function handleSizeChange(val: number) {
-    // console.log(`${val} items per page`);
     pagination.pageSize = val; // 更新每页条目数
     form.pageSize = val; // 更新页码参数
     onSearch(); // 重新获取数据
   }
 
   function handleCurrentChange(val: number) {
-    // console.log(`current page: ${val}`);
     pagination.currentPage = val; // 更新当前页码
     form.pageNum = val; // 更新页码参数
     onSearch(); // 重新获取数据
@@ -169,7 +207,7 @@ export function usePlaylist(tableRef: Ref) {
           tableRef.value.getTableRef().clearSelection();
           onSearch();
         } else {
-          message("删除歌单失败", { type: "error" });
+          message(res.message || "删除歌单失败", { type: "error" });
         }
       })
       .catch(err => {
@@ -190,7 +228,13 @@ export function usePlaylist(tableRef: Ref) {
           title: item.title,
           cover: item.coverUrl,
           style: item.style,
-          introduction: item.introduction
+          introduction: item.introduction,
+          status: item.status,
+          isPublic: item.isPublic,
+          coverIsCustom: item.coverIsCustom,
+          songCount: item.songCount ?? 0,
+          ownerUserId: item.ownerUserId,
+          ownerName: item.ownerName
         }));
       } else {
         // 如果返回状态码不为 0 或 data.items 不存在
@@ -211,6 +255,8 @@ export function usePlaylist(tableRef: Ref) {
   const resetForm = formEl => {
     if (!formEl) return;
     formEl.resetFields();
+    form.pageNum = 1;
+    pagination.currentPage = 1;
     onSearch();
   };
 
@@ -223,10 +269,11 @@ export function usePlaylist(tableRef: Ref) {
           playlistId: row?.playlistId ?? "",
           title: row?.title ?? "",
           style: row?.style ?? "",
-          introduction: row?.introduction ?? ""
+          introduction: row?.introduction ?? "",
+          songIds: []
         }
       },
-      width: "46%",
+      width: "52%",
       draggable: true,
       fullscreen: deviceDetection(),
       fullscreenIcon: true,
@@ -248,6 +295,10 @@ export function usePlaylist(tableRef: Ref) {
             if (formTitle === "新增") {
               addPlaylist(curData).then(res => {
                 if (res.code === 0) {
+                  message(
+                    `歌单已创建为草稿，共 ${curData.songIds?.length ?? 0} 首歌曲，发布后即可公开`,
+                    { type: "info" }
+                  );
                   chores();
                 } else {
                   message("新增歌单失败，" + res.message, { type: "error" });
@@ -264,6 +315,68 @@ export function usePlaylist(tableRef: Ref) {
             }
           }
         });
+      }
+    });
+  }
+
+  /** 维护歌单歌曲：查看详情、添加、移除；用户自建歌单只读 */
+  function openSongs(row) {
+    addDialog({
+      title: `歌单歌曲 - ${row.title}`,
+      width: "62%",
+      draggable: true,
+      fullscreen: deviceDetection(),
+      fullscreenIcon: true,
+      closeOnClickModal: false,
+      hideFooter: true,
+      contentRenderer: () =>
+        h(songsForm, {
+          playlistId: row.playlistId,
+          playlistTitle: row.title,
+          readonly: !!row.ownerUserId,
+          onChanged: () => onSearch()
+        })
+    });
+  }
+
+  /** 发布歌单：平台歌单固定公开 */
+  async function handlePublish(row) {
+    try {
+      await ElMessageBox.confirm(
+        `发布歌单「${row.title}」？发布后即为公开，所有用户可见。`,
+        "发布歌单",
+        { confirmButtonText: "发布", cancelButtonText: "取消", type: "warning" }
+      );
+    } catch {
+      return;
+    }
+    publishPlaylist(row.playlistId).then(res => {
+      if (res.code === 0) {
+        message(`歌单「${row.title}」已发布并公开`, { type: "success" });
+        onSearch();
+      } else {
+        message(res.message || "发布歌单失败", { type: "error" });
+      }
+    });
+  }
+
+  /** 撤回为草稿：普通用户将无法再访问 */
+  async function handleUnpublish(row) {
+    try {
+      await ElMessageBox.confirm(
+        `撤回歌单「${row.title}」为草稿？撤回后普通用户将无法访问。`,
+        "撤回草稿",
+        { confirmButtonText: "撤回", cancelButtonText: "取消", type: "warning" }
+      );
+    } catch {
+      return;
+    }
+    unpublishPlaylist(row.playlistId).then(res => {
+      if (res.code === 0) {
+        message(`歌单「${row.title}」已撤回为草稿`, { type: "success" });
+        onSearch();
+      } else {
+        message(res.message || "撤回歌单失败", { type: "error" });
       }
     });
   }
@@ -304,7 +417,7 @@ export function usePlaylist(tableRef: Ref) {
             done(); // 关闭弹框
             onSearch(); // 刷新表格数据
           } else {
-            message("上传歌单封面失败", { type: "error" });
+            message(res.message || "上传歌单封面失败", { type: "error" });
           }
         } catch (error) {
           console.error("上传失败:", error);
@@ -332,8 +445,10 @@ export function usePlaylist(tableRef: Ref) {
     resetForm,
     onbatchDel,
     openDialog,
-    handleUpdate,
+    openSongs,
     handleDelete,
+    handlePublish,
+    handleUnpublish,
     handleUpload,
     handleSizeChange,
     onSelectionCancel,

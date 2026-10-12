@@ -58,4 +58,22 @@ public class  Playlist implements Serializable {
     @TableField("style")
     private String style;
 
+    /** Null identifies a platform playlist. Ownership is never accepted from a request body. */
+    @TableField("owner_user_id")
+    private Long ownerUserId;
+
+    @TableField("is_public")
+    private Boolean isPublic;
+
+    /** DRAFT / PUBLISHED, see {@link cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum}. */
+    @TableField("status")
+    private String status;
+
+    /**
+     * True once the owner uploaded a cover by hand.
+     * A default cover derived from the first song is replaced automatically; a custom one never is.
+     */
+    @TableField("cover_is_custom")
+    private Boolean coverIsCustom;
+
 }

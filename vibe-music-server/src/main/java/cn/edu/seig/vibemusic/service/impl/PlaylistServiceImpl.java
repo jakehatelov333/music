@@ -1,412 +1,332 @@
 package cn.edu.seig.vibemusic.service.impl;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
-import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
-import cn.edu.seig.vibemusic.enumeration.RoleEnum;
+import cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum;
+import cn.edu.seig.vibemusic.mapper.PlaylistBindingMapper;
 import cn.edu.seig.vibemusic.mapper.PlaylistMapper;
+import cn.edu.seig.vibemusic.mapper.SongMapper;
 import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
+import cn.edu.seig.vibemusic.model.dto.AdminPlaylistQueryDTO;
 import cn.edu.seig.vibemusic.model.dto.PlaylistAddDTO;
 import cn.edu.seig.vibemusic.model.dto.PlaylistDTO;
+import cn.edu.seig.vibemusic.model.dto.PlaylistSongsDTO;
 import cn.edu.seig.vibemusic.model.dto.PlaylistUpdateDTO;
 import cn.edu.seig.vibemusic.model.entity.Playlist;
+import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.entity.UserFavorite;
+import cn.edu.seig.vibemusic.model.vo.AdminPlaylistVO;
 import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
 import cn.edu.seig.vibemusic.model.vo.PlaylistVO;
-import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MinioService;
-import cn.edu.seig.vibemusic.util.JwtUtil;
-import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.beans.BeanUtils;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.annotation.CacheConfig;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.server.ResponseStatusException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- * <p>
- * 服务实现类
- * </p>
- *
- * @author sunpingli
- * @since 2025-01-09
- */
+@Slf4j
 @Service
-@CacheConfig(cacheNames = "playlistCache")
 public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> implements IPlaylistService {
+    /** 管理员列表来源筛选：只看平台歌单 */
+    private static final String SOURCE_PLATFORM = "PLATFORM";
+    /** 管理员列表来源筛选：只看用户自建歌单 */
+    private static final String SOURCE_USER = "USER";
 
-    @Autowired
-    private PlaylistMapper playlistMapper;
-    @Autowired
-    private UserFavoriteMapper userFavoriteMapper;
-    @Autowired
-    private MinioService minioService;
+    @Autowired private PlaylistMapper playlistMapper;
+    @Autowired private PlaylistBindingMapper playlistBindingMapper;
+    @Autowired private SongMapper songMapper;
+    @Autowired private UserFavoriteMapper userFavoriteMapper;
+    @Autowired private MinioService minioService;
+    @Autowired private PlaylistAccessService playlistAccessService;
 
-    /**
-     * 获取所有歌单
-     *
-     * @param playlistDTO playlistDTO
-     * @return 歌单列表
-     */
+    // Privacy is mutable. Read it from the database rather than a shared response cache.
+    // viewerId lets the SQL push the caller's own playlists to the end and mark favourites.
     @Override
-    @Cacheable(key = "#playlistDTO.pageNum + '-' + #playlistDTO.pageSize + '-' + #playlistDTO.title + '-' + #playlistDTO.style")
-    public Result<PageResult<PlaylistVO>> getAllPlaylists(PlaylistDTO playlistDTO) {
-        // 分页查询
-        Page<Playlist> page = new Page<>(playlistDTO.getPageNum(), playlistDTO.getPageSize());
-        QueryWrapper<Playlist> queryWrapper = new QueryWrapper<>();
-        // 根据 playlistDTO 的条件构建查询条件
-        if (playlistDTO.getTitle() != null) {
-            queryWrapper.like("title", playlistDTO.getTitle());
-        }
-        if (playlistDTO.getStyle() != null) {
-            queryWrapper.eq("style", playlistDTO.getStyle());
-        }
-
-        IPage<Playlist> playlistPage = playlistMapper.selectPage(page, queryWrapper);
-        if (playlistPage.getRecords().size() == 0) {
-            return Result.success(MessageConstant.DATA_NOT_FOUND, new PageResult<>(0L, null));
-        }
-
-        // 转换为 PlaylistVO
-        List<PlaylistVO> playlistVOList = playlistPage.getRecords().stream()
-                .map(playlist -> {
-                    PlaylistVO playlistVO = new PlaylistVO();
-                    BeanUtils.copyProperties(playlist, playlistVO);
-                    return playlistVO;
-                }).toList();
-
-        return Result.success(new PageResult<>(playlistPage.getTotal(), playlistVOList));
+    public Result<PageResult<PlaylistVO>> getAllPlaylists(PlaylistDTO query) {
+        Long viewerId = PlaylistAccessService.optionalUserId();
+        var page = playlistMapper.getPublicPlaylists(
+                new Page<>(query.getPageNum(), query.getPageSize()),
+                viewerId, query.getTitle(), query.getStyle());
+        return Result.success(new PageResult<>(page.getTotal(), page.getRecords()));
     }
 
-    /**
-     * 获取所有歌单信息
-     *
-     * @param playlistDTO playlistDTO
-     * @return 歌单列表
-     */
     @Override
-    @Cacheable(key = "#playlistDTO.pageNum + '-' + #playlistDTO.pageSize + '-' + #playlistDTO.title + '-' + #playlistDTO.style + '-admin'")
-    public Result<PageResult<Playlist>> getAllPlaylistsInfo(PlaylistDTO playlistDTO) {
-        // 分页查询
-        Page<Playlist> page = new Page<>(playlistDTO.getPageNum(), playlistDTO.getPageSize());
-        QueryWrapper<Playlist> queryWrapper = new QueryWrapper<>();
-        // 根据 playlistDTO 的条件构建查询条件
-        if (playlistDTO.getTitle() != null) {
-            queryWrapper.like("title", playlistDTO.getTitle());
-        }
-        if (playlistDTO.getStyle() != null) {
-            queryWrapper.eq("style", playlistDTO.getStyle());
-        }
-        // 倒序排序
-        queryWrapper.orderByDesc("id");
-
-        IPage<Playlist> playlistPage = playlistMapper.selectPage(page, queryWrapper);
-        if (playlistPage.getRecords().size() == 0) {
-            return Result.success(MessageConstant.DATA_NOT_FOUND, new PageResult<>(0L, null));
-        }
-
-        return Result.success(new PageResult<>(playlistPage.getTotal(), playlistPage.getRecords()));
+    public Result<PageResult<AdminPlaylistVO>> getAllPlaylistsInfo(AdminPlaylistQueryDTO query) {
+        PlaylistAccessService.requireAdmin();
+        if (query == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询条件不能为空");
+        String status = normalizeStatus(query.getStatus());
+        Boolean platform = parseSource(query.getSource());
+        var page = playlistMapper.getAdminPlaylists(
+                new Page<>(query.getPageNum(), query.getPageSize()),
+                query.getTitle(), query.getStyle(), status, platform);
+        return Result.success(new PageResult<>(page.getTotal(), page.getRecords()));
     }
 
-    /**
-     * 获取推荐歌单
-     * 推荐歌单的数量为 10
-     *
-     * @param request HttpServletRequest，用于获取请求头中的 token
-     * @return 随机歌单列表
-     */
+    /** Rejects unknown status values instead of silently returning an empty page. */
+    private String normalizeStatus(String status) {
+        if (status == null || status.isBlank()) return null;
+        PlaylistStatusEnum parsed = PlaylistStatusEnum.parse(status);
+        if (parsed == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "发布状态只能是 DRAFT 或 PUBLISHED");
+        return parsed.getStatus();
+    }
+
+    /** PLATFORM / USER -> platform flag; null means both. */
+    private Boolean parseSource(String source) {
+        if (source == null || source.isBlank()) return null;
+        if (SOURCE_PLATFORM.equalsIgnoreCase(source.trim())) return Boolean.TRUE;
+        if (SOURCE_USER.equalsIgnoreCase(source.trim())) return Boolean.FALSE;
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "来源只能是 PLATFORM 或 USER");
+    }
+
+    private QueryWrapper<Playlist> query(PlaylistDTO query) {
+        return new QueryWrapper<Playlist>()
+                .like(query.getTitle() != null && !query.getTitle().isBlank(), "title", query.getTitle())
+                .eq(query.getStyle() != null && !query.getStyle().isBlank(), "style", query.getStyle());
+    }
+
     @Override
     public Result<List<PlaylistVO>> getRecommendedPlaylists(HttpServletRequest request) {
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7);  // 去掉 "Bearer " 前缀
-        }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
-
-        Long userId = null;
-        if (map != null) {
-            String role = (String) map.get(JwtClaimsConstant.ROLE);
-            if (role.equals(RoleEnum.USER.getRole())) {
-                Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-                userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = PlaylistAccessService.optionalUserId();
+        List<PlaylistVO> recommendations = new ArrayList<>();
+        if (userId != null) {
+            List<Long> favoriteIds = userFavoriteMapper.getFavoritePlaylistIdsByUserId(userId);
+            if (!favoriteIds.isEmpty()) {
+                List<String> styles = playlistMapper.getFavoritePlaylistStyles(favoriteIds).stream()
+                        .filter(Objects::nonNull).filter(s -> !s.isBlank()).distinct().toList();
+                if (!styles.isEmpty()) recommendations.addAll(
+                        playlistMapper.getRecommendedPlaylistsByStyles(styles, favoriteIds, 10));
             }
         }
-
-        // 用户未登录，返回随机歌单
-        if (userId == null) {
-            return Result.success(playlistMapper.getRandomPlaylists(10));
-        }
-
-        // 获取用户收藏的歌单 ID
-        List<Long> favoritePlaylistIds = userFavoriteMapper.getFavoritePlaylistIdsByUserId(userId);
-        if (favoritePlaylistIds.isEmpty()) {
-            return Result.success(playlistMapper.getRandomPlaylists(10)); // 如果用户没有收藏歌单，返回随机歌单
-        }
-
-        // 查询用户收藏的歌单风格并统计频率
-        List<String> favoriteStyles = playlistMapper.getFavoritePlaylistStyles(favoritePlaylistIds);
-        List<Long> favoriteStyleIds = userFavoriteMapper.getFavoriteIdsByStyle(favoriteStyles);
-        Map<Long, Long> styleFrequency = favoriteStyleIds.stream()
-                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
-
-        // 按风格出现次数降序排序
-        List<Long> sortedStyleIds = styleFrequency.entrySet().stream()
-                .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList());
-
-        // 根据排序后的风格推荐歌单（排除已收藏歌单）
-        List<PlaylistVO> recommendedPlaylists = playlistMapper.getRecommendedPlaylistsByStyles(sortedStyleIds, favoritePlaylistIds, 10);
-
-        // 如果推荐的歌单不足 10 个，则用随机歌单填充
-        if (recommendedPlaylists.size() < 10) {
-            List<PlaylistVO> randomPlaylists = playlistMapper.getRandomPlaylists(10);
-            Set<Long> addedPlaylistIds = recommendedPlaylists.stream().map(PlaylistVO::getPlaylistId).collect(Collectors.toSet());
-
-            for (PlaylistVO playlist : randomPlaylists) {
-                if (recommendedPlaylists.size() >= 10) break;
-                if (!addedPlaylistIds.contains(playlist.getPlaylistId())) {
-                    recommendedPlaylists.add(playlist);
-                }
+        if (recommendations.size() < 10) {
+            Set<Long> present = recommendations.stream().map(PlaylistVO::getPlaylistId).collect(Collectors.toSet());
+            for (PlaylistVO item : playlistMapper.getRandomPlaylists(10)) {
+                if (recommendations.size() == 10) break;
+                if (present.add(item.getPlaylistId())) recommendations.add(item);
             }
         }
-
-        return Result.success(recommendedPlaylists);
+        return Result.success(recommendations);
     }
 
-    /**
-     * 获取歌单详情
-     *
-     * @param playlistId 歌单id
-     * @param request    HttpServletRequest，用于获取请求头中的 token
-     * @return 歌单详情
-     */
     @Override
-    @Cacheable(key = "#playlistId")
     public Result<PlaylistDetailVO> getPlaylistDetail(Long playlistId, HttpServletRequest request) {
-        PlaylistDetailVO playlistDetailVO = playlistMapper.getPlaylistDetailById(playlistId);
-
-        // 设置默认状态
-        List<SongVO> songVOList = playlistDetailVO.getSongs();
-        songVOList.forEach(songVO -> songVO.setLikeStatus(LikeStatusEnum.DEFAULT.getId()));
-        playlistDetailVO.setLikeStatus(LikeStatusEnum.DEFAULT.getId());
-
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7);  // 去掉 "Bearer " 前缀
+        Long userId = PlaylistAccessService.optionalUserId();
+        PlaylistDetailVO detail = playlistMapper.getPlaylistDetailById(
+                PlaylistAccessService.positiveId(playlistId), userId);
+        if (detail == null) throw PlaylistAccessService.notFound();
+        detail.setEditable(userId != null && userId.equals(detail.getOwnerUserId()));
+        detail.setLikeStatus(0);
+        if (detail.getSongs() == null) detail.setSongs(new ArrayList<>());
+        if (detail.getComments() == null) detail.setComments(new ArrayList<>());
+        Set<Long> favorites = new HashSet<>();
+        if (userId != null) {
+            if (userFavoriteMapper.selectOne(new QueryWrapper<UserFavorite>()
+                    .eq("user_id", userId).eq("type", 1).eq("playlist_id", playlistId)) != null)
+                detail.setLikeStatus(1);
+            favorites.addAll(userFavoriteMapper.getFavoriteSongIdsByUserId(userId));
         }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
-
-        // 如果 token 解析成功且用户为登录状态，进一步操作
-        if (map != null) {
-            String role = (String) map.get(JwtClaimsConstant.ROLE);
-            if (role.equals(RoleEnum.USER.getRole())) {
-                Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-                Long userId = TypeConversionUtil.toLong(userIdObj);
-
-                // 获取用户收藏的歌单
-                UserFavorite favoritePlaylist = userFavoriteMapper.selectOne(new QueryWrapper<UserFavorite>()
-                        .eq("user_id", userId)
-                        .eq("type", 1)
-                        .eq("playlist_id", playlistId));
-                if (favoritePlaylist != null) {
-                    playlistDetailVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
-                }
-
-                // 获取用户收藏的歌曲
-                List<UserFavorite> favoriteSongs = userFavoriteMapper.selectList(new QueryWrapper<UserFavorite>()
-                        .eq("user_id", userId)
-                        .eq("type", 0));
-
-                // 获取用户收藏的歌曲 id
-                Set<Long> favoriteSongIds = favoriteSongs.stream()
-                        .map(UserFavorite::getSongId)
-                        .collect(Collectors.toSet());
-
-                // 检查并更新状态
-                for (SongVO songVO : songVOList) {
-                    if (favoriteSongIds.contains(songVO.getSongId())) {
-                        songVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
-                    }
-                }
-            }
-        }
-
-        return Result.success(playlistDetailVO);
+        detail.getSongs().forEach(song -> song.setLikeStatus(favorites.contains(song.getSongId()) ? 1 : 0));
+        return Result.success(detail);
     }
 
-    /**
-     * 获取所有歌单数量
-     *
-     * @param style 歌单风格
-     * @return 歌单数量
-     */
+    @Override
+    public Result<PlaylistDetailVO> getAdminPlaylistDetail(Long playlistId) {
+        PlaylistAccessService.requireAdmin();
+        return Result.success(adminDetail(PlaylistAccessService.positiveId(playlistId)));
+    }
+
+    /** Admin detail ignores publication state and visibility, and covers user-owned playlists too. */
+    private PlaylistDetailVO adminDetail(Long playlistId) {
+        PlaylistDetailVO detail = playlistMapper.getAdminPlaylistDetailById(playlistId);
+        if (detail == null) throw PlaylistAccessService.notFound();
+        detail.setEditable(false);
+        detail.setLikeStatus(0);
+        if (detail.getSongs() == null) detail.setSongs(new ArrayList<>());
+        if (detail.getComments() == null) detail.setComments(new ArrayList<>());
+        return detail;
+    }
+
     @Override
     public Result<Long> getAllPlaylistsCount(String style) {
-        QueryWrapper<Playlist> queryWrapper = new QueryWrapper<>();
-        if (style != null) {
-            queryWrapper.eq("style", style);
-        }
-
-        return Result.success(playlistMapper.selectCount(queryWrapper));
+        PlaylistAccessService.requireAdmin();
+        return Result.success(playlistMapper.selectCount(new QueryWrapper<Playlist>()
+                .isNull("owner_user_id").eq(style != null && !style.isBlank(), "style", style)));
     }
 
-    /**
-     * 添加歌单
-     *
-     * @param playlistAddDTOO 歌单DTO
-     * @return 添加结果
-     */
     @Override
-    @CacheEvict(cacheNames = "playlistCache", allEntries = true)
-    public Result addPlaylist(PlaylistAddDTO playlistAddDTOO) {
-        QueryWrapper<Playlist> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("title", playlistAddDTOO.getTitle());
-        if (playlistMapper.selectCount(queryWrapper) > 0) {
-            return Result.error(MessageConstant.PLAYLIST + MessageConstant.ALREADY_EXISTS);
-        }
-
-        Playlist playlist = new Playlist();
-        BeanUtils.copyProperties(playlistAddDTOO, playlist);
+    @Transactional
+    public Result<PlaylistDetailVO> addPlaylist(PlaylistAddDTO input) {
+        PlaylistAccessService.requireAdmin();
+        if (input == null || input.getTitle() == null || input.getTitle().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "歌单名称不能为空");
+        String title = input.getTitle().trim();
+        if (platformTitleExists(title, null)) return Result.error(MessageConstant.PLAYLIST + MessageConstant.ALREADY_EXISTS);
+        List<Long> songIds = normalizeIds(input.getSongIds());
+        requireSongs(songIds);
+        Playlist playlist = new Playlist()
+                .setTitle(title)
+                .setIntroduction(normalize(input.getIntroduction()))
+                .setStyle(normalize(input.getStyle()))
+                .setOwnerUserId(null)
+                // Platform playlists are always public; "not live yet" is expressed by the draft state.
+                .setIsPublic(true)
+                .setStatus(PlaylistStatusEnum.DRAFT.getStatus())
+                .setCoverIsCustom(false);
         playlistMapper.insert(playlist);
-
-        return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS);
+        for (Long songId : songIds) playlistBindingMapper.addSongIfAbsent(playlist.getPlaylistId(), songId);
+        return Result.success(adminDetail(playlist.getPlaylistId()));
     }
 
-    /**
-     * 更新歌单
-     *
-     * @param playlistUpdateDTO 歌单更新DTO
-     * @return 更新结果
-     */
     @Override
-    @CacheEvict(cacheNames = "playlistCache", allEntries = true)
-    public Result updatePlaylist(PlaylistUpdateDTO playlistUpdateDTO) {
-        Long playlistId = playlistUpdateDTO.getPlaylistId();
-
-        Playlist playlistByTitle = playlistMapper.selectOne(
-                new QueryWrapper<Playlist>()
-                        .eq("title", playlistUpdateDTO.getTitle())
-        );
-        if (playlistByTitle != null && !playlistByTitle.getPlaylistId().equals(playlistId)) {
-            return Result.error(MessageConstant.PLAYLIST + MessageConstant.ALREADY_EXISTS);
-        }
-
-        Playlist playlist = new Playlist();
-        BeanUtils.copyProperties(playlistUpdateDTO, playlist);
-        if (playlistMapper.updateById(playlist) == 0) {
-            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
-        }
-
-        return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+    @Transactional
+    public Result<PlaylistDetailVO> updatePlaylist(PlaylistUpdateDTO input) {
+        if (input == null || input.getPlaylistId() == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "歌单 id 不能为空");
+        Playlist playlist = platformForUpdate(input.getPlaylistId());
+        if (input.getTitle() == null || input.getTitle().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "歌单名称不能为空");
+        String title = input.getTitle().trim();
+        if (platformTitleExists(title, input.getPlaylistId())) return Result.error(MessageConstant.PLAYLIST + MessageConstant.ALREADY_EXISTS);
+        playlist.setTitle(title)
+                .setIntroduction(normalize(input.getIntroduction()))
+                .setStyle(normalize(input.getStyle()))
+                .setIsPublic(true);
+        playlistMapper.updateById(playlist);
+        return Result.success(adminDetail(playlist.getPlaylistId()));
     }
 
-    /**
-     * 更新歌单封面
-     *
-     * @param playlistId 歌单id
-     * @param coverUrl   歌单封面url
-     * @return 更新结果
-     */
     @Override
-    @CacheEvict(cacheNames = "playlistCache", allEntries = true)
+    @Transactional
+    public Result<PlaylistDetailVO> publishPlaylist(Long playlistId) {
+        Playlist playlist = platformForUpdate(playlistId);
+        // A platform playlist is never private: publishing always makes it public.
+        playlist.setIsPublic(true).setStatus(PlaylistStatusEnum.PUBLISHED.getStatus());
+        playlistMapper.updateById(playlist);
+        return Result.success(adminDetail(playlist.getPlaylistId()));
+    }
+
+    @Override
+    @Transactional
+    public Result<PlaylistDetailVO> unpublishPlaylist(Long playlistId) {
+        Playlist playlist = platformForUpdate(playlistId);
+        playlist.setStatus(PlaylistStatusEnum.DRAFT.getStatus());
+        playlistMapper.updateById(playlist);
+        return Result.success(adminDetail(playlist.getPlaylistId()));
+    }
+
+    @Override
+    @Transactional
+    public Result<PlaylistDetailVO> addPlaylistSongs(Long playlistId, PlaylistSongsDTO input) {
+        Playlist playlist = platformForUpdate(playlistId);
+        List<Long> songIds = normalizeIds(input == null ? null : input.getSongIds());
+        if (songIds.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请至少选择一首歌曲");
+        requireSongs(songIds);
+        for (Long songId : songIds) playlistBindingMapper.addSongIfAbsent(playlist.getPlaylistId(), songId);
+        return Result.success(adminDetail(playlist.getPlaylistId()));
+    }
+
+    @Override
+    @Transactional
+    public Result<PlaylistDetailVO> removePlaylistSong(Long playlistId, Long songId) {
+        Playlist playlist = platformForUpdate(playlistId);
+        playlistBindingMapper.removeSong(playlist.getPlaylistId(), PlaylistAccessService.positiveId(songId));
+        return Result.success(adminDetail(playlist.getPlaylistId()));
+    }
+
+    private List<Long> normalizeIds(List<Long> ids) {
+        return ids == null ? List.of() : ids.stream().filter(Objects::nonNull).distinct().sorted().toList();
+    }
+
+    private void requireSongs(List<Long> ids) {
+        if (!ids.isEmpty() && songMapper.selectCount(new QueryWrapper<Song>().in("id", ids)) != ids.size())
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "部分歌曲不存在，歌单未修改");
+    }
+
+    private String normalize(String value) { return value == null ? "" : value.trim(); }
+
+    private boolean platformTitleExists(String title, Long exceptId) {
+        return playlistMapper.selectCount(new QueryWrapper<Playlist>().isNull("owner_user_id")
+                .eq("title", title).ne(exceptId != null, "id", exceptId)) > 0;
+    }
+
+    @Override
+    @Transactional
     public Result updatePlaylistCover(Long playlistId, String coverUrl) {
-        Playlist playlist = playlistMapper.selectById(playlistId);
-        String cover = playlist.getCoverUrl();
-        if (cover != null && !cover.isEmpty()) {
-            minioService.deleteFile(cover);
-        }
-
-        playlist.setCoverUrl(coverUrl);
-        if (playlistMapper.updateById(playlist) == 0) {
-            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
-        }
-
-        return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+        Playlist playlist = platformForUpdate(playlistId);
+        String oldCover = playlist.getCoverUrl();
+        boolean oldWasUploaded = Boolean.TRUE.equals(playlist.getCoverIsCustom());
+        // Platform covers are always curated by an administrator, never derived from a song.
+        playlist.setCoverUrl(coverUrl).setCoverIsCustom(true);
+        playlistMapper.updateById(playlist);
+        if (!Objects.equals(oldCover, coverUrl)) deleteCoverAfterCommit(oldCover, oldWasUploaded);
+        return Result.success();
     }
 
-    /**
-     * 删除歌单
-     *
-     * @param playlistId 歌单id
-     * @return 删除结果
-     */
     @Override
-    @CacheEvict(cacheNames = "playlistCache", allEntries = true)
-    //操作名为 "playlistCache" 的缓存区域
-    //全部清除：allEntries = true 表示清除该缓存区域中的所有数据
+    @Transactional
     public Result deletePlaylist(Long playlistId) {
-        // 1. 查询歌单信息，获取封面 URL
-        Playlist playlist = playlistMapper.selectById(playlistId);
-        if (playlist == null) {
-            return Result.error(MessageConstant.PLAYLIST + MessageConstant.NOT_FOUND);
-        }
-        String coverUrl = playlist.getCoverUrl();
+        Playlist playlist = adminLock(playlistId);
+        playlistMapper.deleteById(playlistId);
+        deleteCoverAfterCommit(playlist.getCoverUrl(), Boolean.TRUE.equals(playlist.getCoverIsCustom()));
+        return Result.success();
+    }
 
-        // 2. 先删除 MinIO 里的封面文件
-        if (coverUrl != null && !coverUrl.isEmpty()) {
-            minioService.deleteFile(coverUrl);
+    @Override
+    @Transactional
+    public Result deletePlaylists(List<Long> playlistIds) {
+        PlaylistAccessService.requireAdmin();
+        if (playlistIds == null || playlistIds.isEmpty() || playlistIds.size() > 100)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "每次请选择 1–100 个歌单");
+        playlistIds.forEach(PlaylistAccessService::positiveId);
+        List<Playlist> targets = playlistIds.stream().distinct().sorted().map(this::adminLock).toList();
+        for (Playlist target : targets) {
+            playlistMapper.deleteById(target.getPlaylistId());
+            deleteCoverAfterCommit(target.getCoverUrl(), Boolean.TRUE.equals(target.getCoverIsCustom()));
         }
+        return Result.success();
+    }
 
-        // 3. 删除数据库中的歌单信息
-        if (playlistMapper.deleteById(playlistId) == 0) {
-            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
-        }
-
-        return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    /** Metadata edits stay restricted to platform playlists. */
+    private Playlist platformForUpdate(Long id) {
+        return playlistAccessService.lockPlatform(id);
     }
 
     /**
-     * 批量删除歌单
-     *
-     * @param playlistIds 歌单id列表
-     * @return 删除结果
+     * Deletion covers user-owned playlists as well, so an administrator can remove content
+     * that was never created through the admin console. Bindings, favourites and comments
+     * are removed by the existing cascading foreign keys.
      */
-    @Override
-    @CacheEvict(cacheNames = "playlistCache", allEntries = true)
-    public Result deletePlaylists(List<Long> playlistIds) {
-        List<Playlist> playlists = playlistMapper.selectBatchIds(playlistIds);
-        List<String> coverUrlList = playlists.stream()
-                .map(Playlist::getCoverUrl)
-                .filter(coverUrl -> coverUrl != null && !coverUrl.isEmpty())
-                .toList();
-
-        // 2. 先删除 MinIO 里的封面文件
-        for (String coverUrl : coverUrlList) {
-            minioService.deleteFile(coverUrl);
-        }
-
-        // 3. 删除数据库中的歌单信息
-        if (playlistMapper.deleteBatchIds(playlistIds) == 0) {
-            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
-        }
-
-        return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    private Playlist adminLock(Long id) {
+        PlaylistAccessService.requireAdmin();
+        Playlist playlist = playlistMapper.lockById(PlaylistAccessService.positiveId(id));
+        if (playlist == null) throw PlaylistAccessService.notFound();
+        return playlist;
     }
 
+    private void deleteCoverAfterCommit(String cover, boolean uploaded) {
+        // A default cover is a shared song image; removing it would break the song itself.
+        if (!uploaded || cover == null || cover.isBlank()) return;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() {
+                try { minioService.deleteFile(cover); }
+                catch (RuntimeException e) { log.warn("Playlist cover cleanup failed after commit"); }
+            }
+        });
+    }
 }

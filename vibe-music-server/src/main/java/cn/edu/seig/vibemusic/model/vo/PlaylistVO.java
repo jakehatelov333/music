@@ -26,4 +26,22 @@ public class PlaylistVO implements Serializable {
      */
     private String coverUrl;
 
+    private Long ownerUserId;
+    private Boolean isPublic;
+    private String introduction;
+    private String style;
+    private Long songCount;
+
+    /** DRAFT / PUBLISHED */
+    private String status;
+
+    /** True when the cover was uploaded by hand instead of derived from the first song. */
+    private Boolean coverIsCustom;
+
+    /** 公开列表专用：当前登录用户是否是该歌单的创建者 */
+    private Boolean owned;
+
+    /** 公开列表专用：当前登录用户是否已收藏该歌单 */
+    private Boolean favorite;
+
 }

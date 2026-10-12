@@ -8,6 +8,7 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -58,7 +59,9 @@ public class PlaylistController {
      * @return 歌单详情
      */
     @GetMapping("/getPlaylistDetail/{id}")
-    public Result<PlaylistDetailVO> getPlaylistDetail(@PathVariable("id") Long playlistId, HttpServletRequest request) {
+    public Result<PlaylistDetailVO> getPlaylistDetail(@PathVariable("id") Long playlistId, HttpServletRequest request,
+                                                     HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
         return playlistService.getPlaylistDetail(playlistId, request);
     }
 

@@ -1,6 +1,10 @@
 package cn.edu.seig.vibemusic.service.impl;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.security.CurrentUser;
+import cn.edu.seig.vibemusic.security.PlaylistAccessService;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
 import cn.edu.seig.vibemusic.mapper.PlaylistMapper;
@@ -15,23 +19,18 @@ import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IUserFavoriteService;
-import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
-import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 /**
  * <p>
@@ -51,6 +50,8 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
     private SongMapper songMapper;
     @Autowired
     private PlaylistMapper playlistMapper;
+    @Autowired
+    private PlaylistAccessService playlistAccessService;
 
     /**
      * 获取用户收藏的歌曲列表
@@ -59,8 +60,8 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
      * 作用：将方法的返回值缓存起来，下次请求时直接返回缓存结果，避免重复查询数据库。
      * 缓存键（key）：
      * 动态生成，由 songDTO 的多个字段拼接而成，格式为：
-     * "pageNum-pageSize-songName-artistName-album"
-     * 例如："1-10-晴天-周杰伦-七里香"。
+     * "v2:业务类型:userId:查询参数JSON"
+     * 不同用户、不同业务使用独立缓存键；旧缓存键不再读取。
      * 触发条件：
      * 仅当缓存中不存在该键时，才会执行方法逻辑。
      * 如果缓存已存在，直接返回缓存结果，跳过方法体。
@@ -69,11 +70,9 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
      * @return 用户收藏的歌曲列表
      */
     @Override
-    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.artistName + '-' + #songDTO.album")
+    @Cacheable(key = "@userCacheKeys.key('songs', #songDTO)")
     public Result<PageResult<SongVO>> getUserFavoriteSongs(SongDTO songDTO) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
 
         // 获取用户收藏的歌曲 ID 列表
         List<Long> favoriteSongIds = userFavoriteMapper.getUserFavoriteSongIds(userId);
@@ -108,19 +107,13 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
     @Override
     @CacheEvict(cacheNames = {"userFavoriteCache", "songCache", "artistCache", "playlistCache"}, allEntries = true)
     public Result collectSong(Long songId) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
 
-        QueryWrapper<UserFavorite> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("user_id", userId).eq("type", 0).eq("song_id", songId);
-        if (userFavoriteMapper.selectCount(queryWrapper) > 0) {
-            return Result.error(MessageConstant.ADD + MessageConstant.FAILED);
+        requirePositiveId(songId);
+        if (songMapper.selectById(songId) == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "歌曲不存在");
         }
-
-        UserFavorite userFavorite = new UserFavorite();
-        userFavorite.setUserId(userId).setType(0).setSongId(songId).setCreateTime(LocalDateTime.now());
-        userFavoriteMapper.insert(userFavorite);
+        userFavoriteMapper.insertSongIfAbsent(userId, songId);
 
         return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS);
     }
@@ -134,15 +127,12 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
     @Override
     @CacheEvict(cacheNames = {"userFavoriteCache", "songCache", "artistCache", "playlistCache"}, allEntries = true)
     public Result cancelCollectSong(Long songId) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
+        requirePositiveId(songId);
 
         QueryWrapper<UserFavorite> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("user_id", userId).eq("type", 0).eq("song_id", songId);
-        if (userFavoriteMapper.delete(queryWrapper) == 0) {
-            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
-        }
+        userFavoriteMapper.delete(queryWrapper);
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
@@ -154,11 +144,9 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
      * @return 用户收藏的歌单列表
      */
     @Override
-    @Cacheable(key = "#playlistDTO.pageNum + '-' + #playlistDTO.pageSize + '-' + #playlistDTO.title + '-' + #playlistDTO.style")
+    // Playlist visibility is mutable, so always recheck it in the SQL query.
     public Result<PageResult<PlaylistVO>> getUserFavoritePlaylists(PlaylistDTO playlistDTO) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
 
         // 获取用户收藏的歌单 ID 列表
         List<Long> favoritePlaylistIds = userFavoriteMapper.getUserFavoritePlaylistIds(userId);
@@ -187,20 +175,14 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
      */
     @Override
     @CacheEvict(cacheNames = {"userFavoriteCache", "songCache", "artistCache", "playlistCache"}, allEntries = true)
+    @Transactional
     public Result collectPlaylist(Long playlistId) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
 
-        QueryWrapper<UserFavorite> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("user_id", userId).eq("type", 1).eq("playlist_id", playlistId);
-        if (userFavoriteMapper.selectCount(queryWrapper) > 0) {
-            return Result.error(MessageConstant.ADD + MessageConstant.FAILED);
-        }
-
-        UserFavorite userFavorite = new UserFavorite();
-        userFavorite.setUserId(userId).setType(1).setPlaylistId(playlistId).setCreateTime(LocalDateTime.now());
-        userFavoriteMapper.insert(userFavorite);
+        requirePositiveId(playlistId);
+        // The row lock serializes a public -> private change with this write.
+        playlistAccessService.lockReadable(playlistId);
+        userFavoriteMapper.insertPlaylistIfAbsent(userId, playlistId);
 
         return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS);
     }
@@ -214,17 +196,24 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
     @Override
     @CacheEvict(cacheNames = {"userFavoriteCache", "songCache", "artistCache", "playlistCache"}, allEntries = true)
     public Result cancelCollectPlaylist(Long playlistId) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = requireUser();
+        requirePositiveId(playlistId);
 
         QueryWrapper<UserFavorite> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("user_id", userId).eq("type", 1).eq("playlist_id", playlistId);
-        if (userFavoriteMapper.delete(queryWrapper) == 0) {
-            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
-        }
+        userFavoriteMapper.delete(queryWrapper);
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    }
+
+    private static Long requireUser() {
+        Long userId = CurrentUser.id();
+        if (userId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录");
+        return userId;
+    }
+
+    private static void requirePositiveId(Long id) {
+        if (id == null || id <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "资源 ID 不合法");
     }
 
 }

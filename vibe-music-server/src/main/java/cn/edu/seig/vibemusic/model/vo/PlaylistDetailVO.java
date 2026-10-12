@@ -32,6 +32,17 @@ public class PlaylistDetailVO implements Serializable {
      */
     private String introduction;
 
+    private Long ownerUserId;
+    private Boolean isPublic;
+    private Boolean editable;
+    private String style;
+
+    /** DRAFT / PUBLISHED */
+    private String status;
+
+    /** True when the cover was uploaded by hand instead of derived from the first song. */
+    private Boolean coverIsCustom;
+
     /**
      * 歌曲列表
      */

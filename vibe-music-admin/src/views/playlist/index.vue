@@ -10,6 +10,9 @@ import Delete from "@iconify-icons/ep/delete";
 import EditPen from "@iconify-icons/ep/edit-pen";
 import Refresh from "@iconify-icons/ep/refresh";
 import AddFill from "@iconify-icons/ri/add-circle-line";
+import MusicFill from "@iconify-icons/ri/music-2-fill";
+import SendPlaneFill from "@iconify-icons/ri/send-plane-fill";
+import InboxUnarchive from "@iconify-icons/ri/inbox-unarchive-line";
 
 defineOptions({
   name: "PlaylistManagement"
@@ -31,8 +34,10 @@ const {
   resetForm,
   onbatchDel,
   openDialog,
-  handleUpdate,
+  openSongs,
   handleDelete,
+  handlePublish,
+  handleUnpublish,
   handleUpload,
   handleSizeChange,
   onSelectionCancel,
@@ -55,35 +60,39 @@ const {
         <el-form-item label="歌单：" prop="title">
           <el-input
             v-model="form.title"
-            placeholder="请输入歌单"
+            placeholder="请输入歌单名称"
             clearable
             class="!w-[180px]"
           />
         </el-form-item>
         <el-form-item label="风格：" prop="style">
-          <el-select
+          <el-input
             v-model="form.style"
-            placeholder="请选择"
+            placeholder="请输入风格"
             clearable
-            class="!w-[180px]"
+            class="!w-[150px]"
+          />
+        </el-form-item>
+        <el-form-item label="来源：" prop="source">
+          <el-select
+            v-model="form.source"
+            placeholder="全部"
+            clearable
+            class="!w-[140px]"
           >
-            <el-option label="节奏布鲁斯" value="节奏布鲁斯" />
-            <el-option label="欧美流行" value="欧美流行" />
-            <el-option label="华语流行" value="华语流行" />
-            <el-option label="粤语流行" value="粤语流行" />
-            <el-option label="国风流行" value="国风流行" />
-            <el-option label="韩语流行" value="韩语流行" />
-            <el-option label="日本流行" value="日本流行" />
-            <el-option label="嘻哈说唱" value="嘻哈说唱" />
-            <el-option label="非洲节拍" value="非洲节拍" />
-            <el-option label="原声带" value="原声带" />
-            <el-option label="轻音乐" value="轻音乐" />
-            <el-option label="摇滚" value="摇滚" />
-            <el-option label="朋克" value="朋克" />
-            <el-option label="电子" value="电子" />
-            <el-option label="国风" value="国风" />
-            <el-option label="乡村" value="乡村" />
-            <el-option label="古典" value="古典" />
+            <el-option label="平台歌单" value="PLATFORM" />
+            <el-option label="用户歌单" value="USER" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="发布状态：" prop="status">
+          <el-select
+            v-model="form.status"
+            placeholder="全部"
+            clearable
+            class="!w-[140px]"
+          >
+            <el-option label="草稿" value="DRAFT" />
+            <el-option label="已发布" value="PUBLISHED" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -138,7 +147,7 @@ const {
           </div>
           <pure-table
             ref="tableRef"
-            row-key="userId"
+            row-key="playlistId"
             adaptive
             :adaptiveConfig="{ offsetBottom: 108 }"
             align-whole="center"
@@ -158,6 +167,7 @@ const {
           >
             <template #operation="{ row }">
               <el-button
+                v-if="!row.ownerUserId"
                 class="reset-margin"
                 link
                 type="primary"
@@ -190,11 +200,50 @@ const {
                   type="primary"
                   :size="size"
                   :icon="useRenderIcon(More)"
-                  @click="handleUpdate(row)"
                 />
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item>
+                      <el-button
+                        :class="buttonClass"
+                        link
+                        type="primary"
+                        :size="size"
+                        :icon="useRenderIcon(MusicFill)"
+                        @click="openSongs(row)"
+                      >
+                        {{ row.ownerUserId ? "查看歌曲" : "歌曲维护" }}
+                      </el-button>
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="!row.ownerUserId && row.status !== 'PUBLISHED'"
+                    >
+                      <el-button
+                        :class="buttonClass"
+                        link
+                        type="primary"
+                        :size="size"
+                        :icon="useRenderIcon(SendPlaneFill)"
+                        @click="handlePublish(row)"
+                      >
+                        发布
+                      </el-button>
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="!row.ownerUserId && row.status === 'PUBLISHED'"
+                    >
+                      <el-button
+                        :class="buttonClass"
+                        link
+                        type="primary"
+                        :size="size"
+                        :icon="useRenderIcon(InboxUnarchive)"
+                        @click="handleUnpublish(row)"
+                      >
+                        撤回草稿
+                      </el-button>
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="!row.ownerUserId">
                       <el-button
                         :class="buttonClass"
                         link

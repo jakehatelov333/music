@@ -3,8 +3,9 @@ package cn.edu.seig.vibemusic.controller;
 
 import cn.edu.seig.vibemusic.model.dto.*;
 import cn.edu.seig.vibemusic.model.entity.Artist;
-import cn.edu.seig.vibemusic.model.entity.Playlist;
+import cn.edu.seig.vibemusic.model.vo.AdminPlaylistVO;
 import cn.edu.seig.vibemusic.model.vo.ArtistNameVO;
+import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
 import cn.edu.seig.vibemusic.model.vo.SongAdminVO;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.result.PageResult;
@@ -123,7 +124,7 @@ public class AdminController {
      * @return 结果
      */
     @PostMapping("/getAllUsers")
-    public Result<PageResult<UserManagementVO>> getAllUsers(@RequestBody UserSearchDTO userSearchDTO) {
+    public Result<PageResult<UserManagementVO>> getAllUsers(@RequestBody @Valid UserSearchDTO userSearchDTO) {
         return userService.getAllUsers(userSearchDTO);
     }
 
@@ -216,7 +217,7 @@ public class AdminController {
      * @return 结果
      */
     @PostMapping("/getAllArtists")
-    public Result<PageResult<Artist>> getAllArtists(@RequestBody ArtistDTO artistDTO) {
+    public Result<PageResult<Artist>> getAllArtists(@RequestBody @Valid ArtistDTO artistDTO) {
         return artistService.getAllArtistsAndDetail(artistDTO);
     }
 
@@ -307,7 +308,7 @@ public class AdminController {
      * @return 结果
      */
     @PostMapping("/getAllSongsByArtist")
-    public Result<PageResult<SongAdminVO>> getAllSongsByArtist(@RequestBody SongAndArtistDTO songDTO) {
+    public Result<PageResult<SongAdminVO>> getAllSongsByArtist(@RequestBody @Valid SongAndArtistDTO songDTO) {
         return songService.getAllSongsByArtist(songDTO);
     }
 
@@ -404,7 +405,7 @@ public class AdminController {
      * 获取所有专辑信息
      */
     @PostMapping("/getAllAlbums")
-    public Result<PageResult<cn.edu.seig.vibemusic.model.vo.AlbumVO>> getAllAlbums(@RequestBody AlbumQueryDTO queryDTO) {
+    public Result<PageResult<cn.edu.seig.vibemusic.model.vo.AlbumVO>> getAllAlbums(@RequestBody @Valid AlbumQueryDTO queryDTO) {
         if (queryDTO.getStatus() != null) {
             queryDTO.setStatus(queryDTO.getStatus().trim().toUpperCase());
         }
@@ -468,24 +469,35 @@ public class AdminController {
     }
 
     /**
-     * 获取所有歌单信息
+     * 获取平台歌单信息（含草稿）
      *
-     * @param playlistDTO 歌单搜索条件
+     * @param queryDTO 歌单搜索条件：名称、风格、发布状态、可见性
      * @return 结果
      */
     @PostMapping("/getAllPlaylists")
-    public Result<PageResult<Playlist>> getAllPlaylists(@RequestBody PlaylistDTO playlistDTO) {
-        return playlistService.getAllPlaylistsInfo(playlistDTO);
+    public Result<PageResult<AdminPlaylistVO>> getAllPlaylists(@RequestBody @Valid AdminPlaylistQueryDTO queryDTO) {
+        return playlistService.getAllPlaylistsInfo(queryDTO);
     }
 
     /**
-     * 新增歌单
+     * 获取平台歌单详情（含草稿与私人歌单的歌曲列表）
+     *
+     * @param playlistId 歌单id
+     * @return 结果
+     */
+    @GetMapping("/getPlaylistDetail/{id}")
+    public Result<PlaylistDetailVO> getPlaylistDetail(@PathVariable("id") Long playlistId) {
+        return playlistService.getAdminPlaylistDetail(playlistId);
+    }
+
+    /**
+     * 新增歌单，默认创建为草稿
      *
      * @param playlistAddDTO 歌单信息
      * @return 结果
      */
     @PostMapping("/addPlaylist")
-    public Result addPlaylist(@RequestBody PlaylistAddDTO playlistAddDTO) {
+    public Result<PlaylistDetailVO> addPlaylist(@RequestBody @Valid PlaylistAddDTO playlistAddDTO) {
         return playlistService.addPlaylist(playlistAddDTO);
     }
 
@@ -496,8 +508,55 @@ public class AdminController {
      * @return 结果
      */
     @PutMapping("/updatePlaylist")
-    public Result updatePlaylist(@RequestBody PlaylistUpdateDTO playlistUpdateDTO) {
+    public Result<PlaylistDetailVO> updatePlaylist(@RequestBody @Valid PlaylistUpdateDTO playlistUpdateDTO) {
         return playlistService.updatePlaylist(playlistUpdateDTO);
+    }
+
+    /**
+     * 发布歌单（平台歌单固定为公开）
+     *
+     * @param playlistId 歌单id
+     * @return 结果
+     */
+    @PatchMapping("/publishPlaylist/{id}")
+    public Result<PlaylistDetailVO> publishPlaylist(@PathVariable("id") Long playlistId) {
+        return playlistService.publishPlaylist(playlistId);
+    }
+
+    /**
+     * 撤回为草稿
+     *
+     * @param playlistId 歌单id
+     * @return 结果
+     */
+    @PatchMapping("/unpublishPlaylist/{id}")
+    public Result<PlaylistDetailVO> unpublishPlaylist(@PathVariable("id") Long playlistId) {
+        return playlistService.unpublishPlaylist(playlistId);
+    }
+
+    /**
+     * 为歌单添加歌曲
+     *
+     * @param playlistId 歌单id
+     * @param input      歌曲 id 列表
+     * @return 结果
+     */
+    @PostMapping("/addPlaylistSongs/{id}")
+    public Result<PlaylistDetailVO> addPlaylistSongs(@PathVariable("id") Long playlistId,
+                                                     @RequestBody @Valid PlaylistSongsDTO input) {
+        return playlistService.addPlaylistSongs(playlistId, input);
+    }
+
+    /**
+     * 从歌单移除歌曲
+     *
+     * @param playlistId 歌单id
+     * @param songId     歌曲id
+     * @return 结果
+     */
+    @DeleteMapping("/removePlaylistSong/{playlistId}/{songId}")
+    public Result<PlaylistDetailVO> removePlaylistSong(@PathVariable Long playlistId, @PathVariable Long songId) {
+        return playlistService.removePlaylistSong(playlistId, songId);
     }
 
     /**

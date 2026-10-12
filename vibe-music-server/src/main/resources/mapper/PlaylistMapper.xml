@@ -8,6 +8,11 @@
         <result column="title" property="title"/>
         <result column="coverUrl" property="coverUrl"/>
         <result column="introduction" property="introduction"/>
+        <result column="ownerUserId" property="ownerUserId"/>
+        <result column="isPublic" property="isPublic"/>
+        <result column="style" property="style"/>
+        <result column="status" property="status"/>
+        <result column="coverIsCustom" property="coverIsCustom"/>
         <collection property="songs" ofType="cn.edu.seig.vibemusic.model.vo.SongVO">
             <id column="songId" property="songId"/>
             <result column="songName" property="songName"/>
@@ -28,12 +33,16 @@
         </collection>
     </resultMap>
 
-    <!-- 查询歌单详情 -->
-    <select id="getPlaylistDetailById" resultMap="PlaylistDetailVOResultMap">
+    <sql id="playlistDetailBody">
         SELECT p.id           AS playlistId,
                p.title        AS title,
                p.cover_url    AS coverUrl,
                p.introduction AS introduction,
+               p.owner_user_id AS ownerUserId,
+               p.is_public    AS isPublic,
+               p.style        AS style,
+               p.status       AS status,
+               p.cover_is_custom AS coverIsCustom,
                pb.song_id     AS songId,
                s.name         AS songName,
                s.album        AS album,
@@ -54,14 +63,29 @@
                  LEFT JOIN tb_artist a ON s.artist_id = a.id
                  LEFT JOIN tb_comment c ON p.id = c.playlist_id AND c.type = 1
                  LEFT JOIN tb_user u ON c.user_id = u.id
+    </sql>
+
+    <!-- 查询歌单详情：草稿仅所有者可见，已发布歌单再按可见性过滤 -->
+    <select id="getPlaylistDetailById" resultMap="PlaylistDetailVOResultMap">
+        <include refid="playlistDetailBody"/>
         WHERE p.id = #{playlistId}
+          AND (p.owner_user_id = #{viewerId}
+               OR (p.is_public = 1 AND (p.status IS NULL OR p.status = 'PUBLISHED')))
+        ORDER BY pb.song_id, c.create_time DESC, c.id DESC
+    </select>
+
+    <!-- 管理员详情：平台歌单与用户歌单都不区分发布状态与可见性 -->
+    <select id="getAdminPlaylistDetailById" resultMap="PlaylistDetailVOResultMap">
+        <include refid="playlistDetailBody"/>
+        WHERE p.id = #{playlistId}
+        ORDER BY pb.song_id, c.create_time DESC, c.id DESC
     </select>
 
     <!-- 获取用户收藏歌单的风格 -->
     <select id="getFavoritePlaylistStyles" resultType="java.lang.String">
         SELECT style
         FROM tb_playlist
-        WHERE id IN
+        WHERE is_public = 1 AND (status IS NULL OR status = 'PUBLISHED') AND id IN
         <foreach item="id" collection="favoritePlaylistIds" open="(" separator="," close=")">
             #{id}
         </foreach>
@@ -69,10 +93,10 @@
 
     <!-- 根据风格推荐歌单（排除已收藏歌单） -->
     <select id="getRecommendedPlaylistsByStyles" resultType="cn.edu.seig.vibemusic.model.vo.PlaylistVO">
-        SELECT *
+        SELECT id AS playlistId, title, cover_url AS coverUrl
         FROM tb_playlist
-        WHERE style IN
-        <foreach item="style" collection="sortedStyleIds" open="(" separator="," close=")">
+        WHERE is_public = 1 AND (status IS NULL OR status = 'PUBLISHED') AND style IN
+        <foreach item="style" collection="styles" open="(" separator="," close=")">
             #{style}
         </foreach>
         AND id NOT IN
@@ -91,13 +115,15 @@
         p.cover_url AS coverUrl
         FROM tb_playlist p
         LEFT JOIN tb_user_favorite u ON p.id = u.playlist_id AND u.user_id = #{userId}
-        WHERE
-        <if test="playlistIds != null and playlistIds.size() > 0">
-            p.id IN
-            <foreach collection="playlistIds" item="id" open="(" separator="," close=")">
-                #{id}
-            </foreach>
-        </if>
+        WHERE (p.is_public = 1 AND (p.status IS NULL OR p.status = 'PUBLISHED')
+               OR p.owner_user_id = #{userId})
+        <choose>
+            <when test="playlistIds != null and playlistIds.size() > 0">
+                AND p.id IN
+                <foreach collection="playlistIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </when>
+            <otherwise>AND 1 = 0</otherwise>
+        </choose>
         <if test="title != null and title.trim() != ''">
             AND p.title LIKE CONCAT('%', #{title}, '%')
         </if>
@@ -105,6 +131,55 @@
             AND p.style LIKE CONCAT('%', #{style}, '%')
         </if>
         ORDER BY u.create_time DESC
+    </select>
+
+    <!-- 用户自己的歌单列表：包含草稿，因此不加发布状态过滤 -->
+    <select id="getOwnedPlaylists" resultType="cn.edu.seig.vibemusic.model.vo.PlaylistVO">
+        SELECT p.id AS playlistId, p.title, p.cover_url AS coverUrl, p.owner_user_id AS ownerUserId,
+               p.is_public AS isPublic, p.introduction, p.style, p.status, p.cover_is_custom AS coverIsCustom,
+               (SELECT COUNT(*) FROM tb_playlist_binding b WHERE b.playlist_id = p.id) AS songCount
+        FROM tb_playlist p
+        WHERE p.owner_user_id = #{ownerId}
+        <if test="title != null and title.trim() != ''">AND p.title LIKE CONCAT('%', #{title}, '%')</if>
+        <if test="style != null and style.trim() != ''">AND p.style = #{style}</if>
+        ORDER BY p.id DESC
+    </select>
+
+    <!-- 管理员歌单列表：同时包含平台歌单与用户歌单，按来源与发布状态筛选 -->
+    <select id="getAdminPlaylists" resultType="cn.edu.seig.vibemusic.model.vo.AdminPlaylistVO">
+        SELECT p.id AS playlistId, p.title, p.cover_url AS coverUrl, p.introduction, p.style,
+               p.is_public AS isPublic, p.status, p.cover_is_custom AS coverIsCustom,
+               p.owner_user_id AS ownerUserId, u.username AS ownerName,
+               (SELECT COUNT(*) FROM tb_playlist_binding b WHERE b.playlist_id = p.id) AS songCount
+        FROM tb_playlist p
+                 LEFT JOIN tb_user u ON u.id = p.owner_user_id
+        <where>
+            <if test="title != null and title.trim() != ''">AND p.title LIKE CONCAT('%', #{title}, '%')</if>
+            <if test="style != null and style.trim() != ''">AND p.style LIKE CONCAT('%', #{style}, '%')</if>
+            <if test="status != null and status.trim() != ''">AND p.status = #{status}</if>
+            <if test="platform != null and platform">AND p.owner_user_id IS NULL</if>
+            <if test="platform != null and !platform">AND p.owner_user_id IS NOT NULL</if>
+        </where>
+        ORDER BY p.id DESC
+    </select>
+
+    <!-- 公开歌单列表：自己创建的歌单排到最后，并标记「我创建的 / 已收藏」 -->
+    <select id="getPublicPlaylists" resultType="cn.edu.seig.vibemusic.model.vo.PlaylistVO">
+        SELECT p.id AS playlistId, p.title, p.cover_url AS coverUrl, p.introduction, p.style,
+               p.is_public AS isPublic, p.status, p.cover_is_custom AS coverIsCustom,
+               p.owner_user_id AS ownerUserId,
+               (SELECT COUNT(*) FROM tb_playlist_binding b WHERE b.playlist_id = p.id) AS songCount,
+               CASE WHEN #{viewerId} IS NOT NULL AND p.owner_user_id = #{viewerId} THEN TRUE ELSE FALSE END AS owned,
+               CASE WHEN #{viewerId} IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM tb_user_favorite f
+                       WHERE f.user_id = #{viewerId} AND f.type = 1 AND f.playlist_id = p.id
+                   ) THEN TRUE ELSE FALSE END AS favorite
+        FROM tb_playlist p
+        WHERE p.is_public = 1
+          AND (p.status IS NULL OR p.status = 'PUBLISHED')
+        <if test="title != null and title.trim() != ''">AND p.title LIKE CONCAT('%', #{title}, '%')</if>
+        <if test="style != null and style.trim() != ''">AND p.style = #{style}</if>
+        ORDER BY owned ASC, p.id DESC
     </select>
 
 </mapper>

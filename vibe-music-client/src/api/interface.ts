@@ -30,6 +30,14 @@ export interface PlaylistDetail {
   likeStatus: number
   comments: PlaylistComment[]
   isCollected: boolean
+  ownerUserId?: number | null
+  isPublic?: boolean
+  editable?: boolean
+  style?: string | null
+  /** DRAFT / PUBLISHED，用户歌单恒为 PUBLISHED */
+  status?: string | null
+  /** true 表示封面是用户手动上传的，不会被默认封面覆盖 */
+  coverIsCustom?: boolean | null
 }
 
 export interface Song {
