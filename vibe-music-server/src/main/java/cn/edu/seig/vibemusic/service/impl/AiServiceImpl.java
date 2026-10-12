@@ -97,6 +97,9 @@ public class AiServiceImpl extends ServiceImpl<AiMapper,ChatMessage> implements 
         if (baseMapper.updateModelContext(chatId, token, "[]") != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "会话状态已改变，请重试");
         }
+        // 清空窗口的同时清空摘要：摘要是对话内容的压缩产物，
+        // 用户删了聊天记录之后它必须一起消失，否则等于删了记录却留着内容（隐私问题）。
+        baseMapper.clearSummary(chatId);
         LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
                 .eq(ChatMessage::getChatId, chatId);
         this.remove(wrapper);

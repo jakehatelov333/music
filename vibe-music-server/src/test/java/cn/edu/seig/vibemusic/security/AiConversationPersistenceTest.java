@@ -67,7 +67,9 @@ class AiConversationPersistenceTest {
                 CREATE TABLE IF NOT EXISTS ai_chat_state(
                   chat_id VARCHAR(255) PRIMARY KEY, context_json LONGTEXT NULL,
                   context_version BIGINT NOT NULL DEFAULT 0,
-                  active_run_token VARCHAR(36) NULL, lease_expires_at TIMESTAMP(6) NULL)
+                  active_run_token VARCHAR(36) NULL, lease_expires_at TIMESTAMP(6) NULL,
+                  summary_text LONGTEXT NULL, summary_upto_id BIGINT NOT NULL DEFAULT 0,
+                  summary_updated_at TIMESTAMP(6) NULL)
                 """);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS chat_messages(
@@ -94,9 +96,12 @@ class AiConversationPersistenceTest {
         assertNotNull(saved.getId());
         assertNotNull(saved.getCreatedAt());
         service.releaseConversation(chat, "first");
+        // 先置一份摘要，验证清空会话时摘要被连带清除（隐私：删了记录不能留着内容）
+        jdbc.update("UPDATE ai_chat_state SET summary_text = '旧对话的摘要' WHERE chat_id = ?", chat);
         service.deleteMessagesByChatId(chat);
         assertEquals(0, service.countMessagesByChatId(chat));
         assertEquals("[]", service.getModelContext(chat));
+        assertNull(jdbc.queryForObject("SELECT summary_text FROM ai_chat_state WHERE chat_id = ?", String.class, chat));
         assertNull(jdbc.queryForObject("SELECT active_run_token FROM ai_chat_state WHERE chat_id = ?", String.class, chat));
     }
 

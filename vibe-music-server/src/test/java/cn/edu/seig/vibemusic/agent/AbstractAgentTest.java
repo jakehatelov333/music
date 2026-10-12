@@ -257,6 +257,8 @@ public abstract class AbstractAgentTest {
             config.addMapper(AiTaskMetricMapper.class);
             config.addMapper(SearchMapper.class);
             config.addMapper(UserMusicProfileMapper.class);
+            // AiMapper 是 MyBatis-Plus 的 BaseMapper：滚动摘要记忆与会话消息读写都走它。
+            config.addMapper(AiMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(source);
             factory.setConfiguration(config);
@@ -277,6 +279,7 @@ public abstract class AbstractAgentTest {
         @Bean AiTaskMetricMapper metricMapper(SqlSessionTemplate session) { return session.getMapper(AiTaskMetricMapper.class); }
         @Bean SearchMapper search(SqlSessionTemplate session) { return session.getMapper(SearchMapper.class); }
         @Bean UserMusicProfileMapper profiles(SqlSessionTemplate session) { return session.getMapper(UserMusicProfileMapper.class); }
+        @Bean AiMapper aiMapper(SqlSessionTemplate session) { return session.getMapper(AiMapper.class); }
 
         @Bean PlaylistAccessService access(PlaylistMapper mapper) { return new PlaylistAccessService(mapper); }
         @Bean IPlaylistService details() { return new PlaylistServiceImpl(); }
