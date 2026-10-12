@@ -10,17 +10,17 @@ export const MenuData = [
       {
         title: '歌手',
         icon: 'ri:mic-line',
-        router: '/artist'
+        router: '/artist',
       },
       {
         title: '专辑',
         icon: 'ri:album-line',
-        router: '/album'
+        router: '/album',
       },
       {
         title: '歌单',
         icon: 'ri:play-list-line',
-        router: '/playlist'
+        router: '/playlist',
       },
     ],
   },
@@ -29,9 +29,14 @@ export const MenuData = [
     children: [
       { title: '喜欢', icon: 'ri:heart-line', router: '/like' },
       {
+        title: '我的歌单',
+        icon: 'ri:play-list-add-line',
+        router: '/my-playlists',
+      },
+      {
         title: '个人中心',
         icon: 'mi:user',
-        router: '/user'
+        router: '/user',
       },
     ],
   },

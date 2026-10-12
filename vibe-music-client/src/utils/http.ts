@@ -66,6 +66,8 @@ instance.interceptors.response.use(
     // 关闭进度条
     NProgress.done()
 
+    if (axios.isCancel(error)) return Promise.reject(error)
+
     if (error.response) {
       switch (error.response.status) {
         case 401:
@@ -83,6 +85,12 @@ instance.interceptors.response.use(
           break
         case 404:
           ElMessage.error('请求的资源不存在')
+          break
+        case 409:
+        case 410:
+          ElMessage.error(
+            error.response.data?.message || '歌单状态已变化，请刷新后重试'
+          )
           break
         case 500:
           ElMessage.error('服务器错误')
