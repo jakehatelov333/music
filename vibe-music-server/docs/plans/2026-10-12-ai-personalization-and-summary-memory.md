@@ -2,22 +2,22 @@
 
 > **REQUIRED SUB-SKILL:** 执行本方案时使用 `superpowers:executing-plans`（或 `subagent-driven-development`）。
 
-## 进度总览（截至 2026-10-12 21:10）
+## 进度总览（截至 2026-10-12 23:5x）
 
-**9 个 Task：已完成 5 · 部分完成 1 · 未开始 3。**
-测试基线：`mvn -o test` **126 条全绿** · 评测 **46/46**（零漂移）· 7 个 commit 在 `test1`（**未推远端**）。
+**9 个 Task：全部完成（5 → 9）。**
+测试基线：`mvn -o test` **141 条全绿** · 评测 **46/46**（零漂移）· 11 个 commit 在 `test1`（未推远端）。
 
 | # | 任务 | 状态 | 提交 | 备注 |
 | --- | --- | --- | --- | --- |
 | 1 | 数据库迁移脚本 + 测试基座 schema | ✅ **已完成** | `1b916c3` | 迁移已应用到本地 MySQL |
 | 2 | 画像实体 + Mapper（SQL 事实聚合） | ✅ **已完成** | `a30c2fe` | 含跨来源去重；单测覆盖 |
 | 3 | `UserMusicProfileService`（TTL + 偏好块） | ✅ **已完成** | `7510f5e` | 请求路径**零模型调用** |
-| 4 | 偏好概述异步生成（qwen-flash + 指纹缓存） | ⬜ **未开始** | — | `MusicTasteSummaryService` 尚未创建 |
-| 5 | 滚动摘要记忆（`ChatSummaryService`） | ⬜ **未开始** | — | 类尚未创建；`AgentSystemPrompt.chatId` 已为它预留 |
-| 6 | 动态系统提示词组装（`AgentSystemPrompt`） | ✅ **已完成** | `28dbf0d` | **只注入画像**，摘要槽位留给 Task 5 |
+| 4 | 偏好概述异步生成（qwen-flash + 指纹缓存） | ✅ **已完成** | `2f18a2c` | 指纹一致不调模型；失败静默 |
+| 5 | 滚动摘要记忆（`ChatSummaryService`） | ✅ **已完成** | `43f94fa` | CAS 幂等；摘要已注入提示词（Task 6 预留槽位） |
+| 6 | 动态系统提示词组装（`AgentSystemPrompt`） | ✅ **已完成** | `28dbf0d` | 画像 + 摘要三段注入 |
 | 7 | 接入 `AiAssistantFactory` + 4 处调用点 | ✅ **已完成** | `28dbf0d` | 评测基座注入 `StaticSystemPrompt`，基线零漂移 |
-| 8 | 会话结束后异步整理 + `GET /ai/profile` | ⬜ **未开始** | — | 画像目前**没有任何接口可查看** |
-| 9 | 配置 / 文档 / 最终验收 | 🟡 **部分完成** | `ba73d25` | 见下方「Task 9 明细」 |
+| 8 | 会话结束后异步整理 + `GET /ai/profile` | ✅ **已完成** | `a22b9e8` | 普通/流式两条路径都接线；匿名 401 |
+| 9 | 配置 / 文档 / 最终验收 | ✅ **已完成** | `—`（本文档 + `agent-personalization.md`） | 141 全绿；46/46；真实端到端通过 |
 
 ### 执行期间新增的任务（不在原计划内）
 
@@ -27,15 +27,15 @@
 | 修复：多值风格未拆分，画像输出混合串 | ✅ **已修复** | `a4363f5` | 真数据发现的缺陷，H2 夹具测不出 |
 | 修复：画像注入导致工具预算超限（503） | ✅ **已修复** | `07e6090` | 真数据发现的回归，对照实验定性 |
 
-### Task 9 明细（部分完成）
+### Task 9 明细（全部完成）
 
 | 步骤 | 状态 | 说明 |
 | --- | --- | --- |
-| Step 1 配置项 | 🟡 **部分** | `ai.max-tool-calls` 已 4→6；**`ai.profile.*` 与 `ai.summary.*` 尚未写进 `application.yml`**（目前仅靠 `@Value` 默认值兜底，可运行但不可调） |
-| Step 2 写 `docs/agent-personalization.md` | ⬜ **未开始** | 目前只有本方案文档文末的「实施记录」章节 |
-| Step 3 全量回归 + 评测 | ✅ **已完成** | 126 条全绿；评测 46/46 |
-| Step 4 真实端到端 | ✅ **已完成** | 见文末「实施记录」 |
-| Step 5 Commit | ✅ **已完成** | 7 个 commit |
+| Step 1 配置项 | ✅ **已完成** | `ai.profile.*` / `ai.summary.*` 已写入 `application.yml` |
+| Step 2 写 `docs/agent-personalization.md` | ✅ **已完成** | 数据边界/字段/阈值/防线/排查手册；`agent-protocol.md` 补第六节 |
+| Step 3 全量回归 + 评测 | ✅ **已完成** | 141 条全绿；评测 46/46 |
+| Step 4 真实端到端 | ✅ **已完成** | 真实 qwen-flash + 真实 MySQL，证据见文末「实施记录」 |
+| Step 5 Commit | ✅ **已完成** | 4 个 commit（Task 4/5/8 + 本文档与配置文档） |
 
 ### 已知未解决（独立课题，不属于上述 9 个 Task）
 
@@ -802,7 +802,7 @@ git commit -m "feat(ai): 用户画像 TTL 刷新与偏好块渲染"
 
 ---
 
-## ⬜ Task 4（未开始）: 偏好概述的异步生成（qwen-flash + 指纹缓存）
+## ✅ Task 4（已完成 · 2f18a2c）: 偏好概述的异步生成（qwen-flash + 指纹缓存）
 
 **Files:**
 
@@ -959,7 +959,7 @@ git commit -m "feat(ai): qwen-flash 生成用户偏好概述并按事实指纹�
 ---
 
 
-## ⬜ Task 5（未开始）: 滚动摘要记忆（ChatSummaryService）
+## ✅ Task 5（已完成 · 43f94fa）: 滚动摘要记忆（ChatSummaryService）
 
 **Files:**
 
@@ -1657,7 +1657,7 @@ git commit -m "feat(ai): 助手装配接入动态系统提示词，评测基座�
 
 ---
 
-## ⬜ Task 8（未开始）: 会话结束后异步触发摘要 + 只读画像接口
+## ✅ Task 8（已完成 · a22b9e8）: 会话结束后异步触发摘要 + 只读画像接口
 
 **Files:**
 
@@ -1758,7 +1758,7 @@ git commit -m "feat(ai): 会话结束后异步整理记忆与画像，新增只�
 
 ---
 
-## 🟡 Task 9（部分完成 · ba73d25）: 配置项、文档与最终验收
+## ✅ Task 9（已完成 · ba73d25 + 本轮文档/配置）: 配置项、文档与最终验收
 
 **Files:**
 
@@ -1938,3 +1938,58 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
    并用已有结果收尾，属独立课题。
 2. 真实模型侧质量仍只有少量样本，无批量准确率统计（沿用既有结论）。
 
+
+---
+
+## 实施记录（Task 4/5/8/9，2026-10-12 深夜）
+
+### Commit 清单
+
+| commit | 内容 |
+|---|---|
+| `2f18a2c` | feat(ai): qwen-flash 生成用户偏好概述并按事实指纹缓存（Task 4） |
+| `43f94fa` | feat(ai): 新增滚动摘要记忆并注入动态系统提示词（Task 5） |
+| `a22b9e8` | feat(ai): 会话结束后异步整理记忆与画像，新增只读画像接口（Task 8） |
+| 本轮 docs | 配置项 `ai.profile.*`/`ai.summary.*` + `agent-personalization.md` + 协议文档第六节（Task 9） |
+
+### 与方案原稿的偏差（重要）
+
+1. **Task 4 示例测试的 mock 桩写错了返回类型**：`thenReturn(Response.from(AiMessage.from(...)))`
+   编译不过 —— javap 核实 0.36.2 的 `ChatLanguageModel.generate(String)` 是直接返回 `String` 的
+   default 方法。实际实现按 `String` 桩，行为语义不变。
+2. **Task 5 未给 `IAiService` 加 4 个委托方法**：`ChatSummaryService` 按方案原稿直接用
+   `AiMapper`，委托方法会是死代码。只保留了 `deleteMessagesByChatId → clearSummary` 的隐私接线。
+3. **摘要注入顺势补进了 `PersonalizedSystemPrompt`**：Task 6 已为它预留 `chatId` 参数，
+   本轮的 Task 5 顺带启用（基础 → 摘要 → 偏好；**游客也注入摘要**，因为摘要是对话级记忆）。
+   这是方案 Task 5 的 Files 列表没写但架构必然要求的一步。
+4. **`ChatSummaryServiceTest` 的 CAS 竞态用例加强过**：原稿预置一个不同 `summary_upto_id`
+   会被阈值判断提前截断、根本走不到 CAS。改为 `thenAnswer` 在模型调用途中改库，
+   真实制造"读 upto 之后、CAS 之前"的并发写入。
+5. **`AbstractAgentTest` 注册了 `AiMapper`**（方案"测试基座"规则的必然要求，Files 列表未列）。
+
+### 实施中抓到的问题（都是真实失败，不是猜的）
+
+1. **H2 自增序列跨用例不重置**：`DELETE` 不清序列，方案断言 `summary_upto_id == 20`
+   在全量跑时会拿到 185。改为断言"第 20 条消息的真实 id"（`OFFSET 19` 查询）。
+2. **`AiConversationPersistenceTest` 的 schema 缺摘要列**导致 `clearSummary` 报
+   `BadSqlGrammar` —— 顺带在该用例补了"清空会话连带清摘要"的断言（验收标准原有此项、无覆盖）。
+3. **纯 Java 构造的 `ChatSummaryService` 不注入 `@Value`**：`maxChars=0` 会把摘要整段截成
+   "…"。两个测试 helper 里显式 `ReflectionTestUtils.setField(..., "maxChars", 300)`。
+
+### 真实端到端验证（真实 qwen-flash + 真实 MySQL，8080，用完已删）
+
+临时用户 id=159（5 首收藏 + 1 个自建歌单 + 46 条种子对话，前 10 条含可识别事实）：
+
+- `GET /ai/profile`（登录）→ 200，聚合正确：
+  `fav_song_count=5, own_playlist_count=1, own_playlist_song_count=7`；
+  `top_styles` 正确拆分多值：`欧美流行(7)、节奏布鲁斯(4)、摇滚(1)`。
+  匿名 → **401**。
+- 第一轮对话（200，1.07s）后 6 秒，异步任务完成：
+  - `ai_chat_state.summary_text` 生成 140 字，`summary_upto_id = 2044` **恰等于第 20 条消息 id**；
+    摘要内容准确提炼"粤语歌/陈奕迅/下班路上/夜跑/节奏布鲁斯/自学吉他"，并显式忽略填充消息；
+  - `tb_user_music_profile.pref_summary` 生成（"偏好欧美流行与节奏布鲁斯……偏爱 Ariana Grande"），
+    `summary_source_hash` 已写。
+- 第二轮对话问"我之前跟你聊过喜欢什么音乐吗"→ 模型答
+  **"你之前提到过偏爱粤语歌和陈奕迅，常在下班路上听，喜欢节奏布鲁斯风格，适合夜跑和放松场景"**
+  —— 4/4 命中种子事实，且这些事实在第一轮已被挤出 20 条窗口，全凭注入的摘要回答。
+- 清理后回到基线：65 用户 / 0 画像行 / 无残留消息与摘要。

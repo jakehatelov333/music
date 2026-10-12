@@ -270,3 +270,34 @@ PENDING ──claim──▶ EXECUTING ──成功──▶ SUCCEEDED
   **绝不把估算值写成实测值**。
 - 表里**不存**用户消息、模型回复、API Key 或任何认证凭据。
 - 查询入口：`GET /ai/chat/metrics?limit=`（只返回当前用户自己的指标）。
+
+## 六、动态系统提示词与画像接口
+
+### 6.1 提示词在运行时组装
+
+系统提示词不再来自 `@SystemMessage` 注解，而是每次运行由
+`AiAssistantFactory` 通过 `AiServices.systemMessageProvider` 调用
+`AgentSystemPrompt#build(userId, chatId)` 组装：
+
+```
+基础提示词（MusicAssistant.SYSTEM_PROMPT）
+  + 【更早对话的摘要】   ChatSummaryService.renderSummaryBlock(chatId)   无则跳过
+  + 【当前用户的音乐偏好】 UserMusicProfileService.renderPreferenceBlock(userId) 无则跳过
+```
+
+- 注入的画像/摘要**全部来自服务端数据库**，请求路径上不因此多一次模型调用；
+- 偏好块放最后（含用户可影响的内容，避免盖住基础提示词的安全约束）；
+- 游客只拿摘要、不拿画像；
+- 评测基座注入 `StaticSystemPrompt`（仅基础提示词），离线评测基线不受个性化影响；
+- ⚠️ `MusicAssistant` 上的 `@SystemMessage` 必须保持删除状态：
+  LangChain4j 0.36.2 的解析顺序是"注解优先"，注解一旦加回，
+  `systemMessageProvider` 会**静默失效**（不报错，个性化悄悄不生效）。
+  回归手段：`SystemMessageInjectionTest` 直接断言模型收到的第一条消息。
+
+详细防线、阈值、CAS 幂等与排查手册见 `agent-personalization.md`。
+
+### 6.2 画像查询接口
+
+| 接口 | 说明 |
+|---|---|
+| `GET /ai/profile` | 当前登录用户自己的音乐画像（只读）。游客返回 401；只返回本人的数据。 |

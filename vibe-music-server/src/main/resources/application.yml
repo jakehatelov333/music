@@ -143,6 +143,17 @@ ai:
   pending-action-ttl-minutes: 30
   pending-action-sweep-initial-delay-ms: 60000
   pending-action-sweep-interval-ms: 300000
+  # 用户画像：事实来自收藏与自建歌单（暂无播放历史表）。
+  profile:
+    refresh-ttl-minutes: 10 # 画像事实的刷新间隔；TTL 内直接读库（请求路径零模型调用）
+    top-n: 5 # 风格/歌手各取 TOP N
+    summary-max-chars: 300 # qwen-flash 偏好概述的长度上限；事实指纹不变则不重新生成
+  # 摘要记忆：窗口之外的历史压缩成常驻摘要，注入动态系统提示词。
+  summary:
+    enabled: true
+    trigger-messages: 40 # 未被摘要覆盖的消息超过此数才触发（窗口为 20 条）
+    chunk-messages: 20 # 每次压缩最早的一段
+    max-chars: 300 # 摘要长度上限
 
 # 跨域凭据只允许明确列出的前端来源；部署时填写实际域名。
 app:
