@@ -135,7 +135,9 @@ lyrics:
 # AI 单次任务限制；每日和分钟配额见 RateLimitInterceptor。
 ai:
   timeout-seconds: 60
-  max-tool-calls: 4
+  # 从 4 提到 6：注入用户画像后，合法流程需要更多检索（例如"按我的偏好推荐"要查 1~2 个风格
+  # 或歌手）。原值 4 是在"无画像"时代定的，实测会让这类提问以 TOOL_ERROR 失败。
+  max-tool-calls: 6
   max-output-tokens: 512
   # 待确认任务有效期：超时后不可再确认，也不会执行。
   pending-action-ttl-minutes: 30
