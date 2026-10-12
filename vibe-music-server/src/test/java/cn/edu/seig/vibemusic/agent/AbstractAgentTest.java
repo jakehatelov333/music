@@ -127,8 +127,10 @@ public abstract class AbstractAgentTest {
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_comment(id BIGINT PRIMARY KEY, playlist_id BIGINT, type INT, "
                 + "content VARCHAR(255), create_time TIMESTAMP, like_count BIGINT, user_id BIGINT, "
                 + "FOREIGN KEY(playlist_id) REFERENCES tb_playlist(id) ON DELETE CASCADE)");
+        // song_id 是画像聚合的必需列（真实表 tb_user_favorite 有 type=0 时写 song_id）。
+        // 刻意不加 song_id 外键：resetData 的删除顺序已保证先删收藏再删歌曲，加约束只会徒增顺序耦合。
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_favorite(id BIGINT PRIMARY KEY, user_id BIGINT, "
-                + "playlist_id BIGINT, type INT, create_time TIMESTAMP, "
+                + "playlist_id BIGINT, song_id BIGINT, type INT, create_time TIMESTAMP, "
                 + "FOREIGN KEY(playlist_id) REFERENCES tb_playlist(id) ON DELETE CASCADE)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_playlist_create_request(user_id BIGINT, request_key VARCHAR(64), "
                 + "request_hash CHAR(64), playlist_id BIGINT, PRIMARY KEY(user_id,request_key), "
@@ -254,6 +256,7 @@ public abstract class AbstractAgentTest {
             config.addMapper(AgentPendingActionMapper.class);
             config.addMapper(AiTaskMetricMapper.class);
             config.addMapper(SearchMapper.class);
+            config.addMapper(UserMusicProfileMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(source);
             factory.setConfiguration(config);
@@ -273,6 +276,7 @@ public abstract class AbstractAgentTest {
         @Bean AgentPendingActionMapper actionMapper(SqlSessionTemplate session) { return session.getMapper(AgentPendingActionMapper.class); }
         @Bean AiTaskMetricMapper metricMapper(SqlSessionTemplate session) { return session.getMapper(AiTaskMetricMapper.class); }
         @Bean SearchMapper search(SqlSessionTemplate session) { return session.getMapper(SearchMapper.class); }
+        @Bean UserMusicProfileMapper profiles(SqlSessionTemplate session) { return session.getMapper(UserMusicProfileMapper.class); }
 
         @Bean PlaylistAccessService access(PlaylistMapper mapper) { return new PlaylistAccessService(mapper); }
         @Bean IPlaylistService details() { return new PlaylistServiceImpl(); }
