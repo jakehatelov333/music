@@ -1,0 +1,405 @@
+{
+  "version": 1,
+  "description": "Vibe Music Agent 离线评测集。模型输出用脚本替身，工具、数据库、待确认状态机、幂等与指标落库全部为真实实现。",
+  "cases": [
+    {
+      "id": "search-01", "category": "SEARCH",
+      "intent": "普通歌曲搜索：模型调用搜索工具后应返回真实歌曲卡片",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "帮我找夜色", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "text": "为你找到《夜色温柔》" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "eventTypes": ["start", "tool", "songs"],
+        "songCount": 1, "modelCalls": 2, "toolCalls": 1, "toolFailures": 0, "tokenSource": "PROVIDER" }
+    },
+    {
+      "id": "search-02", "category": "SEARCH",
+      "intent": "按歌手名搜索命中该歌手全部歌曲",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "测试歌手B有什么歌", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "测试歌手B" } },
+        { "text": "共 2 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "songCount": 2, "toolCalls": 1 }
+    },
+    {
+      "id": "search-03", "category": "SEARCH",
+      "intent": "按风格关键词搜索命中该风格歌曲",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "来点流行的", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "流行" } },
+        { "text": "共 2 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "songCount": 2, "toolCalls": 1 }
+    },
+    {
+      "id": "search-04", "category": "SEARCH",
+      "intent": "按专辑名搜索命中整张专辑",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "测试专辑A里的歌", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "测试专辑A" } },
+        { "text": "共 3 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "songCount": 3, "toolCalls": 1 }
+    },
+    {
+      "id": "search-05", "category": "SEARCH",
+      "intent": "摇滚风格检索只返回摇滚歌曲",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "有摇滚吗", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "摇滚" } },
+        { "text": "有 1 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "songCount": 1, "toolCalls": 1 }
+    },
+    {
+      "id": "empty-01", "category": "SEARCH_EMPTY",
+      "intent": "检索为空是成功但无结果（EMPTY），不是工具失败",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "有没有不存在的曲目", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "完全不存在的曲目" } },
+        { "text": "没有找到相关歌曲" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "code": "EMPTY", "toolCalls": 1, "toolFailures": 0 }
+    },
+    {
+      "id": "empty-02", "category": "SEARCH_EMPTY",
+      "intent": "检索为空时不推送空歌曲卡片",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "搜一下 zzzz", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "zzzz" } },
+        { "text": "没有找到" } ] },
+      "expect": { "success": true, "code": "EMPTY", "eventTypes": ["start", "tool"], "toolFailures": 0 }
+    },
+    {
+      "id": "invalid-01", "category": "SEARCH_INVALID",
+      "intent": "空关键词被识别为可纠正的参数错误",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "搜一下", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "   " } },
+        { "text": "请提供关键词" } ] },
+      "expect": { "success": true, "code": "INVALID_ARGUMENT", "toolFailures": 1 }
+    },
+    {
+      "id": "artist-01", "category": "SEARCH_ARTIST",
+      "intent": "按歌手精确检索返回该歌手歌曲",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "测试歌手A的歌", "script": [
+        { "tool": "searchSongsByArtist", "args": { "artistName": "测试歌手A" } },
+        { "text": "共 3 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongsByArtist"], "songCount": 3, "toolCalls": 1 }
+    },
+    {
+      "id": "style-01", "category": "SEARCH_STYLE",
+      "intent": "按风格工具检索民谣歌曲",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "来点民谣", "script": [
+        { "tool": "getSongsByStyle", "args": { "styleName": "民谣" } },
+        { "text": "1 首" } ] },
+      "expect": { "success": true, "tools": ["getSongsByStyle"], "songCount": 1, "toolCalls": 1 }
+    },
+    {
+      "id": "random-01", "category": "SEARCH_RANDOM",
+      "intent": "无明确条件时走随机推荐",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "随便来点歌", "script": [
+        { "tool": "getRandomSongs", "args": {} },
+        { "text": "随机推荐" } ] },
+      "expect": { "success": true, "tools": ["getRandomSongs"], "songCount": 5, "toolCalls": 1 }
+    },
+    {
+      "id": "combined-01", "category": "SEARCH_COMBINED",
+      "intent": "条件组合检索：先按歌手再按风格，两次工具调用都真实执行",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "测试歌手A的流行歌", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "测试歌手A" } },
+        { "tool": "getSongsByStyle", "args": { "styleName": "流行" } },
+        { "text": "综合结果" } ] },
+      "expect": { "success": true, "tools": ["searchSongs", "getSongsByStyle"], "songCount": 5,
+        "toolCalls": 2, "modelCalls": 3 }
+    },
+    {
+      "id": "combined-02", "category": "SEARCH_COMBINED",
+      "intent": "两次关键词检索的结果都会被结构化推送",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "夜色和星河", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "searchSongs", "args": { "keyword": "星河" } },
+        { "text": "共 2 首" } ] },
+      "expect": { "success": true, "tools": ["searchSongs"], "songCount": 2, "toolCalls": 2 }
+    },
+    {
+      "id": "clarify-01", "category": "CLARIFY",
+      "intent": "信息不足时先向用户澄清，不调用任何工具",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "帮我建个歌单", "script": [
+        { "text": "好的，请问歌单想叫什么名字？希望包含哪些风格或歌手的歌？" } ] },
+      "expect": { "success": true, "tools": [], "eventTypes": ["start"], "toolCalls": 0, "modelCalls": 1,
+        "pendingExists": false, "playlistCreated": false }
+    },
+    {
+      "id": "model-error-01", "category": "MODEL_ERROR",
+      "intent": "模型调用异常被归类为 MODEL_ERROR，且任务标记为失败",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "你好", "script": [ { "throwError": true, "text": "upstream 503" } ] },
+      "expect": { "success": false, "failureCategory": "MODEL_ERROR", "modelCalls": 1, "toolCalls": 0,
+        "tokenSource": "UNAVAILABLE", "playlistCreated": false }
+    },
+    {
+      "id": "tool-limit-01", "category": "TOOL_LIMIT",
+      "intent": "超出单次任务的工具调用上限时被预算拦截，归类为 TOOL_ERROR",
+      "flow": "AGENT_SEARCH", "login": true,
+      "args": { "query": "一直搜", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "text": "结束" } ] },
+      "expect": { "success": false, "failureCategory": "TOOL_ERROR" }
+    },
+    {
+      "id": "prepare-01", "category": "CREATE_PREVIEW",
+      "intent": "创建歌单必须先出预览：只生成待确认任务，不创建歌单",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "帮我建一个夜色歌单，就夜色温柔这首", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "夜色歌单", "introduction": "安静夜里听", "style": "流行", "songIds": "10" } },
+        { "text": "已生成预览，请在下方确认" } ] },
+      "expect": { "success": true, "tools": ["searchSongs", "preparePlaylistCreation"],
+        "eventTypes": ["start", "tool", "songs", "confirm"], "songCount": 1,
+        "pendingExists": true, "pendingStatus": "PENDING", "playlistCreated": false, "toolFailures": 0 }
+    },
+    {
+      "id": "prepare-02", "category": "CREATE_PREVIEW",
+      "intent": "预览包含模型选中的全部真实歌曲",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "建一个流行歌单", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "流行" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "流行精选", "introduction": "", "style": "流行", "songIds": "10,11" } },
+        { "text": "已生成预览" } ] },
+      "expect": { "success": true, "eventTypes": ["confirm"], "pendingExists": true, "pendingStatus": "PENDING",
+        "playlistCreated": false }
+    },
+    {
+      "id": "prepare-03", "category": "CREATE_PREVIEW",
+      "intent": "三首歌的预览同样不写库",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "建一个测试专辑A的歌单", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "测试专辑A" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "专辑A合集", "introduction": "整张专辑", "style": "流行", "songIds": "10,11,12" } },
+        { "text": "已生成预览" } ] },
+      "expect": { "success": true, "pendingExists": true, "pendingStatus": "PENDING", "playlistCreated": false,
+        "toolFailures": 0 }
+    },
+    {
+      "id": "prepare-04", "category": "CREATE_PREVIEW",
+      "intent": "粤语歌单预览使用真实歌曲 ID",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "建一个粤语歌单", "script": [
+        { "tool": "getSongsByStyle", "args": { "styleName": "粤语" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "粤语精选", "introduction": "旧巷口的猫", "style": "粤语", "songIds": "14" } },
+        { "text": "已生成预览" } ] },
+      "expect": { "success": true, "pendingExists": true, "playlistCreated": false }
+    },
+    {
+      "id": "prepare-guest-01", "category": "CREATE_GUEST",
+      "intent": "游客请求创建歌单被拒绝，且不产生待确认任务",
+      "flow": "AGENT_PREPARE", "login": false,
+      "args": { "query": "帮我建一个歌单", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "游客歌单", "introduction": "", "style": "", "songIds": "10" } },
+        { "text": "请先登录" } ] },
+      "expect": { "success": true, "toolFailures": 1, "pendingExists": false, "playlistCreated": false }
+    },
+    {
+      "id": "prepare-fake-01", "category": "CREATE_FAKE_ID",
+      "intent": "模型编造的歌曲 ID 被服务端拒绝，不落待确认记录",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "建个歌单", "script": [
+        { "tool": "preparePlaylistCreation", "args": { "title": "编造歌单", "introduction": "", "style": "", "songIds": "999999" } },
+        { "text": "生成失败" } ] },
+      "expect": { "success": true, "toolFailures": 1, "pendingExists": false, "playlistCreated": false }
+    },
+    {
+      "id": "svc-prepare-01", "category": "PREPARE_ONLY",
+      "intent": "准备阶段只落待确认任务，绝不创建歌单与关联",
+      "flow": "PREPARE_ONLY",
+      "args": { "title": "准备阶段", "introduction": "只准备", "style": "流行", "songs": [10, 11] },
+      "expect": { "success": true, "pendingStatus": "PENDING", "pendingExists": true,
+        "playlistCreated": false, "playlistSongCount": 0 }
+    },
+    {
+      "id": "create-01", "category": "CREATE_CONFIRM",
+      "intent": "确认后创建真实歌单并关联歌曲，预览与落库一致",
+      "flow": "CREATE_CONFIRM",
+      "args": { "title": "夜间驾驶", "introduction": "适合开车听", "style": "流行", "songs": [10, 11, 12] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistCreated": true,
+        "playlistSongCount": 3, "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "create-02", "category": "CREATE_CONFIRM",
+      "intent": "两首歌的歌单确认后正确关联",
+      "flow": "CREATE_CONFIRM",
+      "args": { "title": "粤语精选", "introduction": "", "style": "粤语", "songs": [13, 14] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 2,
+        "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "create-03", "category": "CREATE_CONFIRM",
+      "intent": "单曲歌单确认后恰好关联一首",
+      "flow": "CREATE_CONFIRM",
+      "args": { "title": "单曲循环", "introduction": "", "style": "流行", "songs": [10] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 1,
+        "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "create-04", "category": "CREATE_CONFIRM",
+      "intent": "五首歌的歌单确认后全部关联，不重不漏",
+      "flow": "CREATE_CONFIRM",
+      "args": { "title": "全都要", "introduction": "", "style": "", "songs": [10, 11, 12, 13, 14] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 5,
+        "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "cancel-01", "category": "CREATE_CANCEL",
+      "intent": "用户取消后任务不可再确认，且没有歌单被创建",
+      "flow": "CREATE_CANCEL",
+      "args": { "title": "取消掉的歌单", "introduction": "", "style": "", "songs": [10] },
+      "expect": { "success": true, "pendingStatus": "CANCELLED", "playlistCreated": false,
+        "playlistSongCount": 0, "httpStatus": 409, "idempotent": true }
+    },
+    {
+      "id": "cancel-02", "category": "CREATE_CANCEL",
+      "intent": "取消多首歌的歌单同样不产生任何写入",
+      "flow": "CREATE_CANCEL",
+      "args": { "title": "取消第二例", "introduction": "", "style": "", "songs": [10, 11] },
+      "expect": { "success": true, "pendingStatus": "CANCELLED", "playlistCreated": false, "httpStatus": 409 }
+    },
+    {
+      "id": "modify-01", "category": "CREATE_MODIFY",
+      "intent": "用户修改预览内容后确认，写入的是修改后的内容",
+      "flow": "CREATE_MODIFY_CONFIRM",
+      "args": { "title": "初版名称", "introduction": "", "style": "流行", "songs": [10],
+        "renamed": "改名后的歌单", "renamedSongs": [10, 12] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 2,
+        "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "modify-02", "category": "CREATE_MODIFY",
+      "intent": "用户删减歌曲后确认，落库歌曲数与预览一致",
+      "flow": "CREATE_MODIFY_CONFIRM",
+      "args": { "title": "两首变一首", "introduction": "", "style": "", "songs": [10, 11],
+        "renamed": "只留一首", "renamedSongs": [10] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 1,
+        "previewMatchesPlaylist": true }
+    },
+    {
+      "id": "dup-01", "category": "DUPLICATE_CONFIRM",
+      "intent": "重复点击确认只创建一个歌单，返回同一个歌单 ID",
+      "flow": "CREATE_DOUBLE_CONFIRM",
+      "args": { "title": "重复确认", "introduction": "", "style": "", "songs": [10, 11] },
+      "expect": { "success": true, "idempotent": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 2 }
+    },
+    {
+      "id": "dup-02", "category": "DUPLICATE_CONFIRM",
+      "intent": "重复确认在单曲场景同样幂等",
+      "flow": "CREATE_DOUBLE_CONFIRM",
+      "args": { "title": "重复确认二", "introduction": "", "style": "", "songs": [13] },
+      "expect": { "success": true, "idempotent": true, "playlistSongCount": 1 }
+    },
+    {
+      "id": "conc-01", "category": "CONCURRENT_CONFIRM",
+      "intent": "六个并发确认只创建一个歌单，其余请求复用同一结果",
+      "flow": "CREATE_CONCURRENT_CONFIRM",
+      "args": { "title": "并发确认", "introduction": "", "style": "", "songs": [10, 11, 12] },
+      "expect": { "success": true, "idempotent": true, "playlistSongCount": 3 }
+    },
+    {
+      "id": "conc-02", "category": "CONCURRENT_CONFIRM",
+      "intent": "并发确认在少量歌曲场景同样只写一次",
+      "flow": "CREATE_CONCURRENT_CONFIRM",
+      "args": { "title": "并发确认二", "introduction": "", "style": "", "songs": [14] },
+      "expect": { "success": true, "idempotent": true, "playlistSongCount": 1 }
+    },
+    {
+      "id": "expire-01", "category": "EXPIRE",
+      "intent": "过期任务确认被拒绝（410），并落成 EXPIRED",
+      "flow": "EXPIRE_THEN_CONFIRM",
+      "args": { "title": "过期任务", "introduction": "", "style": "", "songs": [10] },
+      "expect": { "success": true, "httpStatus": 410, "pendingStatus": "EXPIRED", "playlistCreated": false }
+    },
+    {
+      "id": "cross-01", "category": "CROSS_USER",
+      "intent": "其他用户确认他人任务被拒绝（404），任务状态不变",
+      "flow": "CROSS_USER_CONFIRM",
+      "args": { "title": "越权确认", "introduction": "", "style": "", "songs": [10] },
+      "expect": { "success": true, "httpStatus": 404, "pendingStatus": "PENDING", "playlistCreated": false }
+    },
+    {
+      "id": "cross-02", "category": "CROSS_USER",
+      "intent": "越权确认不会写入任何歌单数据",
+      "flow": "CROSS_USER_CONFIRM",
+      "args": { "title": "越权确认二", "introduction": "", "style": "", "songs": [10, 11] },
+      "expect": { "success": true, "httpStatus": 404, "pendingStatus": "PENDING", "playlistSongCount": 0 }
+    },
+    {
+      "id": "guest-confirm-01", "category": "CROSS_USER",
+      "intent": "未登录用户不能确认任务（401）",
+      "flow": "GUEST_CONFIRM",
+      "args": { "title": "游客确认", "introduction": "", "style": "", "songs": [10] },
+      "expect": { "success": true, "httpStatus": 401, "pendingStatus": "PENDING", "playlistCreated": false }
+    },
+    {
+      "id": "dberr-01", "category": "DB_ERROR",
+      "intent": "确认时歌曲已失效 → 整体回滚且任务标记 FAILED，不谎报成功",
+      "flow": "DB_ERROR_ON_CONFIRM",
+      "args": { "title": "歌曲失效", "introduction": "", "style": "", "songs": [10, 11] },
+      "expect": { "success": true, "pendingStatus": "FAILED", "playlistCreated": false, "playlistSongCount": 0 }
+    },
+    {
+      "id": "dberr-02", "category": "DB_ERROR",
+      "intent": "失败任务保留失败原因，且重复确认不会创建歌单",
+      "flow": "DB_ERROR_ON_CONFIRM",
+      "args": { "title": "歌曲失效二", "introduction": "", "style": "", "songs": [13] },
+      "expect": { "success": true, "pendingStatus": "FAILED", "playlistCreated": false }
+    },
+    {
+      "id": "refresh-01", "category": "REFRESH_QUERY",
+      "intent": "刷新页面后按会话查询仍能拿到待确认任务与预览",
+      "flow": "REFRESH_QUERY",
+      "args": { "title": "刷新查询", "introduction": "", "style": "", "songs": [10, 11] },
+      "expect": { "success": true, "pendingStatus": "PENDING", "pendingExists": true, "playlistCreated": false }
+    },
+    {
+      "id": "mismatch-01", "category": "MISMATCH",
+      "intent": "成功结果与数据库真实状态一致：预览歌曲集合与落库绑定完全相同",
+      "flow": "MISMATCH_CHECK",
+      "args": { "title": "一致性核对", "introduction": "", "style": "", "songs": [10, 11, 12] },
+      "expect": { "success": true, "pendingStatus": "SUCCEEDED", "previewMatchesPlaylist": true,
+        "playlistSongCount": 3 }
+    },
+    {
+      "id": "stale-01", "category": "MODIFY",
+      "intent": "用过期版本号修改预览被拒绝（409），避免确认旧内容执行新内容",
+      "flow": "UPDATE_STALE_VERSION",
+      "args": { "title": "并发编辑", "introduction": "", "style": "", "songs": [10],
+        "renamed": "新名字", "renamedSongs": [10, 11] },
+      "expect": { "success": true, "httpStatus": 409 }
+    },
+    {
+      "id": "sse-01", "category": "SSE",
+      "intent": "流式通道下工具状态与结构化歌曲数据同样被推送",
+      "flow": "SSE_COMPLETE", "login": true,
+      "args": { "query": "搜一下夜色", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "text": "为你找到夜色温柔" } ] },
+      "expect": { "success": true, "eventTypes": ["start", "tool", "songs"], "songCount": 1, "toolCalls": 1 }
+    },
+    {
+      "id": "sse-interrupt-01", "category": "SSE_INTERRUPT",
+      "intent": "流中途中断：任务标记失败并释放会话租约，同会话下一次请求可正常恢复",
+      "flow": "SSE_INTERRUPT", "login": true,
+      "args": { "query": "搜一下夜色", "script": [
+        { "tool": "searchSongs", "args": { "keyword": "夜色" } },
+        { "text": "为你找到夜色温柔" } ] },
+      "expect": { "success": false, "failureCategory": "MODEL_ERROR", "idempotent": true,
+        "eventTypes": ["start", "tool"] }
+    }
+  ]
+}

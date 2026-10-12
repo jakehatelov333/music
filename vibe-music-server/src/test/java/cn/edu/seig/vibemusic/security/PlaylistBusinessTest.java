@@ -423,6 +423,9 @@ class PlaylistBusinessTest {
                 IPlaylistService details, ObjectMapper json, Validator validator, MinioService minio) {
             return new PersonalPlaylistService(mapper,bindings,receipts,songs,access,details,json,validator,minio);
         }
-        @Bean MusicTools tools(SongMapper songs, PlaylistMapper playlists) { return new MusicTools(songs, mock(ArtistMapper.class), playlists); }
+        @Bean MusicTools tools(PlaylistMapper playlists) {
+            return new MusicTools(mock(cn.edu.seig.vibemusic.service.agent.AgentSongQueryService.class),
+                    mock(ArtistMapper.class), playlists);
+        }
     }
 }

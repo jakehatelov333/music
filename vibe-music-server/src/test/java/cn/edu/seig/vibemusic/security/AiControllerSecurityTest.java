@@ -58,7 +58,8 @@ class AiControllerSecurityTest {
         ReflectionTestUtils.setField(login, "stringRedisTemplate", redis);
         ReflectionTestUtils.setField(login, "rolePermissionManager", roles);
         ReflectionTestUtils.setField(login, "objectMapper", new ObjectMapper());
-        mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis), factory, executor, timer))
+        mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis), factory,
+                        mock(cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder.class), executor, timer))
                 .addInterceptors(login, new RateLimitInterceptor(limiter, new ObjectMapper()))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
@@ -129,7 +130,7 @@ class AiControllerSecurityTest {
         MusicAssistant assistant = mock(MusicAssistant.class);
         AiRunBudget budget = new AiRunBudget(Duration.ofSeconds(2), 4);
         when(factory.timeout()).thenReturn(Duration.ofMillis(50));
-        when(factory.create(anyString())).thenReturn(new AiAssistantFactory.Run(assistant, budget));
+        when(factory.create(anyString(), any(), any())).thenReturn(new AiAssistantFactory.Run(assistant, budget));
         when(assistant.chat(anyString(), anyString())).thenAnswer(call -> {
             new CountDownLatch(1).await();
             return "unreachable";
@@ -144,7 +145,7 @@ class AiControllerSecurityTest {
         TokenStream stream = mock(TokenStream.class, RETURNS_SELF);
         AiRunBudget budget = new AiRunBudget(Duration.ofSeconds(2), 4);
         when(factory.timeout()).thenReturn(Duration.ofMillis(50));
-        when(factory.create(anyString())).thenReturn(new AiAssistantFactory.Run(assistant, budget));
+        when(factory.create(anyString(), any(), any())).thenReturn(new AiAssistantFactory.Run(assistant, budget));
         when(assistant.chatStream(anyString(), anyString())).thenReturn(stream);
         MvcResult result = mvc.perform(post("/ai/chat/stream").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"query\":\"hello\"}"))
@@ -158,7 +159,7 @@ class AiControllerSecurityTest {
         MusicAssistant assistant = mock(MusicAssistant.class);
         TokenStream stream = mock(TokenStream.class, RETURNS_SELF);
         AtomicReference<Consumer<Throwable>> error = new AtomicReference<>();
-        when(factory.create(anyString())).thenReturn(new AiAssistantFactory.Run(assistant, new AiRunBudget(Duration.ofSeconds(2), 4)));
+        when(factory.create(anyString(), any(), any())).thenReturn(new AiAssistantFactory.Run(assistant, new AiRunBudget(Duration.ofSeconds(2), 4)));
         when(assistant.chatStream(anyString(), anyString())).thenReturn(stream);
         doAnswer(call -> { error.set(call.getArgument(0)); return stream; }).when(stream).onError(any());
         doAnswer(call -> { error.get().accept(new IllegalStateException("api-key-secret")); return null; }).when(stream).start();

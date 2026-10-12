@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.service.IAiService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import cn.edu.seig.vibemusic.service.ai.AiRunBudget;
 import cn.edu.seig.vibemusic.tool.MusicTools;
+import cn.edu.seig.vibemusic.tool.PlaylistActionTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.*;
@@ -36,7 +37,8 @@ class AiAssistantFactoryTest {
     private final IAiService service = mock(IAiService.class);
     private final MysqlChatMemoryStore store = new MysqlChatMemoryStore(service, new ObjectMapper());
     private final MusicTools tools = mock(MusicTools.class);
-    private final AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, tools);
+    private final PlaylistActionTools actionTools = mock(PlaylistActionTools.class);
+    private final AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, tools, actionTools);
     private final Map<String, List<ChatMessage>> history = new ConcurrentHashMap<>();
     private final Map<String, String> contexts = new ConcurrentHashMap<>();
     private final Map<String, String> leases = new ConcurrentHashMap<>();
@@ -45,6 +47,10 @@ class AiAssistantFactoryTest {
     @BeforeEach void setup() {
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 10);
         ReflectionTestUtils.setField(factory, "maxToolCalls", 2);
+        ReflectionTestUtils.setField(factory, "modelName", "test-model");
+        // 工具实例每次运行都会派生一份带上下文的副本；替身直接返回自身即可。
+        when(tools.withContext(any())).thenReturn(tools);
+        when(actionTools.withContext(any())).thenReturn(actionTools);
         doAnswer(call -> {
             String chat = call.getArgument(0), token = call.getArgument(1);
             if (leases.putIfAbsent(chat, token) != null) throw new ResponseStatusException(HttpStatus.CONFLICT);

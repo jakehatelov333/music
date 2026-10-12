@@ -23,4 +23,7 @@ dist/
 .workbuddy-ai/
 .claude/settings.local.json
 
-scripts/
+# 本地脚本默认不纳入版本管理（scripts/secret-expressions.txt 见上方显式忽略）。
+# 例外：Agent 前端交互验证脚本是可复现的交付材料，随仓库一起维护。
+scripts/*
+!scripts/agent-ui-verify.cjs
