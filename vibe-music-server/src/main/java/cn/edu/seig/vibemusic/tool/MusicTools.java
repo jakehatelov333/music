@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.tool;
 
+import cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.PlaylistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -27,7 +28,7 @@ public class MusicTools {
 
     @Tool("搜索歌曲，根据关键词匹配歌名或专辑名，返回匹配的歌曲列表")
     public String searchSongs(String keyword) {
-        log.info("Tool调用: searchSongs, keyword={}", keyword);
+        log.debug("Tool调用: searchSongs");
         LambdaQueryWrapper<Song> wrapper = new LambdaQueryWrapper<>();
         wrapper
                 .like(Song::getSongName, keyword)
@@ -46,7 +47,7 @@ public class MusicTools {
 
     @Tool("搜索歌手，根据关键词匹配歌手名称或地区，返回匹配的歌手列表")
     public String searchArtists(String keyword) {
-        log.info("Tool调用: searchArtists, keyword={}", keyword);
+        log.debug("Tool调用: searchArtists");
         LambdaQueryWrapper<Artist> wrapper = new LambdaQueryWrapper<>();
         wrapper
                 .like(Artist::getArtistName, keyword)
@@ -66,7 +67,7 @@ public class MusicTools {
 
     @Tool("获取指定音乐风格的歌曲列表")
     public String getSongsByStyle(String styleName) {
-        log.info("Tool调用: getSongsByStyle, styleName={}", styleName);
+        log.debug("Tool调用: getSongsByStyle");
         LambdaQueryWrapper<Song> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Song::getStyle, styleName).last("LIMIT 10");
         List<Song> songs = songMapper.selectList(wrapper);
@@ -94,7 +95,7 @@ public class MusicTools {
 
     @Tool("获取指定歌手的详细信息，包括简介、地区、出生日期等")
     public String getArtistDetail(String artistName) {
-        log.info("Tool调用: getArtistDetail, artistName={}", artistName);
+        log.debug("Tool调用: getArtistDetail");
         LambdaQueryWrapper<Artist> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Artist::getArtistName, artistName);
         List<Artist> artists = artistMapper.selectList(wrapper);
@@ -112,7 +113,7 @@ public class MusicTools {
 
     @Tool("根据歌手名称搜索该歌手的歌曲，传入歌手名字，返回该歌手演唱的歌曲列表")
     public String searchSongsByArtist(String artistName) {
-        log.info("Tool调用: searchSongsByArtist, artistName={}", artistName);
+        log.debug("Tool调用: searchSongsByArtist");
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<SongVO> page =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 10);
         var result = songMapper.getSongsWithArtist(page, null, artistName, null);
@@ -128,9 +129,14 @@ public class MusicTools {
 
     @Tool("搜索歌单，根据关键词匹配歌单标题或风格，返回匹配的歌单列表")
     public String searchPlaylists(String keyword) {
-        log.info("Tool调用: searchPlaylists, keyword={}", keyword);
+        log.debug("Tool调用: searchPlaylists");
         LambdaQueryWrapper<Playlist> wrapper = new LambdaQueryWrapper<>();
-        wrapper.like(Playlist::getTitle, keyword).or().like(Playlist::getStyle, keyword).last("LIMIT 10");
+        wrapper.eq(Playlist::getIsPublic, true)
+                // Drafts must never surface through Agent answers either.
+                .and(q -> q.isNull(Playlist::getStatus)
+                        .or().eq(Playlist::getStatus, PlaylistStatusEnum.PUBLISHED.getStatus()))
+                .and(q -> q.like(Playlist::getTitle, keyword).or().like(Playlist::getStyle, keyword))
+                .last("LIMIT 10");
         List<Playlist> playlists = playlistMapper.selectList(wrapper);
         if (playlists.isEmpty()) {
             return "未找到与 " + keyword + " 相关的歌单";

@@ -1,245 +1,152 @@
 package cn.edu.seig.vibemusic.controller;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.model.dto.AiChatRequest;
 import cn.edu.seig.vibemusic.model.entity.ChatMessage;
+import cn.edu.seig.vibemusic.security.AiSessionService;
 import cn.edu.seig.vibemusic.service.IAiService;
-import cn.edu.seig.vibemusic.service.MusicAssistant;
-import cn.edu.seig.vibemusic.service.MusicAssistantNoTools;
-import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.dashscope.QwenChatModel;
-import dev.langchain4j.model.output.Response;
-import dev.langchain4j.service.TokenStream;
-import jakarta.servlet.http.Cookie;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
-
+import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 @RestController
-@RequestMapping("/test")
+@RequestMapping("/ai")
+@RequiredArgsConstructor
 public class AiController {
+    private static final String AI_ERROR = "AI 服务暂不可用，请稍后再试";
+    private final IAiService aiService;
+    private final AiSessionService sessions;
+    private final AiAssistantFactory assistants;
+    private final ExecutorService aiExecutor;
+    private final ScheduledExecutorService aiTimer;
 
-    @Autowired
-    private IAiService aiService;
-
-    @Autowired
-    private MusicAssistant musicAssistant;
-
-    @Autowired
-    private MusicAssistantNoTools musicAssistantNoTools;
-
-    @Autowired
-    private QwenChatModel qwenChatModel;
-
-    /**
-     * 直接调用 QwenChatModel（不使用 AiServices、Memory、Tools），用于隔离问题
-     */
-    @GetMapping("/direct/chat")
-    public String directChat(@RequestParam("query") String query) {
-        log.info("直接调用 QwenChatModel，query={}", query);
-        var messages = List.of(
-                dev.langchain4j.data.message.SystemMessage.systemMessage("你是一个音乐助手，请用中文简洁回答。"),
-                UserMessage.from(query)
-        );
-        var response = qwenChatModel.generate(messages);
-        return response.content().text();
-    }
-
-    public Long getUserId() {
+    @PostMapping("/chat")
+    public String chat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
+                       HttpServletResponse response) {
+        String chatId = sessions.resolve(request, response);
+        AiAssistantFactory.Run run = assistants.create(chatId);
+        Future<String> task = null;
         try {
-            Map<String, Object> claims = ThreadLocalUtil.get();
-            if (claims != null) {
-                Object userIdObj = claims.get(JwtClaimsConstant.USER_ID);
-                if (userIdObj != null) {
-                    // 确保转换为Long类型
-                    return userIdObj instanceof Long ? (Long) userIdObj : Long.valueOf(userIdObj.toString());
-                }
+            task = aiExecutor.submit(() -> run.assistant().chat(chatId, body.query()));
+            return task.get(assistants.timeout().toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "AI 回复超时，请稍后重试");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, AI_ERROR);
+        } catch (ExecutionException | RejectedExecutionException e) {
+            log.warn("AI 请求失败，类型={}", e.getClass().getSimpleName());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, AI_ERROR);
+        } finally {
+            run.close();
+            if (task != null) task.cancel(true);
+        }
+    }
+
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamChat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
+                                 HttpServletResponse response) {
+        String chatId = sessions.resolve(request, response);
+        AiAssistantFactory.Run run = assistants.create(chatId);
+        long timeout = assistants.timeout().toMillis();
+        SseEmitter emitter = new SseEmitter(timeout + 1000);
+        AtomicBoolean finished = new AtomicBoolean();
+        AtomicReference<Future<?>> task = new AtomicReference<>();
+        AtomicReference<ScheduledFuture<?>> timer = new AtomicReference<>();
+        Runnable cancel = () -> {
+            finished.set(true);
+            run.close();
+            if (timer.get() != null) timer.get().cancel(false);
+            if (task.get() != null) task.get().cancel(true);
+        };
+        java.util.function.Consumer<String> fail = message -> {
+            if (finished.compareAndSet(false, true)) {
+                run.close();
+                try { emitter.send(SseEmitter.event().name("error").data(message)); }
+                catch (IOException | IllegalStateException ignored) { }
+                emitter.complete();
             }
-        } catch (Exception e) {
-            log.error("从ThreadLocalUtil获取用户ID失败", e);
-        }
-        
-        return null;
-    }
-
-
-    private String resolveChatIdForGuest(Long userId, HttpServletRequest request, HttpServletResponse response) {
-        // 如果是登录用户，直接返回
-        if (userId != null) {
-            return "user_chat_id_" + userId;
-        }
-
-        // 检查Cookie中是否有游客对话ID
-        Cookie[] cookies = request.getCookies();
-        if (cookies != null) {
-            for (Cookie cookie : cookies) {
-                if ("guest_chat_id".equals(cookie.getName())) {
-                    return cookie.getValue();
-                }
-            }
-        }
-
-        // 生成新的游客对话ID并设置Cookie
-        String newGuestId = "guest_" + System.currentTimeMillis() + "_" + Math.random();
-        Cookie guestCookie = new Cookie("guest_chat_id", newGuestId);
-        guestCookie.setMaxAge(24 * 60 * 1); // 1小时有效期
-        guestCookie.setPath("/");
-        response.addCookie(guestCookie);
-
-        return newGuestId;
-    }
-
-
-    @GetMapping("/simple/chat")
-    public String simpleChat(@RequestParam("query") String query,
-                             HttpServletRequest request,
-                             HttpServletResponse response) {
-        Long userId = getUserId();
-        String chatId = resolveChatIdForGuest(userId, request, response);
-        log.info("用户消息，角色: {}, 聊天ID: {}, 消息: {}", userId == null ? "游客" : "用户" + userId, chatId, query);
-        return musicAssistant.chat(chatId, query);
-    }
-
-    /**
-     * 流式对话（SSE），TokenStream 逐字返回，前端实时渲染
-     */
-    @GetMapping(value = "/simple/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamChat(@RequestParam("query") String query,
-                                  HttpServletRequest request,
-                                  HttpServletResponse response) {
-        Long userId = getUserId();
-        String chatId = resolveChatIdForGuest(userId, request, response);
-        log.info("流式对话开始，角色: {}, 聊天ID: {}, 消息: {}",
-                userId == null ? "游客" : "用户" + userId, chatId, query);
-
-        SseEmitter emitter = new SseEmitter(120_000L);
-        TokenStream tokenStream = musicAssistant.chatStream(chatId, query);
-
-        tokenStream
-            .onNext(token -> {
+            cancel.run();
+        };
+        emitter.onCompletion(cancel);
+        emitter.onTimeout(() -> fail.accept("AI 回复超时，请稍后重试"));
+        emitter.onError(error -> cancel.run());
+        try {
+            timer.set(aiTimer.schedule(() -> fail.accept("AI 回复超时，请稍后重试"), timeout, TimeUnit.MILLISECONDS));
+            task.set(aiExecutor.submit(() -> {
                 try {
-                    emitter.send(SseEmitter.event().name("token").data(token));
-                } catch (IOException e) {
-                    log.error("SSE 发送 token 失败", e);
-                    emitter.completeWithError(e);
+                    run.budget().check();
+                    run.assistant().chatStream(chatId, body.query())
+                            .onNext(token -> {
+                                if (finished.get()) return;
+                                try { emitter.send(SseEmitter.event().name("token").data(token)); }
+                                catch (IOException | IllegalStateException e) { fail.accept(AI_ERROR); }
+                            })
+                            .onComplete(result -> {
+                                if (!finished.compareAndSet(false, true)) return;
+                                run.close();
+                                if (timer.get() != null) timer.get().cancel(false);
+                                try {
+                                    String text = result.content().text();
+                                    emitter.send(SseEmitter.event().name("done").data(text == null ? "" : text));
+                                } catch (IOException | IllegalStateException ignored) { }
+                                emitter.complete();
+                            })
+                            .onError(error -> {
+                                log.warn("AI 流式请求失败，类型={}", error.getClass().getSimpleName());
+                                fail.accept(AI_ERROR);
+                            }).start();
+                } catch (RuntimeException e) {
+                    log.warn("AI 流式请求启动失败，类型={}", e.getClass().getSimpleName());
+                    fail.accept(AI_ERROR);
                 }
-            })
-            .onComplete(responseMessage -> {
-                try {
-                    String fullText = responseMessage.content().text();
-                    emitter.send(SseEmitter.event().name("done").data(fullText));
-                    emitter.complete();
-                    log.info("流式对话完成，chatId={}, 响应长度={}",
-                            chatId, fullText != null ? fullText.length() : 0);
-                } catch (IOException e) {
-                    log.error("SSE 完成事件发送失败", e);
-                    emitter.completeWithError(e);
-                }
-            })
-            .onError(error -> {
-                log.error("TokenStream 错误，chatId={}", chatId, error);
-                try {
-                    emitter.send(SseEmitter.event()
-                            .name("error")
-                            .data(error.getMessage() != null ? error.getMessage() : "AI 回复出错"));
-                } catch (IOException ignored) {
-                }
-                emitter.completeWithError(error);
-            })
-            .start();
-
-        emitter.onTimeout(() -> log.warn("SSE 超时，chatId={}", chatId));
-        emitter.onError(ex -> log.error("SSE 连接错误，chatId={}", chatId, ex));
-
+            }));
+            if (finished.get()) task.get().cancel(true);
+        } catch (RejectedExecutionException e) { fail.accept("AI 服务繁忙，请稍后再试"); }
         return emitter;
     }
 
-    /**
-     * 不使用工具的简单对话（用于隔离问题：判断 InputRequiredException 是否由 tools 引起）
-     */
-    @GetMapping("/simple/chat-notools")
-    public String simpleChatNoTools(@RequestParam("query") String query,
-                                    HttpServletRequest request,
-                                    HttpServletResponse response) {
-        Long userId = getUserId();
-        String chatId = resolveChatIdForGuest(userId, request, response);
-        log.info("无工具对话，角色: {}, 聊天ID: {}, 消息: {}", userId == null ? "游客" : "用户" + userId, chatId, query);
-        return musicAssistantNoTools.chat(chatId, query);
-    }
-
-    /**
-     * 获取聊天历史记录
-     */
     @GetMapping("/chat/history")
-    public List<ChatMessage> getChatHistory(@RequestParam("chatId") String chatId,
-                                            HttpServletRequest request,
-                                            HttpServletResponse response) {
-        Long userId = getUserId();
-        String effectiveChatId = resolveChatIdForGuest(userId, request, response);
-        return aiService.getMessagesByChatId(effectiveChatId);
+    public List<ChatMessage> history(HttpServletRequest request, HttpServletResponse response) {
+        return aiService.getMessagesByChatId(sessions.resolve(request, response));
     }
 
-    /**
-     * 分页获取聊天历史记录
-     */
     @GetMapping("/chat/history/page")
-    public List<ChatMessage> getChatHistoryPage(@RequestParam("chatId") String chatId,
-                                                @RequestParam(value = "page", defaultValue = "1") int page,
-                                                @RequestParam(value = "size", defaultValue = "10") int size,
-                                                HttpServletRequest request,
-                                                HttpServletResponse response) {
-        Long userId = getUserId();
-        String effectiveChatId = resolveChatIdForGuest(userId, request, response);
-        return aiService.getMessagesByChatId(effectiveChatId, page, size).getRecords();
+    public List<ChatMessage> historyPage(@RequestParam(defaultValue = "1") @Min(1) @Max(100000) int page,
+                                       @RequestParam(defaultValue = "10") @Min(1) @Max(100) int size,
+                                       HttpServletRequest request, HttpServletResponse response) {
+        return aiService.getMessagesByChatId(sessions.resolve(request, response), page, size).getRecords();
     }
 
-    /**
-     * 获取最近的N条消息
-     */
     @GetMapping("/chat/recent")
-    public List<ChatMessage> getRecentMessages(@RequestParam("chatId") String chatId,
-                                               @RequestParam(value = "limit", defaultValue = "10") int limit,
-                                               HttpServletRequest request,
-                                               HttpServletResponse response) {
-        Long userId = getUserId();
-        String effectiveChatId = resolveChatIdForGuest(userId, request, response);
-        return aiService.getRecentMessages(effectiveChatId, limit);
+    public List<ChatMessage> recent(@RequestParam(defaultValue = "10") @Min(1) @Max(100) int limit,
+                                   HttpServletRequest request, HttpServletResponse response) {
+        return aiService.getRecentMessages(sessions.resolve(request, response), limit);
     }
 
-    /**
-     * 清空聊天记录
-     */
     @DeleteMapping("/chat/clear")
-    public String clearChatHistory(@RequestParam("chatId") String chatId,
-                                   HttpServletRequest request,
-                                   HttpServletResponse response) {
-        Long userId = getUserId();
-        String effectiveChatId = resolveChatIdForGuest(userId, request, response);
-        aiService.deleteMessagesByChatId(effectiveChatId);
+    public String clear(HttpServletRequest request, HttpServletResponse response) {
+        aiService.deleteMessagesByChatId(sessions.resolve(request, response));
         return "聊天记录已清空";
     }
 
-    /**
-     * 获取聊天统计信息
-     */
     @GetMapping("/chat/stats")
-    public String getChatStats(@RequestParam("chatId") String chatId,
-                               HttpServletRequest request,
-                               HttpServletResponse response) {
-        Long userId = getUserId();
-        String effectiveChatId = resolveChatIdForGuest(userId, request, response);
-        long messageCount = aiService.countMessagesByChatId(effectiveChatId);
-        return "聊天ID: " + effectiveChatId + ", 消息总数: " + messageCount;
+    public String stats(HttpServletRequest request, HttpServletResponse response) {
+        return "消息总数: " + aiService.countMessagesByChatId(sessions.resolve(request, response));
     }
 }

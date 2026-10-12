@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { aiSimpleChat, aiRecent, aiStreamChat } from '@/api/ai'
+import { aiRecent, aiStreamChat } from '@/api/ai'
+import { UserStore } from '@/stores/modules/user'
+
+const userStore = UserStore()
 
 const visible = ref(false)
 const minimized = ref(false)
@@ -24,7 +27,9 @@ const loadPos = () => {
         pos.x = v.x
         pos.y = v.y
       }
-    } catch {}
+    } catch {
+      // 本地布局或历史读取失败时保留当前界面，仍可继续聊天。
+    }
   } else {
     // 默认右下角
     const margin = 16
@@ -37,7 +42,8 @@ const loadPos = () => {
 
 const clampToViewport = () => {
   const width = widgetRef.value?.offsetWidth ?? 320
-  const height = widgetRef.value?.offsetHeight ?? Math.round(window.innerHeight * 0.6)
+  const height =
+    widgetRef.value?.offsetHeight ?? Math.round(window.innerHeight * 0.6)
   pos.x = Math.min(Math.max(0, pos.x), window.innerWidth - width)
   pos.y = Math.min(Math.max(0, pos.y), window.innerHeight - height)
 }
@@ -93,32 +99,44 @@ onMounted(() => {
   })
 })
 
-// 读取/生成游客ID（与后端保持一致，优先Cookie，其次本地生成）
-const getGuestId = () => {
-  const m = document.cookie.match(/(?:^|; )guestId=([^;]+)/)
-  if (m) return decodeURIComponent(m[1])
-  const id = localStorage.getItem('guestId') || crypto.randomUUID()
-  localStorage.setItem('guestId', id)
-  return id
-}
-
-const chatId = computed(() => {
-  // 登录后端会用 token 识别用户；游客时我们发送 guestId，后端会覆盖为 g:{guestId}
-  return getGuestId()
-})
+// 身份变化时清理上一位用户的本地消息和正在执行的请求。
+watch(
+  () => userStore.userInfo?.token,
+  () => {
+    abortController.value?.abort()
+    abortController.value = null
+    messages.value = []
+    loading.value = false
+  },
+  { flush: 'sync' }
+)
 
 const open = async () => {
   visible.value = true
   if (messages.value.length === 0) {
     try {
-      const list = await aiRecent(chatId.value, 10)
+      const identity = userStore.userInfo?.token
+      const list = await aiRecent(10)
+      if (identity !== userStore.userInfo?.token || messages.value.length > 0)
+        return
       if (Array.isArray(list)) {
-        messages.value = list.map((m: any) => ({
-          role: m.messageType === 'USER' ? 'user' : 'assistant',
-          content: m.content,
-        })).reverse()
+        messages.value = list
+          .filter(
+            (m: any) =>
+              m.messageType === 'USER' || m.messageType === 'ASSISTANT'
+          )
+          .map((m: any) => ({
+            role:
+              m.messageType === 'USER'
+                ? ('user' as const)
+                : ('assistant' as const),
+            content: m.content,
+          }))
+          .reverse()
       }
-    } catch {}
+    } catch {
+      // 本地布局或历史读取失败时保留当前界面，仍可继续聊天。
+    }
   }
 }
 
@@ -138,6 +156,7 @@ const toggleMin = () => {
 const send = () => {
   const text = input.value.trim()
   if (!text || loading.value) return
+  if (text.length > 2000) return
 
   if (abortController.value) {
     abortController.value.abort()
@@ -155,12 +174,14 @@ const send = () => {
 
   aiStreamChat(
     text,
-    chatId.value,
     {
       onToken: (token: string) => {
+        if (controller.signal.aborted) return
         messages.value[assistantIdx].content += token
       },
-      onDone: (_fullText: string) => {
+      onDone: (fullText: string) => {
+        if (controller.signal.aborted) return
+        if (fullText) messages.value[assistantIdx].content = fullText
         if (!messages.value[assistantIdx].content) {
           messages.value[assistantIdx].content = '（AI 未生成回复）'
         }
@@ -168,16 +189,19 @@ const send = () => {
         abortController.value = null
       },
       onError: (error: Error) => {
+        if (controller.signal.aborted) return
         if (messages.value[assistantIdx].content) {
-          messages.value[assistantIdx].content += '\n\n[回复中断: ' + error.message + ']'
+          messages.value[assistantIdx].content +=
+            '\n\n[回复中断: ' + error.message + ']'
         } else {
-          messages.value[assistantIdx].content = '抱歉，AI 回复出错: ' + error.message
+          messages.value[assistantIdx].content =
+            '抱歉，AI 回复出错: ' + error.message
         }
         loading.value = false
         abortController.value = null
       },
     },
-    controller.signal,
+    controller.signal
   )
 }
 
@@ -201,46 +225,69 @@ defineExpose({ open, close })
     class="fixed z-40 w-[320px] max-h-[60vh] bg-white border rounded-xl shadow-xl flex flex-col overflow-hidden"
     :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
   >
-    <div class="h-10 px-3 flex items-center justify-between border-b cursor-move select-none"
-         @mousedown="startDrag"
-         @touchstart.prevent="startDrag">
+    <div
+      class="h-10 px-3 flex items-center justify-between border-b cursor-move select-none"
+      @mousedown="startDrag"
+      @touchstart.prevent="startDrag"
+    >
       <div class="font-medium">Vibe AI 助手</div>
       <div class="flex items-center gap-2">
-        <button class="text-sm text-muted-foreground hover:text-foreground" @click="toggleMin">
+        <button
+          class="text-sm text-muted-foreground hover:text-foreground"
+          @click="toggleMin"
+        >
           <icon-tabler:minus v-if="!minimized" />
           <icon-tabler:plus v-else />
         </button>
-        <button class="text-sm text-muted-foreground hover:text-foreground" @click="close">
+        <button
+          class="text-sm text-muted-foreground hover:text-foreground"
+          @click="close"
+        >
           <icon-tabler:x />
         </button>
       </div>
     </div>
 
-    <div v-show="!minimized" class="flex-1 overflow-auto p-3 space-y-3 bg-white">
+    <div
+      v-show="!minimized"
+      class="flex-1 overflow-auto p-3 space-y-3 bg-white"
+    >
       <div v-for="(m, i) in messages" :key="i" class="text-sm">
         <div :class="m.role === 'user' ? 'text-right' : 'text-left'">
-          <span :class="m.role === 'user' ? 'inline-block bg-primary text-white' : 'inline-block bg-muted'" class="px-3 py-2 rounded-lg max-w-[90%] whitespace-pre-wrap">{{ m.content }}</span>
+          <span
+            :class="
+              m.role === 'user'
+                ? 'inline-block bg-primary text-white'
+                : 'inline-block bg-muted'
+            "
+            class="px-3 py-2 rounded-lg max-w-[90%] whitespace-pre-wrap"
+            >{{ m.content }}</span
+          >
         </div>
       </div>
-      <div v-if="loading" class="text-xs text-muted-foreground">AI 正在思考...</div>
+      <div v-if="loading" class="text-xs text-muted-foreground">
+        AI 正在思考...
+      </div>
     </div>
 
     <div v-show="!minimized" class="p-2 border-t flex items-center gap-2">
       <input
         v-model="input"
+        maxlength="2000"
         type="text"
         placeholder="问点与音乐相关的问题试试..."
         @keyup.enter="send"
         class="flex-1 px-3 py-2 rounded-md bg-white border outline-none"
       />
-      <button class="px-3 h-9 rounded-md bg-primary text-white disabled:opacity-60" :disabled="loading" @click="send">
+      <button
+        class="px-3 h-9 rounded-md bg-primary text-white disabled:opacity-60"
+        :disabled="loading"
+        @click="send"
+      >
         发送
       </button>
     </div>
   </div>
 </template>
 
-<style scoped>
-</style>
-
-
+<style scoped></style>
