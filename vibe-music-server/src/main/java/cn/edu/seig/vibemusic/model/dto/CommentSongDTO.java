@@ -1,6 +1,10 @@
 package cn.edu.seig.vibemusic.model.dto;
 
 import lombok.Data;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -14,11 +18,15 @@ public class CommentSongDTO implements Serializable {
     /**
      * 歌曲id
      */
+    @NotNull
+    @Positive
     private Long songId;
 
     /**
      * 评论内容
      */
+    @NotBlank
+    @Size(max = 255)
     private String content;
 
 }

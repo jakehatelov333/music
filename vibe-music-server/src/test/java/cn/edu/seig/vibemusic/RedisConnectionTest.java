@@ -14,6 +14,21 @@ public class RedisConnectionTest {
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
+    @Autowired
+    private cn.edu.seig.vibemusic.security.RedisRateLimiter rateLimiter;
+
+    @Test
+    void concurrentRateLimitAllowsExactlyTheConfiguredQuota() {
+        // 独立测试命名空间，60 秒自动过期，不触碰现有业务键。
+        String bucket = "test-concurrent-" + java.util.UUID.randomUUID();
+        java.util.List<java.util.concurrent.CompletableFuture<Long>> requests = java.util.stream.IntStream.range(0, 20)
+                .mapToObj(i -> java.util.concurrent.CompletableFuture.supplyAsync(
+                        () -> rateLimiter.retryAfter(bucket, "test-user", 5, 60))).toList();
+        java.util.List<Long> results = requests.stream().map(java.util.concurrent.CompletableFuture::join).toList();
+        assertEquals(5L, results.stream().filter(value -> value == 0).count());
+        org.junit.jupiter.api.Assertions.assertTrue(results.stream().allMatch(value -> value >= 0 && value <= 60));
+    }
+
     @Test
     public void testRedisConnection() {
         // 测试设置和获取字符串值

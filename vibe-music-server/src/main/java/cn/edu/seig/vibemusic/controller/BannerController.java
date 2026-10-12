@@ -10,6 +10,7 @@ import cn.edu.seig.vibemusic.service.IBannerService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -36,7 +37,7 @@ public class BannerController {
      * @return 轮播图列表
      */
     @PostMapping("/admin/getAllBanners")
-    public Result<PageResult<Banner>> getAllBanners(@RequestBody BannerDTO bannerDTO) {
+    public Result<PageResult<Banner>> getAllBanners(@RequestBody @Valid BannerDTO bannerDTO) {
         return bannerService.getAllBanners(bannerDTO);
     }
 

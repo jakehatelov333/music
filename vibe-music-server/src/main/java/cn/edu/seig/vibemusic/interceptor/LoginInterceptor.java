@@ -15,7 +15,10 @@ import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.stereotype.Component;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.util.PathMatcher;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
+import cn.edu.seig.vibemusic.result.Result;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -26,24 +29,29 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Component
-public class LoginInterceptor implements HandlerInterceptor {
+public class LoginInterceptor implements AsyncHandlerInterceptor {
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
     @Autowired
     private RolePermissionManager rolePermissionManager;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     public void sendErrorResponse(HttpServletResponse response, int status, String message) throws IOException {
         response.setStatus(status);
         response.setCharacterEncoding("UTF-8"); // 设置字符编码为UTF-8
         response.setContentType("application/json;charset=UTF-8"); // 设置响应的Content-Type
-        response.getWriter().write(message);
+        objectMapper.writeValue(response.getWriter(), Result.error(message));
     }
 
     @Override
     public boolean preHandle(HttpServletRequest request,
                              HttpServletResponse response,
                              Object handler) throws Exception {
+        ThreadLocalUtil.remove();
+        if (request.getDispatcherType() == DispatcherType.ASYNC) return true;
         // 允许 CORS 预检请求（OPTIONS 方法）直接通过
         if (request.getMethod().equalsIgnoreCase("OPTIONS")) {
             response.setStatus(HttpServletResponse.SC_OK);
@@ -63,6 +71,8 @@ public class LoginInterceptor implements HandlerInterceptor {
         // 定义允许访问的路径
         List<String> allowedPaths = Arrays.asList(
                 PathConstant.PLAYLIST_DETAIL_PATH,
+                PathConstant.PLAYLIST_LIST_PATH,
+                "/playlist/getRecommendedPlaylists",
                 PathConstant.ARTIST_DETAIL_PATH,
                 PathConstant.SONG_LIST_PATH,
                 PathConstant.SONG_DETAIL_PATH,
@@ -75,7 +85,7 @@ public class LoginInterceptor implements HandlerInterceptor {
         boolean isAllowedPath = allowedPaths.stream()
                 .anyMatch(pattern -> pathMatcher.match(pattern, path));
 
-        log.info("拦截器检查: path={}, allowedPaths={}, isAllowed={}", path, allowedPaths, isAllowedPath);
+        log.debug("拦截器检查: path={}, allowedPaths={}, isAllowed={}", path, allowedPaths, isAllowedPath);
 
         if (token == null || token.isEmpty()) {
             if (isAllowedPath) {
@@ -107,10 +117,17 @@ public class LoginInterceptor implements HandlerInterceptor {
                 sendErrorResponse(response, 403, MessageConstant.NO_PERMISSION); // 无权限访问
                 return false;
             }
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw e;
         } catch (Exception e) {
             sendErrorResponse(response, 401, MessageConstant.SESSION_EXPIRED); // 令牌无效
             return false;
         }
+    }
+
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        ThreadLocalUtil.remove();
     }
 
     @Override

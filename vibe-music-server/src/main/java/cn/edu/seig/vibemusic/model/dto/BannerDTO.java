@@ -2,6 +2,8 @@ package cn.edu.seig.vibemusic.model.dto;
 
 import cn.edu.seig.vibemusic.enumeration.BannerStatusEnum;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Max;
 import lombok.Data;
 
 import java.io.Serial;
@@ -17,12 +19,16 @@ public class BannerDTO implements Serializable {
      * 页码
      */
     @NotNull
+    @Min(1)
+    @Max(100000)
     private Integer pageNum;
 
     /**
      * 每页数量
      */
     @NotNull
+    @Min(1)
+    @Max(100)
     private Integer pageSize;
 
     /**

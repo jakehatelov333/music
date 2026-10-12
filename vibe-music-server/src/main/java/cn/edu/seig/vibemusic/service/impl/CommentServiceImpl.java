@@ -3,6 +3,8 @@ package cn.edu.seig.vibemusic.service.impl;
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.mapper.CommentMapper;
+import cn.edu.seig.vibemusic.security.PlaylistAccessService;
+import org.springframework.transaction.annotation.Transactional;
 import cn.edu.seig.vibemusic.model.dto.CommentPlaylistDTO;
 import cn.edu.seig.vibemusic.model.dto.CommentSongDTO;
 import cn.edu.seig.vibemusic.model.entity.Comment;
@@ -32,6 +34,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Autowired
     private CommentMapper commentMapper;
+    @Autowired
+    private PlaylistAccessService playlistAccessService;
 
     /**
      * 添加歌曲评论
@@ -65,7 +69,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      */
     @Override
     @CacheEvict(cacheNames = "playlistCache", allEntries = true)
+    @Transactional
     public Result addPlaylistComment(CommentPlaylistDTO commentPlaylistDTO) {
+        playlistAccessService.lockReadable(commentPlaylistDTO.getPlaylistId());
         Map<String, Object> map = ThreadLocalUtil.get();
         Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
         Long userId = TypeConversionUtil.toLong(userIdObj);
@@ -89,10 +95,14 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      */
     @Override
     @CacheEvict(cacheNames = {"songCache", "playlistCache"}, allEntries = true)
+    @Transactional
     public Result likeComment(Long commentId) {
         Comment comment = commentMapper.selectById(commentId);
         if (comment == null) {
             return Result.error(MessageConstant.NOT_FOUND);
+        }
+        if (comment.getPlaylistId() != null) {
+            playlistAccessService.lockReadable(comment.getPlaylistId());
         }
         if (comment.getLikeCount() == null) {
             comment.setLikeCount(0L);
@@ -113,10 +123,14 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      */
     @Override
     @CacheEvict(cacheNames = {"songCache", "playlistCache"}, allEntries = true)
+    @Transactional
     public Result cancelLikeComment(Long commentId) {
         Comment comment = commentMapper.selectById(commentId);
         if (comment == null) {
             return Result.error(MessageConstant.NOT_FOUND);
+        }
+        if (comment.getPlaylistId() != null) {
+            playlistAccessService.lockReadable(comment.getPlaylistId());
         }
         if (comment.getLikeCount() == null) {
             comment.setLikeCount(0L);

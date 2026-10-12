@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.model.dto.CommentSongDTO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ICommentService;
 import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -30,7 +31,7 @@ public class CommentController {
      * @return 结果
      */
     @PostMapping("/addSongComment")
-    public Result addSongComment(@RequestBody CommentSongDTO commentSongDTO) {
+    public Result addSongComment(@Valid @RequestBody CommentSongDTO commentSongDTO) {
         return commentService.addSongComment(commentSongDTO);
     }
 
@@ -41,7 +42,7 @@ public class CommentController {
      * @return 结果
      */
     @PostMapping("/addPlaylistComment")
-    public Result addPlaylistComment(@RequestBody CommentPlaylistDTO commentPlaylistDTO) {
+    public Result addPlaylistComment(@Valid @RequestBody CommentPlaylistDTO commentPlaylistDTO) {
         return commentService.addPlaylistComment(commentPlaylistDTO);
     }
 

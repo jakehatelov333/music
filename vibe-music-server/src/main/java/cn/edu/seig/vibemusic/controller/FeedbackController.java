@@ -8,6 +8,7 @@ import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IFeedbackService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.util.List;
 
@@ -31,7 +32,7 @@ public class FeedbackController {
      * @return 反馈列表
      */
     @PostMapping("/admin/getAllFeedbacks")
-    public Result<PageResult<Feedback>> getAllFeedbacks(@RequestBody FeedbackDTO feedbackDTO) {
+    public Result<PageResult<Feedback>> getAllFeedbacks(@RequestBody @Valid FeedbackDTO feedbackDTO) {
         return feedbackService.getAllFeedbacks(feedbackDTO);
     }
 
