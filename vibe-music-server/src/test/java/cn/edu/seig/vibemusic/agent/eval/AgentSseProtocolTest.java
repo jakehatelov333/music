@@ -84,7 +84,7 @@ class AgentSseProtocolTest extends AbstractAgentTest {
                 AgentEvalHarness.scriptedModel(List.of(), false),
                 AgentEvalHarness.scriptedStreaming(List.of(), false),
                 new MysqlChatMemoryStore(AgentEvalHarness.fakeAiService(), new ObjectMapper()),
-                musicTools, playlistActionTools);
+                musicTools, playlistActionTools, new cn.edu.seig.vibemusic.service.ai.StaticSystemPrompt());
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 15);
         ReflectionTestUtils.setField(factory, "maxToolCalls", 4);
         ReflectionTestUtils.setField(factory, "modelName", "qwen-flash-sse");
@@ -97,7 +97,7 @@ class AgentSseProtocolTest extends AbstractAgentTest {
                 AgentEvalHarness.scriptedModel(script, failMidStream),
                 AgentEvalHarness.scriptedStreaming(script, failMidStream),
                 new MysqlChatMemoryStore(AgentEvalHarness.fakeAiService(), new ObjectMapper()),
-                musicTools, playlistActionTools);
+                musicTools, playlistActionTools, new cn.edu.seig.vibemusic.service.ai.StaticSystemPrompt());
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 15);
         ReflectionTestUtils.setField(factory, "maxToolCalls", 4);
         ReflectionTestUtils.setField(factory, "modelName", "qwen-flash-sse");

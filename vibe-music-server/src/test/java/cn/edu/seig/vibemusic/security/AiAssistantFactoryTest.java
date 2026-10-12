@@ -5,6 +5,7 @@ import cn.edu.seig.vibemusic.model.entity.ChatMessage;
 import cn.edu.seig.vibemusic.service.IAiService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import cn.edu.seig.vibemusic.service.ai.AiRunBudget;
+import cn.edu.seig.vibemusic.service.ai.StaticSystemPrompt;
 import cn.edu.seig.vibemusic.tool.MusicTools;
 import cn.edu.seig.vibemusic.tool.PlaylistActionTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,7 +39,8 @@ class AiAssistantFactoryTest {
     private final MysqlChatMemoryStore store = new MysqlChatMemoryStore(service, new ObjectMapper());
     private final MusicTools tools = mock(MusicTools.class);
     private final PlaylistActionTools actionTools = mock(PlaylistActionTools.class);
-    private final AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, tools, actionTools);
+    private final AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, tools, actionTools,
+            new StaticSystemPrompt());
     private final Map<String, List<ChatMessage>> history = new ConcurrentHashMap<>();
     private final Map<String, String> contexts = new ConcurrentHashMap<>();
     private final Map<String, String> leases = new ConcurrentHashMap<>();

@@ -18,6 +18,7 @@ import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
 import cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder;
 import cn.edu.seig.vibemusic.service.agent.PendingActionService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
+import cn.edu.seig.vibemusic.service.ai.StaticSystemPrompt;
 import cn.edu.seig.vibemusic.tool.MusicTools;
 import cn.edu.seig.vibemusic.tool.PlaylistActionTools;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
@@ -590,15 +591,18 @@ public class AgentEvalHarness {
     }
 
     private AiAssistantFactory factory(QwenChatModel model, QwenStreamingChatModel streaming) {
-        AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, readTools, actionTools);
+        // 评测基座刻意注入 StaticSystemPrompt：只有基础提示词，不含用户画像。
+        // 这样个性化功能上线不会让 46 条用例的基线行为发生漂移。
+        AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, readTools, actionTools,
+                new StaticSystemPrompt());
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 15);
         ReflectionTestUtils.setField(factory, "maxToolCalls", 4);
         ReflectionTestUtils.setField(factory, "modelName", "qwen-flash-eval");
         return factory;
     }
 
-    /** 内存版会话存储，实现真实的租约语义（同会话并发生成返回 409）。 */
-    static IAiService fakeAiService() {
+    /** 内存版会话存储，实现真实的租约语义（同会话并发生成返回 409）。公开供其它包的单测复用。 */
+    public static IAiService fakeAiService() {
         IAiService service = mock(IAiService.class);
         Map<String, List<cn.edu.seig.vibemusic.model.entity.ChatMessage>> history = new ConcurrentHashMap<>();
         Map<String, String> contexts = new ConcurrentHashMap<>();

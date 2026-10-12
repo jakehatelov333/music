@@ -22,7 +22,7 @@ import java.util.UUID;
 /**
  * 每次请求装配一个独立的 Agent 运行实例。
  *
- * <p>这里做三件事，都是第 9 项的核心：
+ * <p>这里做四件事：
  * <ol>
  *     <li><b>可信上下文</b>：把服务端解析出的 {@code userId}、会话 {@code chatId} 与本次
  *         {@code taskId} 打包成 {@link AgentContext}，绑定到<b>本次专用的工具实例</b>上。
@@ -30,7 +30,9 @@ import java.util.UUID;
  *     <li><b>指标采集</b>：模型外面套一层 {@link MeteredChatModels}，把每次调用的
  *         次数与 Token 用量记进 {@link AgentMetrics}（真实用量，不是估算）；</li>
  *     <li><b>事件出口</b>：把 SSE 出口作为 {@link AgentEventSink} 注入上下文，
- *         工具层因此可以直接上报“开始调用/调用结束/结构化结果/等待确认”。</li>
+ *         工具层因此可以直接上报“开始调用/调用结束/结构化结果/等待确认”；</li>
+ *     <li><b>系统提示词</b>：通过 {@link AgentSystemPrompt} 在运行时组装
+ *         （基础提示词 + 用户音乐偏好），而不是写死在接口注解上。</li>
  * </ol>
  *
  * <p>工具实例通过 {@code withContext} 生成新对象，Spring 单例 bean 始终是无上下文的，
@@ -45,6 +47,11 @@ public class AiAssistantFactory {
     private final MysqlChatMemoryStore store;
     private final MusicTools readTools;
     private final PlaylistActionTools actionTools;
+    /**
+     * 运行时组装系统提示词。评测基座注入 {@code StaticSystemPrompt}，
+     * 保证 46 条离线评测用例的行为与引入个性化之前完全一致。
+     */
+    private final AgentSystemPrompt systemPrompt;
 
     @Value("${ai.timeout-seconds:60}") private int timeoutSeconds;
     @Value("${ai.max-tool-calls:4}") private int maxToolCalls;
@@ -71,6 +78,12 @@ public class AiAssistantFactory {
                 .chatLanguageModel(MeteredChatModels.blocking(BoundedChatModels.blocking(model, budget), metrics))
                 .streamingChatLanguageModel(MeteredChatModels.streaming(
                         BoundedChatModels.streaming(streamingModel, budget), metrics))
+                // 动态系统提示词：基础提示词 + 用户音乐偏好（见 AgentSystemPrompt）。
+                // 闭包捕获本次运行的 userId/chatId —— 每个 AiServices 实例一份，
+                // 并发请求之间天然隔离，不依赖 ThreadLocal。
+                // 注意 MusicAssistant 上的 @SystemMessage 必须保持删除状态，
+                // 否则 LangChain4j 会优先用注解，这里的 provider 静默失效。
+                .systemMessageProvider(id -> systemPrompt.build(userId, chatId))
                 .chatMemoryProvider(id -> {
                     if (!chatId.equals(id)) throw new IllegalArgumentException("会话身份不匹配");
                     return memory;

@@ -1,6 +1,5 @@
 package cn.edu.seig.vibemusic.service;
 
-import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.TokenStream;
@@ -8,9 +7,18 @@ import dev.langchain4j.service.TokenStream;
 /**
  * Agent 的对话接口。
  *
- * <p>系统提示词同时约束两件事：一是“只用工具返回的真实数据回答”，
- * 二是“创建歌单必须先出预览、由用户确认，工具调用成功不代表业务已执行”。
- * 后者是防止模型抢跑写操作的关键——模型的任何文本都不能替代服务端的真实执行结果。
+ * <p><b>注意这里没有 {@code @SystemMessage}</b>：系统提示词改为运行时组装
+ * （基础提示词 + 用户音乐偏好），由 {@code AgentSystemPrompt} 通过
+ * {@code AiServices.systemMessageProvider} 提供。
+ *
+ * <p><b>为什么必须删掉注解而不是两者共存：</b>LangChain4j 0.36.2 的
+ * {@code DefaultAiServices.findSystemMessageTemplate} 是"先查方法级 {@code @SystemMessage}，
+ * 命中即 return"——只要注解还在，provider 就永远不会被调用，动态提示词会静默失效。
+ * 这一点已用字节码验证过，改动前请先确认版本行为未变。
+ *
+ * <p>{@link #SYSTEM_PROMPT} 的内容同时约束两件事：一是"只用工具返回的真实数据回答"，
+ * 二是"创建歌单必须先出预览、由用户确认，工具调用成功不代表业务已执行"。
+ * 后者是防止模型抢跑写操作的关键 —— 模型的任何文本都不能替代服务端的真实执行结果。
  */
 public interface MusicAssistant {
 
@@ -46,9 +54,7 @@ public interface MusicAssistant {
             12. 如果检索到的歌曲数量少于用户要求，请如实说明实际找到多少首，不要凑数。
             """;
 
-    @SystemMessage(SYSTEM_PROMPT)
     String chat(@MemoryId String chatId, @UserMessage String userMessage);
 
-    @SystemMessage(SYSTEM_PROMPT)
     TokenStream chatStream(@MemoryId String chatId, @UserMessage String userMessage);
 }
