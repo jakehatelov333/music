@@ -137,6 +137,10 @@ ai:
   timeout-seconds: 60
   max-tool-calls: 4
   max-output-tokens: 512
+  # 待确认任务有效期：超时后不可再确认，也不会执行。
+  pending-action-ttl-minutes: 30
+  pending-action-sweep-initial-delay-ms: 60000
+  pending-action-sweep-interval-ms: 300000
 
 # 跨域凭据只允许明确列出的前端来源；部署时填写实际域名。
 app:
