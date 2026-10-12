@@ -152,6 +152,17 @@ jdbc.update("DELETE FROM ai_chat_state");
 jdbc.update("DELETE FROM chat_messages");
 ```
 
+**同时必须给既有的 `tb_user_favorite` 建表语句补 `song_id` 列** —— 现有测试 schema 里这张表
+只有 `playlist_id`，而画像聚合依赖 `type=0` 时的 `song_id`：
+
+```java
+jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_favorite(id BIGINT PRIMARY KEY, user_id BIGINT, "
+        + "playlist_id BIGINT, song_id BIGINT, type INT, create_time TIMESTAMP, "
+        + "FOREIGN KEY(playlist_id) REFERENCES tb_playlist(id) ON DELETE CASCADE)");
+```
+
+> 刻意不给 `song_id` 加外键：`resetData()` 已保证"先删收藏、再删歌曲"，加约束只会徒增顺序耦合。
+
 **Step 3: 验证基座不破**
 
 ```bash
@@ -327,24 +338,15 @@ public interface UserMusicProfileMapper {
                 own_playlist_count = #{ownPlaylistCount}, own_playlist_song_count = #{ownPlaylistSongCount},
                 version = version + 1, updated_at = #{now}
             """)
-    int upsertFacts(UserMusicProfile profile, @Param("now") LocalDateTime now);
-
-    /** 只写入偏好概述，且仅在指纹仍一致时生效（避免覆盖刚刷新的事实对应的新摘要）。 */
-    @Update("""
-            UPDATE tb_user_music_profile
-            SET pref_summary = #{summary}, summary_source_hash = #{hash}
-            WHERE user_id = #{userId} AND summary_source_hash IS NULL
-               OR (user_id = #{userId} AND summary_source_hash <> #{hash} OR summary_source_hash = #{hash})
-            """)
-    int updateSummary(@Param("userId") Long userId, @Param("summary") String summary,
-                      @Param("hash") String hash);
+    int upsertFacts(@Param("p") UserMusicProfile profile, @Param("now") LocalDateTime now);
 }
 ```
 
-> ⚠️ `updateSummary` 的 WHERE 写得含混。落地时改成明确的两条：  
-> `updateSummaryIfAbsent`（`summary_source_hash IS NULL OR summary_source_hash <> #{hash}`）  
-> 与 `updateSummaryForce`（无条件按 user_id）。摘要生成方在生成前已确认指纹，  
-> 写入时用 `<>` 版本即可，避免覆盖另一个并发任务刚写好的同指纹摘要。
+> **参数绑定说明：** 多参数时 MyBatis 不会把 POJO 的属性摊开，因此 bean 必须显式
+> `@Param("p")`，SQL 里写 `#{p.userId}`。依赖编译期 `-parameters` 保留参数名是不可靠的。
+>
+> **Task 2 只写到这里。** `updateSummary` 涉及"指纹不一致才写"的并发语义，与 Task 4 的
+> 概述生成服务成对出现，放在 Task 4 一起加，避免中间态留下含糊的 WHERE 条件。
 
 **Step 3: 基座注册 mapper**
 
@@ -431,7 +433,7 @@ class UserMusicProfileTest extends AbstractAgentTest {
         profiles.upsertFacts(facts, java.time.LocalDateTime.now());
         profiles.upsertFacts(facts, java.time.LocalDateTime.now());
 
-        assertThat(count(("tb_user_music_profile"))).isEqualTo(1);
+        assertThat(count("tb_user_music_profile")).isEqualTo(1);
         assertThat(profiles.find(1L).getVersion()).isEqualTo(2);
         assertThat(profiles.find(1L).getFavSongCount()).isEqualTo(3);
     }
@@ -584,15 +586,59 @@ public class UserMusicProfileService {
                 LocalDateTime.now().minus(refreshTtlMinutes, ChronoUnit.MINUTES));
     }
 
+    /**
+     * 风格聚合前先扫描多少条原始风格行。必须显著大于 topN：真实库里风格是多值逗号串，
+     * 单个风格的总数要靠多条原始行累加，取少了会让"累加后能进 TOP N"的风格被提前截断。
+     */
+    private static final int RAW_STYLE_SCAN = 100;
+
     /** 重新聚合事实并 upsert，返回最新画像（不含 prefSummary 的重新生成）。 */
     public UserMusicProfile refresh(Long userId) {
         UserMusicProfile counts = mapper.aggregateCounts(userId);
         if (counts == null) counts = new UserMusicProfile();   // 全新用户：全 0
         counts.setUserId(userId);
-        counts.setTopStyles(writeTaste(mapper.topStyles(userId, topN)));
+        counts.setTopStyles(writeTaste(expandStyles(mapper.topStyles(userId, RAW_STYLE_SCAN), topN)));
         counts.setTopArtists(writeTaste(mapper.topArtists(userId, topN)));
         mapper.upsertFacts(counts, LocalDateTime.now());
         return mapper.find(userId);
+    }
+
+    /**
+     * 把"逗号分隔的多值风格"拆成单个风格再合并计数。
+     *
+     * <p><b>为什么必须拆（真实数据发现的缺陷）：</b>库里 {@code tb_song.style} 是逗号分隔多值
+     * （如 {@code 欧美流行,电子}）。不拆的话画像会变成
+     * 「常听风格：欧美流行、欧美流行,电子、欧美流行,嘻哈说唱…」—— 冗余、误导、没法读。
+     * 实测某用户（71 首收藏）未拆分时 TOP5 是
+     * {@code 欧美流行(30)、欧美流行,电子(12)、华语流行(7)、欧美流行,嘻哈说唱(4)、电子(4)}，
+     * 拆分后才是 {@code 欧美流行(52)、电子(16)、华语流行(7)、嘻哈说唱(5)、节奏布鲁斯(4)}。
+     *
+     * <p><b>为什么按原始行的计数直接累加是正确的：</b>SQL 侧的
+     * {@code COUNT(DISTINCT t.song_id)} 是"具有该原始风格串的歌曲数"。若 12 首歌的风格串
+     * 都是 {@code 欧美流行,电子}，这 12 首歌确实每首都同属两个风格，两边各加 12 是正确语义。
+     *
+     * <p><b>为什么不放在 SQL 里：</b>字符串拆分在 MySQL 与 H2 都没有可移植写法。
+     */
+    private List<TasteCount> expandStyles(List<TasteCount> raw, int limit) {
+        Map<String, Integer> totals = new HashMap<>();
+        for (TasteCount row : raw) {
+            if (row.getName() == null) continue;
+            for (String part : row.getName().split("[,，]")) {
+                String name = part.strip();
+                if (!name.isEmpty()) totals.merge(name, row.getCount(), Integer::sum);
+            }
+        }
+        return totals.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .map(entry -> {
+                    TasteCount item = new TasteCount();
+                    item.setName(entry.getKey());
+                    item.setCount(entry.getValue());
+                    return item;
+                })
+                .toList();
     }
 
     /**
@@ -1754,8 +1800,11 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 | 项         | 判据                                            |
 | --------- | --------------------------------------------- |
 | 画像聚合正确    | `UserMusicProfileTest` 全绿；收藏与自建歌单两个来源去重       |
+| 多值风格拆分    | `tb_song.style` 为逗号分隔多值时，画像只出现单个风格，原始混合串不得出现 |
 | 画像刷新成本    | TTL 内 `read()` 只有主键查询；请求路径**零模型调用**           |
+| 真实 MySQL 可跑 | 迁移脚本与三条聚合 SQL 在真实 MySQL 上实测通过（H2 与 MySQL 方言差异已排除） |
 | 提示词注入生效   | `SystemMessageInjectionTest` 断言模型收到的第一条消息含偏好块 |
+| 工具扇出可控    | 真实端到端提问"按我的偏好推荐"返回 200，不因工具预算超限失败 |
 | 游客不注入     | 游客请求的系统消息不含画像，且不产生画像行                         |
 | 摘要触发正确    | 未超阈值不调用模型；超阈值压缩最早一段并推进 `summary_upto_id`      |
 | 摘要幂等      | CAS 未命中时丢弃结果，不覆盖他人写入                          |
@@ -1769,6 +1818,8 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 
 | 风险                                                    | 等级 | 缓解                                                              |
 | ----------------------------------------------------- | -- | --------------------------------------------------------------- |
+| **注入画像后模型会"挨个风格/歌手各查一次"，撞满 `ai.max-tool-calls` 导致 503** | **高（已发生）** | 已修：约束提到偏好块数据之前 + 明确"最多再调用 1~2 次检索工具"；`max-tool-calls` 4→6。真实端到端复测 200 通过 |
+| **`tb_song.style` 是逗号分隔多值**，直接 GROUP BY 会产出 `欧美流行,电子` 这类混合串 | **高（已发生）** | 已在服务层 `expandStyles` 拆分后合并计数；`RAW_STYLE_SCAN=100` 防止累加后被提前截断；有 2 条专门测试 |
 | 删掉 `@SystemMessage` 后若 provider 未生效，助手会"失去人格"         | 中  | `SystemMessageInjectionTest` 直接断言模型收到的系统消息，不依赖人工观察              |
 | 画像只覆盖"收藏 + 自建歌单"，新用户/只听不收藏的用户画像为空                     | 中  | `renderPreferenceBlock` 在无数据时返回 null（不注入空块）；文档明确标注限制，不假装有播放历史   |
 | 摘要可能丢信息（压缩必然有损）                                       | 中  | 摘要只做"锦上添花"：窗口内 20 条原样保留；摘要块显式声明"与本次要求冲突时以本次为准"                  |
@@ -1783,3 +1834,62 @@ git commit -m "docs(ai): 补充个性化与摘要记忆的配置、协议与排�
 2. 模型分层（`agent_ai_plan.md` §1.5）落地后，把 `MusicTasteSummaryService` 与  
    `ChatSummaryService` 的模型换成独立的 `qwen-flash` Bean，进一步压低成本。
 3. 管理端可加"AI 成本与画像覆盖"看板，复用 `tb_ai_task_metric` 与 `tb_user_music_profile`。
+
+---
+
+## 实施记录（Task 1~7 已落地，2026-10-12）
+
+代码是唯一事实来源。本节记录**实施结果与方案原稿的偏差**，读方案时请以本节为准。
+
+### 已完成
+
+| Task | commit | 状态 |
+|---|---|---|
+| 1 迁移脚本 + 测试基座 | `1b916c3` | ✅ 迁移已应用到本地 MySQL |
+| 2 画像实体/Mapper/聚合 | `a30c2fe` | ✅ |
+| 3 `UserMusicProfileService` | `7510f5e` | ✅ |
+| — 多值风格拆分修复 | `a4363f5` | ✅ 真数据发现的缺陷 |
+| 6 动态系统提示词 | `28dbf0d` | ✅ 只注入画像（摘要延后到 Task 5） |
+| 7 接入 Factory + 4 处调用点 | `28dbf0d` | ✅ 评测 46/46 零漂移 |
+| — 工具预算回归修复 | `07e6090` | ✅ 真数据发现的回归 |
+| 4 偏好概述（qwen-flash） | — | ⬜ 未做 |
+| 5 滚动摘要记忆 | — | ⬜ 未做 |
+| 8 异步整理 + `GET /ai/profile` | — | ⬜ 未做 |
+| 9 配置/文档/最终验收 | — | 部分（配置已加，文档见本节） |
+
+**测试**：`mvn -o test` **126 条全绿**；评测 **46/46**（基线零漂移）。
+
+### 与方案原稿的偏差（重要）
+
+1. **`COUNT(*)` → `COUNT(DISTINCT t.song_id)`**（topStyles / topArtists）。
+   同一首歌跨"收藏 + 自建歌单"两个来源会被 `UNION ALL` 出两行，不去重就重复计数。
+   这条是单元测试抓出来的。
+2. **`TasteCount` 用 `@Data` bean 而非 record**：MyBatis 结果集映射走 setter 最稳，
+   不依赖编译期 `-parameters` 保留构造器参数名。
+3. **`upsertFacts` 的 bean 参数必须显式 `@Param("p")`**，SQL 写 `#{p.userId}`。
+4. **`AbstractAgentTest` 的 `tb_user_favorite` 必须补 `song_id` 列**（不加外键）。
+5. **多值风格拆分**（`expandStyles` + `RAW_STYLE_SCAN=100`）：`tb_song.style` 是逗号分隔多值，
+   **H2 夹具测不出来**，必须拿真实 MySQL 数据验证。
+6. **`PersonalizedSystemPrompt` 只注入画像**，不注入摘要 —— 摘要读取路径属于 Task 5，
+   提前写会留下空壳代码。`AgentSystemPrompt.build` 的 `chatId` 参数为 Task 5 预留。
+7. **`ai.max-tool-calls` 4 → 6**：4 是"无画像时代"定的值，画像注入后合法流程需要更多检索。
+8. **`AgentEvalHarness.fakeAiService()` 改为 `public`**，供其它包的单测复用。
+
+### 真实端到端验证（真实 qwen-flash + 真实 MySQL）
+
+用临时账号（id=156，8 首收藏，全部为多值风格）在 18080 验证，**用完已删除**：
+
+- 画像落库与手工推算**完全一致**：
+  `top_styles = 欧美流行(8)、节奏布鲁斯(7)、摇滚(1)`；`top_artists = Ariana Grande(7)、Maroon 5(1)`。
+- 提问"根据我的音乐偏好，推荐 3 首歌" → **200 成功**，模型明确引用画像
+  （"根据你的音乐偏好（欧美流行、节奏布鲁斯、摇滚，常听歌手 Arian Grande、Maroon 5）"）。
+- 模型提到的歌曲（`7 rings` / `Girls Like You` / `Maps`）**查库确认真实存在，无编造**。
+- 指标：`model_calls=4, tool_calls=5, success=1, failure_category=NONE`。
+
+### 已知未解决
+
+1. **`AiRunBudget` 耗尽时直接抛异常导致整个请求 503**，而不是"带着已有数据降级作答"。
+   当前靠提示词约束 + 提高预算缓解，**根因未解**。彻底修需要在预算耗尽时让模型停止调用工具
+   并用已有结果收尾，属独立课题。
+2. 真实模型侧质量仍只有少量样本，无批量准确率统计（沿用既有结论）。
+
