@@ -13,6 +13,7 @@ import cn.edu.seig.vibemusic.model.vo.PlaylistVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ISearchService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -40,6 +41,9 @@ public class SearchServiceImpl implements ISearchService {
     @Autowired
     private UserFavoriteMapper userFavoriteMapper;
 
+    @Autowired
+    private SongArtistService songArtistService;
+
     @Override
     public Result<GlobalSearchVO> search(String keyword, int limit, HttpServletRequest request) {
         String normalizedKeyword = keyword == null ? "" : keyword.trim();
@@ -54,6 +58,8 @@ public class SearchServiceImpl implements ISearchService {
         List<PlaylistVO> playlists = searchMapper.searchPlaylists(normalizedKeyword, safeLimit);
 
         setSongLikeStatus(songs, request);
+        // 结构化歌手列表：独立批量查询，主搜索 SQL 保持零 JOIN。
+        songArtistService.attachArtists(songs);
 
         GlobalSearchVO result = new GlobalSearchVO();
         result.setSongs(songs);

@@ -7,6 +7,7 @@ import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
 import cn.edu.seig.vibemusic.model.entity.UserFavorite;
 import cn.edu.seig.vibemusic.model.vo.SongDetailVO;
 import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.impl.SongServiceImpl;
 import cn.edu.seig.vibemusic.service.impl.PlaylistServiceImpl;
 import cn.edu.seig.vibemusic.util.JwtUtil;
@@ -57,6 +58,8 @@ class PublicResponseIsolationTest {
         SongServiceImpl target = new SongServiceImpl();
         ReflectionTestUtils.setField(target, "songMapper", songs);
         ReflectionTestUtils.setField(target, "userFavoriteMapper", favorites);
+        // 本用例只关心缓存隔离，歌手关系用替身即可（读路径装配 artists 不影响 likeStatus）。
+        ReflectionTestUtils.setField(target, "songArtistService", mock(SongArtistService.class));
         SongServiceImpl service = withCaching(target);
         assertEquals(1, service.getSongDetail(8L, loggedIn()).getData().getLikeStatus());
         assertEquals(0, service.getSongDetail(8L, new MockHttpServletRequest()).getData().getLikeStatus());
@@ -74,6 +77,7 @@ class PublicResponseIsolationTest {
         PlaylistServiceImpl target = new PlaylistServiceImpl();
         ReflectionTestUtils.setField(target, "playlistMapper", playlists);
         ReflectionTestUtils.setField(target, "userFavoriteMapper", favorites);
+        ReflectionTestUtils.setField(target, "songArtistService", mock(SongArtistService.class));
         PlaylistServiceImpl service = withCaching(target);
         ThreadLocalUtil.set(Map.of(JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER"));
         assertEquals(1, service.getPlaylistDetail(8L, loggedIn()).getData().getLikeStatus());

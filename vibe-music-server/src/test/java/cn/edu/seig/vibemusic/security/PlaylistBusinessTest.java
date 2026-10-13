@@ -7,6 +7,7 @@ import cn.edu.seig.vibemusic.model.entity.Playlist;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.PersonalPlaylistService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.impl.PlaylistServiceImpl;
 import cn.edu.seig.vibemusic.tool.MusicTools;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
@@ -56,8 +57,12 @@ class PlaylistBusinessTest {
     @BeforeEach void prepare() {
         jdbc = new JdbcTemplate(dataSource);
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user(id BIGINT PRIMARY KEY, username VARCHAR(255), user_avatar VARCHAR(255))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_artist(id BIGINT PRIMARY KEY, name VARCHAR(255))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_song(id BIGINT PRIMARY KEY, name VARCHAR(255), album VARCHAR(255), duration VARCHAR(20), cover_url VARCHAR(255), audio_url VARCHAR(255), release_time DATE, artist_id BIGINT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_artist(id BIGINT PRIMARY KEY, name VARCHAR(255), status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE')");
+        // album_id 是歌单详情 SQL 的必需列（前端用它把专辑名做成可跳转链接）——
+        // 夹具缺列会直接 BadSqlGrammar，与 tb_artist 必须带 status 是同一类问题。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_song(id BIGINT PRIMARY KEY, name VARCHAR(255), album VARCHAR(255), album_id BIGINT, duration VARCHAR(20), cover_url VARCHAR(255), audio_url VARCHAR(255), release_time DATE, artist_id BIGINT, artist_names VARCHAR(512))");
+        // 歌手归属的唯一权威来源（多歌手改造）；展示串 artist_names 只是它的派生值。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_song_artist(song_id BIGINT NOT NULL, artist_id BIGINT NOT NULL, display_order INT NOT NULL DEFAULT 1, PRIMARY KEY(song_id,artist_id))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_playlist(id BIGINT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(255), cover_url VARCHAR(255), introduction VARCHAR(2000), style VARCHAR(255), owner_user_id BIGINT, is_public BOOLEAN DEFAULT TRUE, status VARCHAR(16) NOT NULL DEFAULT 'PUBLISHED', cover_is_custom BOOLEAN NOT NULL DEFAULT FALSE, FOREIGN KEY(owner_user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_playlist_binding(playlist_id BIGINT, song_id BIGINT, PRIMARY KEY(playlist_id,song_id), FOREIGN KEY(playlist_id) REFERENCES tb_playlist(id) ON DELETE CASCADE, FOREIGN KEY(song_id) REFERENCES tb_song(id) ON DELETE CASCADE)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_comment(id BIGINT PRIMARY KEY, playlist_id BIGINT, type INT, content VARCHAR(255), create_time TIMESTAMP, like_count BIGINT, user_id BIGINT, FOREIGN KEY(playlist_id) REFERENCES tb_playlist(id) ON DELETE CASCADE)");
@@ -413,6 +418,8 @@ class PlaylistBusinessTest {
         @Bean SongMapper songs(SqlSessionTemplate session) { return session.getMapper(SongMapper.class); }
         @Bean SearchMapper search(SqlSessionTemplate session) { return session.getMapper(SearchMapper.class); }
         @Bean PlaylistAccessService access(PlaylistMapper mapper) { return new PlaylistAccessService(mapper); }
+        // 歌手关系在本用例里无关（只验证歌单业务与可见性），用替身避免引入 SongArtistMapper。
+        @Bean SongArtistService songArtistService() { return mock(SongArtistService.class); }
         @Bean IPlaylistService details() { return new PlaylistServiceImpl(); }
         @Bean UserFavoriteMapper favorites() { return mock(UserFavoriteMapper.class); }
         @Bean MinioService minio() { return mock(MinioService.class); }

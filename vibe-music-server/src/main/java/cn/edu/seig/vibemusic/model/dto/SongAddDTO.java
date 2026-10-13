@@ -6,6 +6,7 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
 public class SongAddDTO implements Serializable {
@@ -14,9 +15,16 @@ public class SongAddDTO implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 歌手 id
+     * 歌手 id（单个，兼容旧客户端）
+     * artistIds 非空时以 artistIds 为准；否则回退为「只含本字段的单元素列表」。
      */
     private Long artistId;
+
+    /**
+     * 演唱歌手 id 列表，<b>顺序即展示顺序</b>（第一个为主艺人）。
+     * 留空表示沿用旧的单歌手字段 artistId。
+     */
+    private List<Long> artistIds;
 
     /**
      * 歌名

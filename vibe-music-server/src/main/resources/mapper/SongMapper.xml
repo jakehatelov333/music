@@ -41,7 +41,7 @@
                s.cover_url    AS songCoverUrl,
                s.audio_url    AS audioUrl,
                s.release_time AS releaseTime,
-               a.name         AS artistName,
+               s.artist_names AS artistName,
                c.id           AS commentId,
                c.content      AS content,
                c.create_time  AS createTime,
@@ -49,7 +49,6 @@
                u.username     AS username,
                u.user_avatar  AS userAvatar
         FROM tb_song s
-                 LEFT JOIN tb_artist a ON s.artist_id = a.id
                  LEFT JOIN tb_album al ON s.album_id = al.id
                  LEFT JOIN tb_comment c ON s.id = c.song_id AND c.type = 0
                  LEFT JOIN tb_user u ON c.user_id = u.id
@@ -69,11 +68,12 @@
         s.cover_url AS coverUrl,
         s.audio_url AS audioUrl,
         s.release_time AS releaseTime,
-        a.name AS artistName
+        s.artist_names AS artistName
         FROM tb_song s
-        LEFT JOIN tb_artist a ON s.artist_id = a.id
         LEFT JOIN tb_album al ON s.album_id = al.id
-        LEFT JOIN tb_user_favorite u ON s.id = u.song_id
+        <!-- 必须限定 user_id：否则一首歌被 N 个用户收藏就会产生 N 行，
+             列表出现重复歌曲、分页 total 被放大。 -->
+        LEFT JOIN tb_user_favorite u ON s.id = u.song_id AND u.user_id = #{userId}
         WHERE
         <if test="songIds != null and songIds.size() > 0">
             s.id IN
@@ -85,7 +85,7 @@
             AND s.name LIKE CONCAT('%', #{songName}, '%')
         </if>
         <if test="artistName != null and artistName.trim() != ''">
-            AND a.name LIKE CONCAT('%', #{artistName}, '%')
+            AND s.artist_names LIKE CONCAT('%', #{artistName}, '%')
         </if>
         <if test="album != null and album.trim() != ''">
             AND COALESCE(al.name, s.album) LIKE CONCAT('%', #{album}, '%')
@@ -108,11 +108,10 @@
         SELECT DISTINCT s.id AS songId, s.name AS songName, COALESCE(al.name, s.album) AS album,
         s.album_id AS albumId, s.disc_number AS discNumber, s.track_number AS trackNumber,
         s.duration, s.cover_url AS coverUrl, s.audio_url AS audioUrl,
-        s.release_time AS releaseTime, a.name AS artistName
+        s.release_time AS releaseTime, s.artist_names AS artistName
         FROM tb_song s
         JOIN tb_genre g ON s.id = g.song_id
         JOIN tb_style st ON g.style_id = st.id
-        LEFT JOIN tb_artist a ON s.artist_id = a.id
         LEFT JOIN tb_album al ON s.album_id = al.id
         WHERE g.style_id IN
         <foreach item="item" collection="sortedStyleIds" open="(" separator="," close=")">

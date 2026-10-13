@@ -10,8 +10,10 @@ import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.vo.LyricsBatchTaskVO;
 import cn.edu.seig.vibemusic.model.vo.LyricsFetchVO;
+import cn.edu.seig.vibemusic.model.vo.ArtistNameVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ILyricsService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.lyrics.LyricsCandidate;
 import cn.edu.seig.vibemusic.service.lyrics.LyricsMatcher;
 import cn.edu.seig.vibemusic.service.lyrics.LyricsProvider;
@@ -51,6 +53,12 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>已有歌词默认不被覆盖</b>，必须显式传入 {@code force=true}</li>
  *   <li>所有数据源都无匹配时写入 {@code lyric_status=3}（负缓存），便于管理端区分"无匹配"与"未获取"</li>
  * </ul>
+ * <p>
+ * <b>歌手维度：展示与检索分离。</b>展示用完整展示串（{@code tb_song_artist} 派生，例如「银临 / Aki阿杰」）；
+ * 检索则按回退链逐个候选尝试（主艺人名 → 完整展示串 → 各合作歌手名，受
+ * {@code lyrics.match.max-artist-attempts} 限次）。原因是匹配打分区分「歌手名完全相等（+0.3）」
+ * 与「包含（+0.15）」，而归一化会清掉 {@code /} 与空格 —— 合作歌曲传主艺人名只能拿到包含关系，
+ * 传完整展示串才可能相等。
  */
 @Slf4j
 @Service
@@ -72,6 +80,8 @@ public class LyricsServiceImpl implements ILyricsService {
     @Autowired
     private ArtistMapper artistMapper;
     @Autowired
+    private SongArtistService songArtistService;
+    @Autowired
     private List<LyricsProvider> providers;
     @Autowired
     private LyricsMatcher matcher;
@@ -90,7 +100,17 @@ public class LyricsServiceImpl implements ILyricsService {
     private ThreadPoolTaskExecutor taskExecutor;
 
     /** 单次抓取的结果 */
-    private record Fetched(boolean matched, String lyric, String source, Double score, String message) {
+    record Fetched(boolean matched, String lyric, String source, Double score, String message) {
+    }
+
+    /**
+     * 一首歌的歌手维度上下文。
+     *
+     * @param primary    主艺人名（{@code tb_song.artist_id} → {@code tb_artist.name}），检索第 1 级
+     * @param display    展示名（关系表派生的完整展示串），用于 {@code [ar:]} 与返回给管理端
+     * @param candidates 检索候选序列（回退链，已去重并截断到配置上限）
+     */
+    record ArtistContext(String primary, String display, List<String> candidates) {
     }
 
     // ------------------------------------------------------------------ 单曲
@@ -105,10 +125,10 @@ public class LyricsServiceImpl implements ILyricsService {
             return Result.error("歌曲不存在");
         }
 
-        String artistName = resolveArtistName(song, null);
-        Fetched fetched = fetchFromProviders(song, artistName, null, null);
+        ArtistContext artists = artistContext(song, null);
+        Fetched fetched = fetchFromProviders(song, artists, null);
 
-        LyricsFetchVO vo = buildVO(song, artistName, fetched);
+        LyricsFetchVO vo = buildVO(song, artists.display(), fetched);
         if (!fetched.matched()) {
             return Result.success("未找到匹配的歌词", vo);
         }
@@ -130,7 +150,7 @@ public class LyricsServiceImpl implements ILyricsService {
         }
 
         String lyric = dto == null || dto.getLyric() == null ? null : dto.getLyric().strip();
-        String artistName = resolveArtistName(song, null);
+        String artistName = displayName(song, null);
 
         UpdateWrapper<Song> update = new UpdateWrapper<Song>().eq("id", songId);
         if (StringUtils.hasText(lyric)) {
@@ -297,45 +317,58 @@ public class LyricsServiceImpl implements ILyricsService {
     // ------------------------------------------------------------------ 内部
 
     /**
-     * 依次尝试各数据源，返回首个匹配成功的结果。
+     * 依次尝试「歌手名候选 × 数据源」，返回首个匹配成功的结果。
+     *
+     * <p>外层是歌手名候选（回退链），内层是数据源优先级：先用主艺人名把 QQ 音乐、LRCLIB 都问一遍，
+     * 都不行再用完整展示串重试。这样绝大多数歌曲只需一次请求（第 1 个候选即命中），
+     * 只有真正拿不到结果的合作歌曲才会多花一次。
      */
-    private Fetched fetchFromProviders(Song song, String artistName, Map<Long, String> artistCache, String batchTaskId) {
+    Fetched fetchFromProviders(Song song, ArtistContext artists, String batchTaskId) {
         String albumName = resolveAlbumName(song);
-        LyricsProvider.Query query = new LyricsProvider.Query(
-                song.getSongName(),
-                artistName,
-                albumName,
-                parseDuration(song.getDuration())
-        );
+        Double duration = parseDuration(song.getDuration());
 
-        for (LyricsProvider provider : orderedProviders()) {
+        for (String artistName : artists.candidates()) {
             if (isCancelRequested(batchTaskId)) {
                 break;
             }
-            if (!provider.enabled()) {
-                continue;
-            }
-            try {
-                List<LyricsCandidate> candidates = provider.search(query);
+            LyricsProvider.Query query = new LyricsProvider.Query(
+                    song.getSongName(),
+                    artistName,
+                    albumName,
+                    duration
+            );
+
+            for (LyricsProvider provider : orderedProviders()) {
                 if (isCancelRequested(batchTaskId)) {
                     break;
                 }
-                if (candidates.isEmpty()) {
+                if (!provider.enabled()) {
                     continue;
                 }
-                LyricsMatcher.Scored best = matcher.pickBest(candidates, query);
-                if (best == null) {
-                    continue;
+                try {
+                    List<LyricsCandidate> candidates = provider.search(query);
+                    if (isCancelRequested(batchTaskId)) {
+                        break;
+                    }
+                    if (candidates.isEmpty()) {
+                        continue;
+                    }
+                    LyricsMatcher.Scored best = matcher.pickBest(candidates, query);
+                    if (best == null) {
+                        continue;
+                    }
+                    String cleaned = cleaner.clean(best.candidate().lyric(), song.getSongName(),
+                            artists.display(), albumName);
+                    if (!StringUtils.hasText(cleaned)) {
+                        continue;
+                    }
+                    log.debug("歌曲 {}-{} 命中歌词源 {}，得分 {}（检索歌手名={}）",
+                            artists.display(), song.getSongName(), best.candidate().source(),
+                            best.score(), artistName);
+                    return new Fetched(true, cleaned, best.candidate().source(), best.score(), null);
+                } catch (Exception e) {
+                    log.warn("歌词源 {} 处理失败，songId={}", provider.source(), song.getSongId(), e);
                 }
-                String cleaned = cleaner.clean(best.candidate().lyric(), song.getSongName(), artistName, albumName);
-                if (!StringUtils.hasText(cleaned)) {
-                    continue;
-                }
-                log.debug("歌曲 {}-{} 命中歌词源 {}，得分 {}", artistName, song.getSongName(),
-                        best.candidate().source(), best.score());
-                return new Fetched(true, cleaned, best.candidate().source(), best.score(), null);
-            } catch (Exception e) {
-                log.warn("歌词源 {} 处理失败，songId={}", provider.source(), song.getSongId(), e);
             }
         }
         return new Fetched(false, null, null, null, "所有歌词源均未找到匹配结果");
@@ -379,8 +412,8 @@ public class LyricsServiceImpl implements ILyricsService {
                         || (StringUtils.hasText(song.getLyric()) && !force)) {
                     task.setSkipped(task.getSkipped() + 1);
                 } else {
-                    String artistName = resolveArtistName(song, artistCache);
-                    Fetched fetched = fetchFromProviders(song, artistName, artistCache, taskId);
+                    ArtistContext artists = artistContext(song, artistCache);
+                    Fetched fetched = fetchFromProviders(song, artists, taskId);
                     if (isCancelRequested(taskId)) {
                         break;
                     }
@@ -524,6 +557,72 @@ public class LyricsServiceImpl implements ILyricsService {
         vo.setMessage(fetched.message());
         vo.setHasExistingLyric(StringUtils.hasText(song.getLyric()));
         return vo;
+    }
+
+    /**
+     * 组装一首歌的歌手维度上下文：主艺人名（检索第 1 级）、完整展示串（展示用）、检索候选链。
+     */
+    private ArtistContext artistContext(Song song, Map<Long, String> artistCache) {
+        String primary = resolveArtistName(song, artistCache);
+        List<ArtistNameVO> relations = songArtistService.findArtistsBySongId(song.getSongId());
+        String display = displayArtistName(relations, primary);
+        return new ArtistContext(primary, display, artistCandidates(primary, relations));
+    }
+
+    /** 展示用歌手名：优先关系表派生的完整展示串，关系缺失时退化为主艺人名。 */
+    private String displayName(Song song, Map<Long, String> artistCache) {
+        return displayArtistName(songArtistService.findArtistsBySongId(song.getSongId()),
+                resolveArtistName(song, artistCache));
+    }
+
+    private static String displayArtistName(List<ArtistNameVO> relations, String primary) {
+        if (relations != null && !relations.isEmpty()) {
+            String rendered = SongArtistService.renderArtistNames(
+                    relations.stream().map(ArtistNameVO::getArtistName).toList());
+            if (StringUtils.hasText(rendered)) {
+                return rendered;
+            }
+        }
+        return primary;
+    }
+
+    /**
+     * 歌手名回退链：主艺人名 → 完整展示串 → 各合作歌手名（需 {@code allow-collaborator-attempts} 显式开启）。
+     * 最终按 {@code maxAttempts} 截断，避免批量补全时请求量成倍上涨。
+     *
+     * <p>单歌手歌曲的展示串与主艺人名相同，去重后只剩一个候选，因此不会产生任何多余请求。
+     *
+     * <p>做成静态纯函数是为了能直接单测候选顺序与截断规则，不必启动 Spring 或访问网络。
+     */
+    static List<String> buildArtistCandidates(String primary, List<ArtistNameVO> relations,
+                                              int maxAttempts, boolean allowCollaborators) {
+        int limit = Math.max(1, maxAttempts);
+        List<String> candidates = new ArrayList<>();
+        addCandidate(candidates, primary);
+        if (limit > 1 && relations != null && !relations.isEmpty()) {
+            List<String> names = relations.stream().map(ArtistNameVO::getArtistName).toList();
+            addCandidate(candidates, SongArtistService.renderArtistNames(names));
+            if (allowCollaborators) {
+                names.forEach(name -> addCandidate(candidates, name));
+            }
+        }
+        return candidates.stream().limit(limit).toList();
+    }
+
+    private List<String> artistCandidates(String primary, List<ArtistNameVO> relations) {
+        return buildArtistCandidates(primary, relations,
+                properties.getMatch().getMaxArtistAttempts(),
+                properties.getMatch().isAllowCollaboratorAttempts());
+    }
+
+    private static void addCandidate(List<String> candidates, String name) {
+        if (!StringUtils.hasText(name)) {
+            return;
+        }
+        String value = name.trim();
+        if (!candidates.contains(value)) {
+            candidates.add(value);
+        }
     }
 
     private String resolveArtistName(Song song, Map<Long, String> cache) {

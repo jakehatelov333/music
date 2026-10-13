@@ -379,10 +379,15 @@ class PlaylistSelectionDiversityTest extends AbstractAgentTest {
     }
 
     private void insertSongsByArtist(Long artistId, long fromId, long toId) {
-        List<Object[]> batch = new ArrayList<>();
+        // 展示串必须与关系表一致（artistId=1 → 测试歌手A，2 → 测试歌手B，见 AbstractAgentTest 夹具）。
+        String artistName = artistId != null && artistId == 2L ? "测试歌手B" : "测试歌手A";
+        List<Object[]> songs = new ArrayList<>();
+        List<Object[]> relations = new ArrayList<>();
         for (long id = fromId; id <= toId; id++) {
-            batch.add(new Object[]{id, "曲库歌曲" + id, artistId});
+            songs.add(new Object[]{id, "曲库歌曲" + id, artistId, artistName});
+            relations.add(new Object[]{id, artistId});
         }
-        jdbc.batchUpdate("INSERT INTO tb_song(id,name,artist_id,style) VALUES (?,?,?,'流行')", batch);
+        jdbc.batchUpdate("INSERT INTO tb_song(id,name,artist_id,artist_names,style) VALUES (?,?,?,?,'流行')", songs);
+        jdbc.batchUpdate("INSERT INTO tb_song_artist(song_id, artist_id, display_order) VALUES (?,?,1)", relations);
     }
 }

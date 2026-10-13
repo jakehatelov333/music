@@ -6,9 +6,10 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
-public class SongVO implements Serializable {
+public class SongVO implements Serializable, SongArtistAware {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -30,8 +31,17 @@ public class SongVO implements Serializable {
 
     /**
      * 歌手
+     * 多歌手时的展示串（按 display_order 用 " / " 拼接），例如「银临 / Aki阿杰」。
+     * 兼容字段：既有前端直接展示它。
      */
     private String artistName;
+
+    /**
+     * 结构化歌手列表，按 display_order 升序。
+     * 与 {@link #artistName} 由同一份权威数据（tb_song_artist）派生，两者不会矛盾；
+     * 前端据此跳转歌手详情页。无关系时为空列表。
+     */
+    private List<ArtistNameVO> artists;
 
     /**
      * 专辑

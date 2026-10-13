@@ -1,7 +1,18 @@
+/** 结构化歌手引用：带真实 artistId，供跳转歌手详情页 */
+export interface ArtistRef {
+  artistId: number
+  artistName: string
+}
+
 export interface PlaylistSong {
   songId: number
+  /** 专辑 id，供专辑名做成可跳转链接；单曲可能为 null */
+  albumId?: number | null
   songName: string
+  /** 多歌手展示串，例如「银临 / Aki阿杰」；兼容字段 */
   artistName: string
+  /** 结构化歌手列表，按展示顺序；无关系时为空数组 */
+  artists?: ArtistRef[]
   album: string
   duration: string
   coverUrl: string | null
@@ -44,7 +55,10 @@ export interface Song {
   songId: number
   albumId?: number | null
   songName: string
+  /** 多歌手展示串，例如「银临 / Aki阿杰」；兼容字段 */
   artistName: string
+  /** 结构化歌手列表，按展示顺序；无关系时为空数组 */
+  artists?: ArtistRef[]
   album: string
   discNumber?: number | null
   trackNumber?: number | null

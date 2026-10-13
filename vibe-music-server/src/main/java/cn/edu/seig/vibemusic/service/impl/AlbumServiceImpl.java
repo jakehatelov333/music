@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
+import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
@@ -12,6 +13,7 @@ import cn.edu.seig.vibemusic.model.dto.AlbumAddDTO;
 import cn.edu.seig.vibemusic.model.dto.AlbumQueryDTO;
 import cn.edu.seig.vibemusic.model.dto.AlbumUpdateDTO;
 import cn.edu.seig.vibemusic.model.entity.Album;
+import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.entity.UserFavorite;
 import cn.edu.seig.vibemusic.model.vo.AlbumDetailVO;
@@ -21,6 +23,7 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IAlbumService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -63,6 +66,20 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
 
     @Autowired
     private MinioService minioService;
+    @Autowired
+    private SongArtistService songArtistService;
+
+    /**
+     * 主艺人必须存在且处于启用状态：停用（软删除）的歌手不能再被新专辑引用，
+     * 否则专辑列表会出现指向已合并组合歌手的脏引用。
+     */
+    private boolean isActiveArtist(Long artistId) {
+        if (artistId == null) {
+            return false;
+        }
+        Artist artist = artistMapper.selectById(artistId);
+        return artist != null && ArtistStatusEnum.isActive(artist.getStatus());
+    }
 
     @Override
     public Result<PageResult<AlbumVO>> getAlbumList(AlbumQueryDTO queryDTO) {
@@ -88,6 +105,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         AlbumDetailVO album = albumMapper.getAlbumDetailById(albumId);
         List<SongVO> songs = albumMapper.getSongsByAlbumId(albumId);
         setSongLikeStatus(songs, request);
+        songArtistService.attachArtists(songs);
         album.setSongs(songs);
         album.setSongCount((long) songs.size());
         return Result.success(album);
@@ -101,6 +119,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
 
         List<SongVO> songs = albumMapper.getSongsByAlbumId(albumId);
         setSongLikeStatus(songs, request);
+        songArtistService.attachArtists(songs);
         return Result.success(songs);
     }
 
@@ -139,7 +158,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
                 || albumAddDTO.getAlbumName() == null || albumAddDTO.getAlbumName().isBlank()) {
             return Result.error("专辑名称和主艺人不能为空");
         }
-        if (artistMapper.selectById(albumAddDTO.getArtistId()) == null) {
+        if (!isActiveArtist(albumAddDTO.getArtistId())) {
             return Result.error("主艺人不存在");
         }
         String albumName = albumAddDTO.getAlbumName().trim();
@@ -175,7 +194,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
 
         String albumName = albumUpdateDTO.getAlbumName().trim();
         Long artistId = albumUpdateDTO.getArtistId() == null ? albumInDB.getArtistId() : albumUpdateDTO.getArtistId();
-        if (artistMapper.selectById(artistId) == null) {
+        if (!isActiveArtist(artistId)) {
             return Result.error("主艺人不存在");
         }
         if (albumExistsForArtist(artistId, albumName, albumInDB.getAlbumId())) {

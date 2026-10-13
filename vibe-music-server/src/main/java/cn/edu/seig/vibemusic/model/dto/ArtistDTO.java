@@ -48,4 +48,11 @@ public class ArtistDTO implements Serializable {
     @Size(max = 200)
     private String area;
 
+    /**
+     * 是否包含已停用（软删除）的歌手。
+     * 仅管理端列表使用；用户端、选择器、搜索一律只看启用记录。
+     * 为 null / false 时只返回启用记录。
+     */
+    private Boolean includeDisabled;
+
 }

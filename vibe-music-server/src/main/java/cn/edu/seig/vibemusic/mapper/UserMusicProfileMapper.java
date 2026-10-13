@@ -73,7 +73,15 @@ public interface UserMusicProfileMapper {
             """)
     List<TasteCount> topStyles(@Param("userId") Long userId, @Param("limit") int limit);
 
-    /** 高频歌手：同上，按 {@code artist_id} 关联 {@code tb_artist}。 */
+    /**
+     * 高频歌手：走 {@code tb_song_artist} 关联表，因此<b>合作歌曲对每位参与歌手各计一次</b>。
+     *
+     * <p>为什么不能再用 {@code a.id = s.artist_id}：那只会把歌曲算给「主艺人」，
+     * 合作歌曲的其它演唱者在画像里会永远缺失（这正是改造前的口径错误）。
+     *
+     * <p>{@code COUNT(DISTINCT t.song_id)} 同时承担两件事：让一首歌对每位歌手各计一次，
+     * 以及抵消 {@code t} 子查询里 UNION ALL 可能带来的重复行。
+     */
     @Select("""
             SELECT a.id AS id, a.name AS name, COUNT(DISTINCT t.song_id) AS count
             FROM (
@@ -84,7 +92,9 @@ public interface UserMusicProfileMapper {
                   JOIN tb_playlist p ON p.id = b.playlist_id
                  WHERE p.owner_user_id = #{userId}
             ) t JOIN tb_song s ON s.id = t.song_id
-              JOIN tb_artist a ON a.id = s.artist_id
+              JOIN tb_song_artist sa ON sa.song_id = s.id
+              JOIN tb_artist a ON a.id = sa.artist_id
+            WHERE a.status = 'ACTIVE'
             GROUP BY a.id, a.name
             ORDER BY count DESC, a.name ASC
             LIMIT #{limit}

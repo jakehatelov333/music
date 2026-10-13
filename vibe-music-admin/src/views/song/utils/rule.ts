@@ -38,5 +38,18 @@ export const formRules = reactive(<FormRules>{
       },
       trigger: "blur"
     }
+  ],
+  artistIds: [
+    {
+      validator: (rule, value, callback) => {
+        // 一首歌至少要有一位演唱歌手（后端也拒绝空列表，这里提前拦一次）。
+        if (!Array.isArray(value) || value.length === 0) {
+          callback(new Error("请至少选择一位歌手"));
+        } else {
+          callback();
+        }
+      },
+      trigger: "change"
+    }
   ]
 });

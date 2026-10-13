@@ -26,6 +26,30 @@ export type SongUploadFiles = {
   lyricsContent?: string | null;
 };
 
+export type ArtistParsingCandidate = {
+  /** 唯一精确命中时的歌手 id；未匹配或歧义时为 null */
+  artistId?: number | null;
+  artistName: string;
+  matched: boolean;
+};
+
+/**
+ * 歌手字段的解析结果。strategy 决定管理端如何呈现：
+ * EXACT_MATCH 单一歌手 / SPLIT_CONFIRMED 可自动拆分 /
+ * SPLIT_CANDIDATE 需人工确认 / UNRESOLVED 无法识别。
+ */
+export type ArtistParsing = {
+  raw?: string | null;
+  strategy?:
+    | "EXACT_MATCH"
+    | "SPLIT_CONFIRMED"
+    | "SPLIT_CANDIDATE"
+    | "UNRESOLVED"
+    | null;
+  separator?: string | null;
+  candidates: ArtistParsingCandidate[];
+};
+
 export type SongUploadPrepareResult = {
   uploadId: string;
   metadata: SongUploadMetadata;
@@ -33,6 +57,8 @@ export type SongUploadPrepareResult = {
   matchedArtistId?: number | null;
   matchedArtistName?: string | null;
   artistMatched: boolean;
+  /** 歌手字段解析结果，供上传预览做人工确认 */
+  artistParsing?: ArtistParsing | null;
   warning?: string | null;
 };
 
@@ -41,6 +67,8 @@ export type SongUploadCommitPayload = {
   songName: string;
   artistId?: number | null;
   artistName?: string | null;
+  /** 演唱歌手 id 列表，顺序即展示顺序（第一个为主艺人）。优先于 artistId */
+  artistIds?: number[] | null;
   album: string;
   releaseDate: string;
   year?: number;
@@ -53,6 +81,7 @@ export type SongUploadCommitResult = {
   songName: string;
   artistId: number;
   artistName: string;
+  artists?: { artistId: number; artistName: string }[] | null;
   artistCreated: boolean;
   album: string;
   duration?: string | null;

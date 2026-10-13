@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { UploadFile } from "element-plus";
 import {
   CircleCheckFilled,
@@ -20,6 +20,7 @@ import {
   commitSongUpload,
   prepareSongUpload,
   updateSongUploadAssets,
+  type ArtistParsing,
   type SongUploadFiles,
   type SongUploadMetadata,
   type SongUploadPrepareResult
@@ -71,15 +72,49 @@ const pendingCover = ref<File | null>(null);
 const pendingLyrics = ref<File | null>(null);
 const localCoverUrl = ref("");
 const artistMatched = ref(false);
+/** 后端对元数据歌手字段的解析结果（是否疑似合作歌手、哪些名称未匹配） */
+const artistParsing = ref<ArtistParsing | null>(null);
+/** 歌手下拉的候选（远程搜索填充；已选中的歌手也会被并入，保证标签能显示名字） */
+const artistOptions = ref<{ artistId: number; artistName: string }[]>([]);
+const artistSearching = ref(false);
 
 const form = reactive({
   songName: "",
   artistName: "",
   artistId: null as number | null,
+  /**
+   * 演唱歌手 id 列表，顺序即展示顺序（第一个为主艺人）。
+   * 非空时提交走 artistIds；为空时回退到旧的「按名字自动创建单歌手」路径。
+   */
+  artistIds: [] as number[],
   album: "",
   releaseDate: undefined as string | undefined,
   style: [] as string[],
   lyrics: ""
+});
+
+const selectedArtistNames = computed(() =>
+  form.artistIds
+    .map(id => artistOptions.value.find(item => item.artistId === id)?.artistName)
+    .filter(Boolean)
+    .join(" / ")
+);
+
+const hasUnmatchedCandidate = computed(() =>
+  (artistParsing.value?.candidates || []).some(item => !item.matched)
+);
+
+const artistParsingTitle = computed(() => {
+  switch (artistParsing.value?.strategy) {
+    case "SPLIT_CONFIRMED":
+      return "已识别为合作演唱，可直接拆分";
+    case "SPLIT_CANDIDATE":
+      return "疑似合作演唱，但存在未匹配的歌手，请人工确认";
+    case "UNRESOLVED":
+      return "未能识别歌手，请人工确认";
+    default:
+      return "歌手解析结果";
+  }
 });
 
 const coverPreview = computed(
@@ -194,23 +229,82 @@ async function uploadAssets(cover?: File | null, lyrics?: File | null) {
   }
 }
 
+/** 把解析出的已匹配歌手并入下拉候选，保证多选标签能显示名字。 */
+function mergeArtistOptions(items: { artistId: number; artistName: string }[]) {
+  const merged = new Map(artistOptions.value.map(item => [item.artistId, item]));
+  items.forEach(item => {
+    if (item?.artistId) merged.set(item.artistId, item);
+  });
+  artistOptions.value = [...merged.values()];
+}
+
+async function loadArtistOptions(keyword?: string) {
+  const trimmed = keyword?.trim();
+  artistSearching.value = true;
+  try {
+    const res = await getArtistList({
+      pageNum: 1,
+      pageSize: 50,
+      ...(trimmed ? { artistName: trimmed } : {})
+    });
+    const items = (res.data?.items || []).map((item: any) => ({
+      artistId: item.artistId as number,
+      artistName: item.artistName as string
+    }));
+    if (trimmed) {
+      mergeArtistOptions(items);
+    } else {
+      artistOptions.value = items;
+    }
+  } catch {
+    if (!trimmed) artistOptions.value = [];
+  } finally {
+    artistSearching.value = false;
+  }
+}
+
 function applyPreparedResult(data: SongUploadPrepareResult, fillForm: boolean) {
   uploadId.value = data.uploadId;
   metadata.value = data.metadata;
   files.value = data.files;
   warning.value = data.warning || "";
   artistMatched.value = data.artistMatched;
+  artistParsing.value = data.artistParsing || null;
   prepared.value = true;
 
   if (fillForm) {
     form.songName = data.metadata.title || "";
-    form.artistName = data.matchedArtistName || data.metadata.artist || "";
-    form.artistId = data.matchedArtistId ?? null;
     form.album = data.metadata.album || "";
     form.releaseDate = data.metadata.year
       ? `${data.metadata.year}-01-01`
       : undefined;
     form.lyrics = data.files.lyricsContent || "";
+
+    // 只有「完整匹配」或「每一段都唯一命中」才自动预填多选；
+    // 其余情况（存在未匹配或歧义）一律留给管理员人工确认，不替用户猜。
+    const parsed = data.artistParsing;
+    const autoFilled =
+      parsed?.strategy === "EXACT_MATCH" ||
+      parsed?.strategy === "SPLIT_CONFIRMED"
+        ? (parsed.candidates || [])
+            .filter(candidate => candidate.matched && candidate.artistId)
+            .map(candidate => ({
+              artistId: candidate.artistId as number,
+              artistName: candidate.artistName
+            }))
+        : [];
+
+    if (autoFilled.length) {
+      mergeArtistOptions(autoFilled);
+      form.artistIds = autoFilled.map(item => item.artistId);
+      form.artistName = "";
+      form.artistId = autoFilled[0].artistId;
+      artistMatched.value = true;
+    } else {
+      form.artistIds = [];
+      form.artistName = data.matchedArtistName || data.metadata.artist || "";
+      form.artistId = data.matchedArtistId ?? null;
+    }
   }
 }
 
@@ -220,38 +314,19 @@ function handleArtistInput(value: string) {
   artistMatched.value = false;
 }
 
-async function searchArtists(query: string): Promise<any[]> {
-  if (!query?.trim()) {
-    return [];
-  }
-  try {
-    const res = await getArtistList({
-      pageNum: 1,
-      pageSize: 10,
-      artistName: query.trim()
-    });
-    const items = (res.data?.items || []).map((item: any) => ({
-      value: item.artistName,
-      artistId: item.artistId,
-      artistName: item.artistName
-    }));
-    const exact = items.find(
-      item => item.artistName === form.artistName.trim()
-    );
-    if (exact && !form.artistId) {
-      form.artistId = exact.artistId;
-      artistMatched.value = true;
-    }
-    return items;
-  } catch {
-    return [];
+/** 多选变化：一旦选了系统歌手，就清掉旧的自由文本，避免两条提交路径并存。 */
+function handleArtistIdsChange(ids: number[]) {
+  if (ids.length) {
+    form.artistName = "";
+    form.artistId = ids[0];
+    artistMatched.value = true;
+  } else {
+    artistMatched.value = false;
   }
 }
 
-function handleArtistSelect(item: any) {
-  form.artistId = item.artistId;
-  form.artistName = item.artistName;
-  artistMatched.value = true;
+function searchArtists(query: string) {
+  return loadArtistOptions(query);
 }
 
 async function handleCommit() {
@@ -263,8 +338,8 @@ async function handleCommit() {
     message("请填写歌曲名", { type: "warning" });
     return;
   }
-  if (!form.artistName.trim()) {
-    message("请填写歌手名", { type: "warning" });
+  if (!form.artistIds.length && !form.artistName.trim()) {
+    message("请选择或填写歌手", { type: "warning" });
     return;
   }
 
@@ -275,11 +350,14 @@ async function handleCommit() {
 
   committing.value = true;
   try {
+    const hasArtistIds = form.artistIds.length > 0;
     const res = await commitSongUpload({
       uploadId: uploadId.value,
       songName: form.songName.trim(),
-      artistId: form.artistId,
-      artistName: form.artistName.trim(),
+      // artistIds 非空时优先；否则回退到旧的「按名字自动创建单歌手」路径。
+      artistIds: hasArtistIds ? form.artistIds : null,
+      artistId: hasArtistIds ? null : form.artistId,
+      artistName: hasArtistIds ? null : form.artistName.trim(),
       album: form.album.trim(),
       releaseDate: form.releaseDate,
       style: form.style.length ? form.style.join(",") : null,
@@ -332,10 +410,12 @@ function resetState() {
   pendingCover.value = null;
   pendingLyrics.value = null;
   artistMatched.value = false;
+  artistParsing.value = null;
   clearLocalCover();
   form.songName = "";
   form.artistName = "";
   form.artistId = null;
+  form.artistIds = [];
   form.album = "";
   form.releaseDate = undefined;
   form.style = [];
@@ -369,6 +449,11 @@ function formatSize(size?: number | null) {
 }
 
 onBeforeUnmount(clearLocalCover);
+
+// 预载一页歌手，让多选下拉一打开就有候选（远程搜索会在此基础上收窄）。
+onMounted(() => {
+  loadArtistOptions();
+});
 </script>
 
 <template>
@@ -529,30 +614,46 @@ onBeforeUnmount(clearLocalCover);
                 <el-col :xs="24" :md="12">
                   <el-form-item label="歌手" required>
                     <div class="artist-field">
-                      <el-autocomplete
-                        v-model="form.artistName"
-                        value-key="artistName"
-                        :fetch-suggestions="searchArtists"
-                        :trigger-on-focus="false"
-                        clearable
-                        placeholder="输入歌手名，未匹配时将在保存时自动创建"
+                      <el-select
+                        v-model="form.artistIds"
+                        multiple
+                        filterable
+                        remote
+                        reserve-keyword
+                        :remote-method="searchArtists"
+                        :loading="artistSearching"
+                        placeholder="搜索并选择歌手，可多选；顺序即展示顺序"
                         class="w-full"
-                        @input="handleArtistInput"
-                        @select="handleArtistSelect"
+                        @change="handleArtistIdsChange"
                       >
-                        <template #default="{ item }">
+                        <el-option
+                          v-for="item in artistOptions"
+                          :key="item.artistId"
+                          :label="item.artistName"
+                          :value="item.artistId"
+                        >
                           <div class="artist-option">
                             <span>{{ item.artistName }}</span>
                             <small>ID: {{ item.artistId }}</small>
                           </div>
-                        </template>
-                      </el-autocomplete>
+                        </el-option>
+                      </el-select>
+
+                      <!-- 未选系统歌手时保留旧的「按名字自动创建」路径（仅单歌手） -->
+                      <el-input
+                        v-if="!form.artistIds.length"
+                        v-model="form.artistName"
+                        clearable
+                        placeholder="或直接输入歌手名，保存时自动创建（仅单歌手）"
+                        @input="handleArtistInput"
+                      />
+
                       <el-tag
-                        v-if="artistMatched && form.artistId"
+                        v-if="form.artistIds.length"
                         type="success"
                         effect="light"
                       >
-                        已匹配系统歌手
+                        已选 {{ form.artistIds.length }} 位：{{ selectedArtistNames }}
                       </el-tag>
                       <el-tag
                         v-else-if="form.artistName"
@@ -562,10 +663,52 @@ onBeforeUnmount(clearLocalCover);
                         未匹配，保存时将自动创建歌手
                       </el-tag>
                       <el-tag v-else type="info" effect="light">
-                        请输入歌手名
+                        请选择或输入歌手
                       </el-tag>
                     </div>
                   </el-form-item>
+                </el-col>
+
+                <el-col
+                  v-if="artistParsing && artistParsing.strategy !== 'EXACT_MATCH'"
+                  :span="24"
+                >
+                  <el-alert
+                    :title="artistParsingTitle"
+                    :type="
+                      artistParsing.strategy === 'SPLIT_CONFIRMED'
+                        ? 'success'
+                        : 'warning'
+                    "
+                    :closable="false"
+                    show-icon
+                  >
+                    <div class="artist-parsing">
+                      <span class="artist-parsing__raw">
+                        原始文本：{{ artistParsing.raw || "（空）" }}
+                      </span>
+                      <div class="artist-parsing__items">
+                        <el-tag
+                          v-for="(candidate, index) in artistParsing.candidates"
+                          :key="index"
+                          :type="candidate.matched ? 'success' : 'danger'"
+                          size="small"
+                          effect="light"
+                        >
+                          {{ candidate.artistName
+                          }}{{
+                            candidate.matched
+                              ? `（ID: ${candidate.artistId}）`
+                              : " — 未匹配"
+                          }}
+                        </el-tag>
+                      </div>
+                      <p v-if="hasUnmatchedCandidate" class="artist-parsing__hint">
+                        未匹配的歌手不会被自动创建。请先到「歌手管理」中创建，
+                        再回到这里选择；也可以忽略提示，把整段文本当作一位歌手。
+                      </p>
+                    </div>
+                  </el-alert>
                 </el-col>
                 <el-col :xs="24" :md="12">
                   <el-form-item label="专辑">
@@ -1046,6 +1189,31 @@ onBeforeUnmount(clearLocalCover);
 
   small {
     color: var(--el-text-color-placeholder);
+  }
+}
+
+.artist-parsing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+
+  &__raw {
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+  }
+
+  &__items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  &__hint {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-secondary);
   }
 }
 

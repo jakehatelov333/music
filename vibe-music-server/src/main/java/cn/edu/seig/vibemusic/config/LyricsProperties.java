@@ -30,6 +30,20 @@ public class LyricsProperties {
         private double minScore = 0.7;
         /** 时长容差（秒），差值在此范围内加分 */
         private int durationToleranceSeconds = 3;
+        /**
+         * 每首歌最多尝试几个「歌手名候选」。候选顺序为：主艺人名 → 完整展示串 → 各合作歌手名。
+         *
+         * <p>为什么需要回退：歌词源的歌手维度得分区分「完全相等（+0.3）」与「包含（+0.15）」，
+         * 而 {@code LyricsMatcher} 的归一化会清掉 {@code /} 与空格。因此对合作歌曲，
+         * 传主艺人名只能拿到包含关系，传完整展示串才可能相等。多试一个候选即可拿回分差，
+         * 但必须限次，否则批量补全的请求量会成倍上涨。
+         */
+        private int maxArtistAttempts = 2;
+        /**
+         * 是否允许把「各合作歌手名」也作为候选（回退链的第 3 级）。默认关闭：
+         * 主艺人名 + 完整展示串已覆盖绝大多数情况，逐位合作歌手再各试一次代价偏高。
+         */
+        private boolean allowCollaboratorAttempts = false;
     }
 
     @Data

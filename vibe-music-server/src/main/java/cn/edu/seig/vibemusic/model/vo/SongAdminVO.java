@@ -6,9 +6,10 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
-public class SongAdminVO implements Serializable {
+public class SongAdminVO implements Serializable, SongArtistAware {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -27,8 +28,15 @@ public class SongAdminVO implements Serializable {
 
     /**
      * 歌手
+     * 多歌手时的展示串（按 display_order 用 " / " 拼接）；兼容字段。
      */
     private String artistName;
+
+    /**
+     * 结构化歌手列表，按 display_order 升序；管理端据此回填编辑表单的多选值。
+     * 与 {@link #artistName} 同源派生，无关系时为空列表。
+     */
+    private List<ArtistNameVO> artists;
 
     /**
      * 歌名

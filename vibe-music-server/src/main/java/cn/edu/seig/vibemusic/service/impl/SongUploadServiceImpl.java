@@ -3,6 +3,7 @@ package cn.edu.seig.vibemusic.service.impl;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
+import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
 import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
 import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
@@ -11,15 +12,18 @@ import cn.edu.seig.vibemusic.model.dto.SongUploadSession;
 import cn.edu.seig.vibemusic.model.entity.Album;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
+import cn.edu.seig.vibemusic.model.vo.ArtistNameVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadCommitVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadFilesVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadMetadataVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadPrepareVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.service.ArtistNameParser;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.ISongUploadService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +31,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -76,6 +82,12 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private IAudioMetadataService audioMetadataService;
     @Autowired
     private IArtistService artistService;
+    @Autowired
+    private SongArtistService songArtistService;
+    @Autowired
+    private ArtistNameParser artistNameParser;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Override
     public Result<SongUploadPrepareVO> prepare(MultipartFile audio) {
@@ -288,12 +300,28 @@ public class SongUploadServiceImpl implements ISongUploadService {
         String finalCoverUrl = null;
         String finalCoverObjectName = null;
         try {
-            Artist artist = resolveArtist(dto);
+            // 歌手：artistIds 优先（顺序即展示顺序）；否则回退到旧的「按名字解析/创建单个歌手」。
+            List<Long> requestedArtistIds = SongArtistService.normalizeArtistIds(
+                    dto.getArtistIds(), dto.getArtistId());
             boolean artistCreated = false;
-            if (artist == null) {
-                artist = createArtist(dto.getArtistName());
-                artistCreated = true;
+            List<Long> finalArtistIds;
+            if (!requestedArtistIds.isEmpty()) {
+                finalArtistIds = requestedArtistIds;
+            } else {
+                Artist resolved = resolveArtist(dto);
+                if (resolved == null) {
+                    // 含明确分隔符却没给出确认后的歌手列表 → 拒绝自动新建「A/B」这类伪歌手记录，
+                    // 让管理员回到上传预览走人工确认（对应 docs §6 的判定优先级）。
+                    if (artistNameParser.looksSplittable(dto.getArtistName())) {
+                        return Result.error("歌手名「" + dto.getArtistName()
+                                + "」疑似多位歌手合作，请先在上传预览中确认歌手列表");
+                    }
+                    resolved = createArtist(dto.getArtistName());
+                    artistCreated = true;
+                }
+                finalArtistIds = List.of(resolved.getArtistId());
             }
+            Long primaryArtistId = finalArtistIds.get(0);
             if (!minioService.objectExists(session.getAudioObjectName())) {
                 return Result.error("临时音频文件不存在或已过期，请重新上传");
             }
@@ -322,7 +350,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
             }
 
             Long albumId = resolveAlbumId(
-                    artist.getArtistId(),
+                    primaryArtistId,
                     dto.getAlbum(),
                     dto.getAlbumId(),
                     releaseDate,
@@ -340,7 +368,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
             boolean hasLyric = StringUtils.hasText(lyricText);
 
             Song song = new Song()
-                    .setArtistId(artist.getArtistId())
+                    .setArtistId(primaryArtistId)
                     .setAlbumId(albumId)
                     .setSongName(dto.getSongName().trim())
                     .setAlbum(trimToNull(dto.getAlbum()))
@@ -356,12 +384,19 @@ public class SongUploadServiceImpl implements ISongUploadService {
                     .setAudioUrl(finalAudioUrl)
                     .setReleaseTime(releaseDate);
 
-            if (songMapper.insert(song) != 1) {
-                throw new IllegalStateException("歌曲信息保存失败");
-            }
+            // 歌曲行与歌手关系必须同生共死：用一个独立的小事务包住这两步，失败整块回滚，
+            // 不会留下「有歌曲却没有任何歌手关系」的孤儿行。
+            // 这里用 TransactionTemplate 而不是给 commit 加 @Transactional —— 后者在外层
+            // catch 吞掉异常后事务已被标记 rollback-only，提交时反而抛 UnexpectedRollbackException。
+            transactionTemplate().executeWithoutResult(status -> {
+                if (songMapper.insert(song) != 1) {
+                    throw new IllegalStateException("歌曲信息保存失败");
+                }
+                songArtistService.replaceSongArtists(song.getSongId(), finalArtistIds);
+            });
 
             cleanupSession(dto.getUploadId());
-            return Result.success("歌曲上传成功", buildCommitVO(song, artist, artistCreated));
+            return Result.success("歌曲上传成功", buildCommitVO(song, primaryArtistId, artistCreated));
         } catch (Exception e) {
             safeDeleteObject(finalCoverObjectName);
             safeDeleteObject(finalAudioObjectName);
@@ -431,7 +466,8 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private Artist resolveArtist(SongUploadCommitDTO dto) {
         if (dto.getArtistId() != null) {
             Artist artist = artistMapper.selectById(dto.getArtistId());
-            if (artist != null) {
+            // 停用（软删除）的歌手不能再被新歌曲引用
+            if (artist != null && ArtistStatusEnum.isActive(artist.getStatus())) {
                 return artist;
             }
         }
@@ -439,7 +475,10 @@ public class SongUploadServiceImpl implements ISongUploadService {
             return null;
         }
         List<Artist> artists = artistMapper.selectList(
-                new QueryWrapper<Artist>().eq("name", dto.getArtistName().trim()).last("LIMIT 1")
+                new QueryWrapper<Artist>()
+                        .eq("name", dto.getArtistName().trim())
+                        .eq("status", ArtistStatusEnum.ACTIVE.getStatus())
+                        .last("LIMIT 1")
         );
         return artists.isEmpty() ? null : artists.get(0);
     }
@@ -516,21 +555,37 @@ public class SongUploadServiceImpl implements ISongUploadService {
             vo.setMatchedArtistId(matchedArtist.getArtistId());
             vo.setMatchedArtistName(matchedArtist.getArtistName());
         }
+        // 解析歌手字段：是否疑似合作歌手、能否自动拆分、哪些名称需要人工确认。
+        // 解析全程只读，不会创建任何歌手记录。
+        vo.setArtistParsing(artistNameParser.parse(session.getArtist()));
         return vo;
     }
 
-    private SongUploadCommitVO buildCommitVO(Song song, Artist artist, boolean artistCreated) {
+    private TransactionTemplate transactionTemplate() {
+        return new TransactionTemplate(transactionManager);
+    }
+
+    /**
+     * 组装提交结果。歌手展示串与结构化列表<b>都从关系表派生</b>（而不是直接用传入的
+     * {@code Artist} 实体），保证 {@code artistName} 与 {@code artists} 永远一致。
+     */
+    private SongUploadCommitVO buildCommitVO(Song song, Long primaryArtistId, boolean artistCreated) {
         SongUploadCommitVO vo = new SongUploadCommitVO();
         vo.setSongId(song.getSongId());
         vo.setSongName(song.getSongName());
-        vo.setArtistId(artist.getArtistId());
-        vo.setArtistName(artist.getArtistName());
+        vo.setArtistId(primaryArtistId);
         vo.setArtistCreated(artistCreated);
         vo.setAlbum(song.getAlbum());
         vo.setDuration(song.getDuration());
         vo.setCoverUrl(song.getCoverUrl());
         vo.setAudioUrl(song.getAudioUrl());
         vo.setReleaseTime(song.getReleaseTime());
+        songArtistService.attachArtists(vo);
+        if (vo.getArtists() != null && !vo.getArtists().isEmpty()) {
+            vo.setArtistId(vo.getArtists().get(0).getArtistId());
+            vo.setArtistName(SongArtistService.renderArtistNames(
+                    vo.getArtists().stream().map(ArtistNameVO::getArtistName).toList()));
+        }
         return vo;
     }
 
@@ -556,8 +611,12 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!StringUtils.hasText(artistName)) {
             return null;
         }
+        // 只匹配启用中的歌手：停用记录不该被当作「已匹配」而阻止人工确认。
         List<Artist> artists = artistMapper.selectList(
-                new QueryWrapper<Artist>().eq("name", artistName.trim()).last("LIMIT 1")
+                new QueryWrapper<Artist>()
+                        .eq("name", artistName.trim())
+                        .eq("status", ArtistStatusEnum.ACTIVE.getStatus())
+                        .last("LIMIT 1")
         );
         return artists.isEmpty() ? null : artists.get(0);
     }

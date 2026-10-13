@@ -169,14 +169,16 @@ watch(
             <span class="text-sm text-muted-foreground">{{ songs.length }} 首</span>
           </div>
 
-          <!-- 与表体共用 TableHeader，保证列标题与数据严格对齐 -->
-          <TableHeader :show-track-number="true" />
+          <!-- 与表体共用 TableHeader，保证列标题与数据严格对齐。
+               show-album=false：这一页所有歌都属于当前专辑，再列一遍专辑名是纯噪音。 -->
+          <TableHeader :show-track-number="true" :show-album="false" />
         </div>
 
         <div v-if="songs.length" class="min-w-0 w-full">
           <Table
             :data="songs"
             show-track-number
+            :show-album="false"
             hide-header
             page-scroll
             @song-play="handlePlaySong"

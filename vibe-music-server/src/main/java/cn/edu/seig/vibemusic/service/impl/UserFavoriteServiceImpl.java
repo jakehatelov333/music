@@ -19,6 +19,7 @@ import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IUserFavoriteService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -52,6 +53,8 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
     private PlaylistMapper playlistMapper;
     @Autowired
     private PlaylistAccessService playlistAccessService;
+    @Autowired
+    private SongArtistService songArtistService;
 
     /**
      * 获取用户收藏的歌曲列表
@@ -84,6 +87,7 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
         Page<SongVO> page = new Page<>(songDTO.getPageNum(), songDTO.getPageSize());
         IPage<SongVO> songPage = songMapper.getSongsByIds(
                 page,
+                userId,
                 favoriteSongIds,
                 songDTO.getSongName(),
                 songDTO.getArtistName(),
@@ -94,6 +98,8 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
         List<SongVO> songVOList = songPage.getRecords().stream()
                 .peek(songVO -> songVO.setLikeStatus(LikeStatusEnum.LIKE.getId())) // 设置为已收藏
                 .toList();
+
+        songArtistService.attachArtists(songVOList);
 
         return Result.success(new PageResult<>(songPage.getTotal(), songVOList));
     }

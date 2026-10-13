@@ -21,6 +21,7 @@ import { useAudioPlayer } from '@/hooks/useAudioPlayer'
 import PlaylistForm from '@/components/Playlist/PlaylistForm.vue'
 import SongPicker from '@/components/Playlist/SongPicker.vue'
 import PlaylistCoverDialog from '@/components/Playlist/PlaylistCoverDialog.vue'
+import Table from '@/components/Table.vue'
 import AuthTabs from '@/components/Auth/AuthTabs.vue'
 import coverImg from '@/assets/cover.png'
 
@@ -191,11 +192,6 @@ function openCover() {
 function onCoverUpdated(value: PlaylistDetail) {
   applyDetail(value)
   ElMessage.success('封面已更新')
-}
-/** 当前正在播放的歌曲（用于高亮） */
-function isCurrent(songId: number) {
-  const current = audio.trackList?.[audio.currentSongIndex]
-  return Boolean(current) && Number(current.id) === songId
 }
 async function addSongs(songIds: number[]) {
   if (!activeId.value || !canEdit.value || saving.value) return
@@ -494,37 +490,51 @@ onBeforeUnmount(() => {
             >
               {{ detail.introduction }}
             </p>
-            <div class="flex flex-wrap gap-3 mt-5">
-              <el-button
-                type="primary"
-                :disabled="!detail.songs.length"
-                :loading="playing"
+            <div class="flex flex-wrap items-center gap-3 mt-6">
+              <button
+                type="button"
+                class="pa-action pa-action--primary"
+                :disabled="!detail.songs.length || playing"
                 @click="playSongs()"
-                >播放全部</el-button
               >
-              <el-button v-if="canEdit" :disabled="saving" @click="openEdit"
-                >编辑信息</el-button
-              >
-              <el-button
+                <icon-solar:play-line-duotone class="text-lg" />
+                {{ playing ? '正在播放…' : '播放全部' }}
+              </button>
+              <button
                 v-if="canEdit"
-                type="danger"
-                plain
+                type="button"
+                class="pa-action"
+                :disabled="saving"
+                @click="openEdit"
+              >
+                <icon-feather:edit class="text-base" />
+                编辑信息
+              </button>
+              <button
+                v-if="canEdit"
+                type="button"
+                class="pa-action pa-action--danger ml-auto"
                 :disabled="saving"
                 @click="removePlaylist"
-                >删除歌单</el-button
               >
+                <icon-tabler:trash class="text-base" />
+                删除歌单
+              </button>
             </div>
           </div>
         </header>
         <div class="flex items-center justify-between gap-3 border-b pb-4 mb-3">
           <h2 class="text-lg font-semibold">歌单歌曲</h2>
-          <el-button
+          <button
             v-if="canEdit"
-            type="primary"
+            type="button"
+            class="pa-action pa-action--primary pa-action--sm"
             :disabled="saving"
             @click="openPicker"
-            >添加歌曲</el-button
           >
+            <icon-tabler:plus class="text-base" />
+            添加歌曲
+          </button>
         </div>
         <p v-if="actionError" role="alert" class="text-destructive mb-4">
           {{ actionError }}
@@ -533,50 +543,19 @@ onBeforeUnmount(() => {
           v-if="!detail.songs.length"
           description="歌单还是空的，搜索并添加喜欢的歌曲吧"
         />
-        <ol v-else class="divide-y">
-          <li
-            v-for="song in shownSongs"
-            :key="song.songId"
-            role="button"
-            tabindex="0"
-            :aria-label="`播放 ${song.songName}`"
-            class="flex items-center gap-3 py-3 px-2 rounded-lg cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="
-              isCurrent(song.songId) ? 'bg-muted' : 'hover:bg-muted'
-            "
-            @click="playSongs(song.songId)"
-            @keydown.enter.prevent="playSongs(song.songId)"
-            @keydown.space.prevent="playSongs(song.songId)"
-          >
-            <img
-              :src="song.coverUrl || coverImg"
-              alt=""
-              loading="lazy"
-              class="w-11 h-11 rounded object-cover shrink-0"
-            />
-            <div class="min-w-0 flex-1">
-              <p class="font-medium truncate">{{ song.songName }}</p>
-              <p class="text-sm text-muted-foreground truncate">
-                {{ song.artistName }} · {{ song.album || '未知专辑' }}
-              </p>
-            </div>
-            <el-button
-              :aria-label="`播放 ${song.songName}`"
-              :disabled="playing"
-              @click.stop="playSongs(song.songId)"
-              >播放</el-button
-            >
-            <el-button
-              v-if="canEdit"
-              type="danger"
-              text
-              :aria-label="`移除 ${song.songName}`"
-              :disabled="saving"
-              @click.stop="removeSong(song)"
-              >移除</el-button
-            >
-          </li>
-        </ol>
+        <!--
+          与曲库共用同一个表格组件：variant="owned" 只把末尾两列换成「时长 / 移出」，
+          标题/歌手/专辑列宽与行样式完全一致，所以这里的展示与曲库是同一张表。
+          play-queue 传完整歌单 —— 分页只影响显示，点任意一行都把整张歌单入队。
+        -->
+        <Table
+          v-else
+          :data="shownSongs"
+          :play-queue="detail.songs"
+          variant="owned"
+          page-scroll
+          @remove="removeSong"
+        />
         <el-pagination
           v-if="detail.songs.length > 20"
           v-model:current-page="songPage"
@@ -625,8 +604,81 @@ onBeforeUnmount(() => {
 .personal-playlists :deep(.el-input__wrapper) {
   min-height: 44px;
 }
+
+/*
+ * 歌单操作按钮（播放全部 / 编辑信息 / 删除歌单 / 添加歌曲）。
+ *
+ * 用原生 button + 设计变量而不是 el-button：这里需要「主操作实心、次操作描边、
+ * 危险操作只留红色文字」三级层次，el-button 的默认层级表达不出来。
+ * 尺寸与「公开歌单详情」页的播放全部按钮一致（h-10 / rounded-lg / 图标 + 文字）。
+ */
+.pa-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding: 0 1.25rem;
+  border: 1px solid hsl(var(--input));
+  border-radius: var(--radius);
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    filter 0.18s ease;
+}
+.pa-action:hover:not(:disabled) {
+  background: hsl(var(--muted));
+}
+.pa-action:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.pa-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 主操作：实心主色。悬停用 filter 压暗，换主色时不必再改一处硬编码色值 */
+.pa-action--primary {
+  border-color: transparent;
+  background: var(--primary);
+  color: #fff;
+  padding: 0 1.5rem;
+}
+.pa-action--primary:hover:not(:disabled) {
+  background: var(--primary);
+  filter: brightness(0.9);
+}
+
+/* 危险操作：平时只有红字，悬停才铺一层淡红底，避免与主操作抢注意力。
+   红色刻意不取 --destructive：那个变量在暗色主题里是「深红背景色」（0 62.8% 30.6%），
+   当文字色用在深色底上几乎看不见。这里用固定的红 500，两套主题下都够亮。 */
+.pa-action--danger {
+  color: #ef4444;
+  border-color: rgb(239 68 68 / 0.4);
+}
+.pa-action--danger:hover:not(:disabled) {
+  background: rgb(239 68 68 / 0.12);
+  border-color: rgb(239 68 68 / 0.55);
+}
+
+/* 区块内的次级主操作（添加歌曲）用矮一号的尺寸，与页头 CTA 拉开层次 */
+.pa-action--sm {
+  height: 2.25rem;
+  padding: 0 1rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .playlist-card {
+  .playlist-card,
+  .pa-action {
     transition: none;
   }
 }

@@ -80,6 +80,14 @@ const {
             <el-option label="组合/乐队" value="2" />
           </el-select>
         </el-form-item>
+        <el-form-item label="包含停用：">
+          <el-switch
+            v-model="form.includeDisabled"
+            inline-prompt
+            active-text="是"
+            inactive-text="否"
+          />
+        </el-form-item>
         <el-form-item>
           <el-button
             type="primary"

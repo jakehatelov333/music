@@ -20,5 +20,10 @@ public class SongUploadPrepareVO implements Serializable {
     private Long matchedArtistId;
     private String matchedArtistName;
     private boolean artistMatched;
+    /**
+     * 歌手字段的解析结果（是否疑似合作歌手、拆分候选与匹配情况）。
+     * 管理端据此在上传预览里展示最终确认的歌手列表。
+     */
+    private ArtistParsingVO artistParsing;
     private String warning;
 }

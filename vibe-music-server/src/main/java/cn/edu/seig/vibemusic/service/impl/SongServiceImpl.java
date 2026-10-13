@@ -26,6 +26,7 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ISongService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -74,6 +75,8 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     private MinioService minioService;
     @Autowired
     private RedisTemplate redisTemplate;
+    @Autowired
+    private SongArtistService songArtistService;
 
     /**
      * 获取所有歌曲
@@ -133,6 +136,9 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
             }
         }
 
+        // 结构化歌手列表：走独立批量查询装配，主查询保持零 JOIN。
+        songArtistService.attachArtists(songVOList);
+
         return Result.success(new PageResult<>(songPage.getTotal(), songVOList));
     }
 
@@ -144,7 +150,10 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      */
     @Override
     // 缓存 key 必须覆盖全部筛选条件，否则不同条件的查询会互相污染（artistName 曾漏掉）。
-    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.artistName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-' + #songDTO.onlyMissingLyric + '-album-v4'")
+    // ⚠️ 版本号变更历史：album-v4 → album-v5。多歌手改造把 artistName 的来源从
+    //    「JOIN tb_artist」换成了「主表 artist_names」，结果集变了但 key 没变，
+    //    Redis 里的旧条目会继续返回老歌手名 —— 所以必须升版本号让旧缓存自然失效。
+    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.artistName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-' + #songDTO.onlyMissingLyric + '-album-v5'")
     public Result<PageResult<SongAdminVO>> getAllSongsByArtist(SongAndArtistDTO songDTO) {
         // 分页查询
         Page<SongAdminVO> page = new Page<>(songDTO.getPageNum(), songDTO.getPageSize());
@@ -154,7 +163,11 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
             return Result.success(MessageConstant.DATA_NOT_FOUND, new PageResult<>(0L, null));
         }
 
-        return Result.success(new PageResult<>(songPage.getTotal(), songPage.getRecords()));
+        List<SongAdminVO> records = songPage.getRecords();
+        // 管理端编辑表单需要按 display_order 回填多选值，这里一并装配。
+        songArtistService.attachArtists(records);
+
+        return Result.success(new PageResult<>(songPage.getTotal(), records));
     }
 
     /**
@@ -230,6 +243,10 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
             }
         }
 
+        // 最终返回前才装配：上面的列表可能来自 Redis 缓存（缓存里只有展示串），
+        // 统一在这里补齐结构化歌手，避免缓存内容与 artists 字段不一致。
+        songArtistService.attachArtists(recommendedSongs);
+
         return Result.success(recommendedSongs);
     }
 
@@ -274,6 +291,8 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
             }
         }
 
+        songArtistService.attachArtists(songDetailVO);
+
         return Result.success(songDetailVO);
     }
 
@@ -301,11 +320,23 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      */
     @Override
     @CacheEvict(cacheNames = "songCache", allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Result addSong(SongAddDTO songAddDTO) {
+        // 歌手：artistIds 优先（顺序即展示顺序），回退到旧的单值 artistId。
+        // 两者都为空就无法确定主艺人（tb_song.artist_id 是 NOT NULL），直接拒绝而不是猜。
+        List<Long> artistIds = SongArtistService.normalizeArtistIds(
+                songAddDTO.getArtistIds(), songAddDTO.getArtistId());
+        if (artistIds.isEmpty()) {
+            return Result.error("请至少选择一位歌手");
+        }
+        Long primaryArtistId = artistIds.get(0);
+
         Song song = new Song();
         BeanUtils.copyProperties(songAddDTO, song);
+        // 专辑归属仍按主艺人解析（tb_album 只有一个主艺人，见 docs §7.4）。
+        song.setArtistId(primaryArtistId);
         Long albumId = resolveAlbumId(
-                songAddDTO.getArtistId(),
+                primaryArtistId,
                 songAddDTO.getAlbum(),
                 songAddDTO.getAlbumId(),
                 songAddDTO.getReleaseTime(),
@@ -326,9 +357,9 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
             return Result.error(MessageConstant.ADD + MessageConstant.FAILED);
         }
 
-        // 获取刚插入的歌曲记录
+        // 获取刚插入的歌曲记录（按主艺人 + 歌名 + 专辑名回查）
         Song songInDB = songMapper.selectOne(new QueryWrapper<Song>()
-                .eq("artist_id", songAddDTO.getArtistId())
+                .eq("artist_id", primaryArtistId)
                 .eq("name", songAddDTO.getSongName())
                 .eq("album", songAddDTO.getAlbum())
                 .orderByDesc("id")
@@ -339,6 +370,9 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
         }
 
         Long songId = songInDB.getSongId();
+
+        // 关系表 + artist_names + 主艺人：与上面的插入在同一个事务里，任一步失败整体回滚。
+        songArtistService.replaceSongArtists(songId, artistIds);
 
         // 解析风格字段（多个风格以逗号分隔）
         String styleStr = songAddDTO.getStyle();
@@ -380,10 +414,14 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
         Song song = new Song();
         BeanUtils.copyProperties(songUpdateDTO, song);
         Long previousAlbumId = songInDB.getAlbumId();
-        Long artistId = songUpdateDTO.getArtistId();
-        if (artistId == null || artistId <= 0) {
-            artistId = songInDB.getArtistId();
-        }
+        // 歌手关系的三种语义：
+        //   artistIds 非空          → 整组替换，顺序即展示顺序；
+        //   只给 artistId           → 视为「改为这一位歌手」（兼容旧客户端）；
+        //   两者都空                → 保持原有关系不变（例如只改歌词或专辑）。
+        List<Long> requestedArtistIds = SongArtistService.normalizeArtistIds(
+                songUpdateDTO.getArtistIds(), songUpdateDTO.getArtistId());
+        boolean artistRelationProvided = !requestedArtistIds.isEmpty();
+        Long artistId = artistRelationProvided ? requestedArtistIds.get(0) : songInDB.getArtistId();
         song.setArtistId(artistId);
 
         String normalizedAlbumName = songUpdateDTO.getAlbum() == null
@@ -412,6 +450,12 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
         if (songMapper.updateById(song) == 0) {
             deleteEmptyAlbum(albumId != null && !Objects.equals(previousAlbumId, albumId) ? albumId : null);
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+
+        // 关系表 + 展示串（同一事务）。放在这里而不是方法末尾：上面若提前 return 错误，
+        // 就不应该已经改掉歌手关系；而这里之后的步骤都不再可能提前返回。
+        if (artistRelationProvided) {
+            songArtistService.replaceSongArtists(songUpdateDTO.getSongId(), requestedArtistIds);
         }
 
         String normalizedLyric = songUpdateDTO.getLyric() == null

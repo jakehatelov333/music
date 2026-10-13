@@ -3,6 +3,7 @@ package cn.edu.seig.vibemusic.service.impl;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
+import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
 import cn.edu.seig.vibemusic.model.dto.AlbumUploadCommitDTO;
 import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
@@ -14,6 +15,7 @@ import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IAlbumUploadService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import lombok.extern.slf4j.Slf4j;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -50,6 +52,13 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     @Autowired private SongMapper songMapper;
     @Autowired private MinioService minioService;
     @Autowired private IAudioMetadataService metadataService;
+    @Autowired private SongArtistService songArtistService;
+
+    /** 主艺人必须存在且处于启用状态（停用歌手不能再挂新专辑）。 */
+    private boolean isActiveArtist(Long artistId) {
+        Artist artist = artistMapper.selectById(artistId);
+        return artist != null && ArtistStatusEnum.isActive(artist.getStatus());
+    }
     @Autowired private StringRedisTemplate stringRedisTemplate;
     @Autowired private ObjectMapper objectMapper;
 
@@ -120,11 +129,11 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         AlbumUploadCommitDTO.AlbumInfo a = dto.getAlbum();
         a.setStatus("DRAFT");
         Long artistId = a.getArtistId();
-        if (artistId == null && StringUtils.hasText(a.getArtistName())) { List<Artist> list = artistMapper.selectList(new QueryWrapper<Artist>().eq("name", a.getArtistName().trim()).last("LIMIT 1")); if (!list.isEmpty()) artistId = list.get(0).getArtistId(); }
+        if (artistId == null && StringUtils.hasText(a.getArtistName())) { List<Artist> list = artistMapper.selectList(new QueryWrapper<Artist>().eq("name", a.getArtistName().trim()).eq("status", ArtistStatusEnum.ACTIVE.getStatus()).last("LIMIT 1")); if (!list.isEmpty()) artistId = list.get(0).getArtistId(); }
         if (!StringUtils.hasText(a.getAlbumName())) return Result.error("专辑名称不能为空");
         LocalDate releaseDate = a.getReleaseDate() != null ? a.getReleaseDate() : LocalDate.now();
         if (releaseDate.isBefore(LocalDate.of(1900, 1, 1)) || releaseDate.isAfter(LocalDate.now())) return Result.error("发行日期不能晚于今天");
-        if (artistId == null || artistMapper.selectById(artistId) == null) return Result.error("主艺人不能为空，请选择或创建歌手");
+        if (artistId == null || !isActiveArtist(artistId)) return Result.error("主艺人不能为空，请选择或创建歌手");
         for (StagedSong item : staged) {
             if (!minioService.objectExists(item.object)) return Result.error("文件尚未上传完成：" + item.fileName);
         }
@@ -146,7 +155,41 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             album.setCoverUrl(coverUrl);
         }
         try {
-        for (int i = 0; i < dto.getSongs().size(); i++) { AlbumUploadCommitDTO.SongInfo x = dto.getSongs().get(i); StagedSong raw = staged.get(i); Long sid = x.getArtistId() == null ? artistId : x.getArtistId(); String targetName = "songs/" + UUID.randomUUID() + "-" + safeName(raw.fileName); String audioUrl = minioService.copyObject(raw.object, "songs", targetName.substring(targetName.lastIndexOf('/') + 1)); copiedObjects.add(targetName); String albumLyric = x.getLyrics(); boolean hasAlbumLyric = StringUtils.hasText(albumLyric); Song song = new Song().setArtistId(sid).setAlbumId(album.getAlbumId()).setAlbum(album.getAlbumName()).setSongName(x.getSongName()).setTrackNumber(x.getTrackNumber() == null ? i + 1 : x.getTrackNumber()).setDiscNumber(x.getDiscNumber() == null ? 1 : x.getDiscNumber()).setDuration(durationValue(raw.metadata.getDurationSeconds())).setCoverUrl(coverUrl).setAudioUrl(audioUrl).setReleaseTime(releaseDate).setLyric(hasAlbumLyric ? albumLyric : null).setLyricSource(hasAlbumLyric ? "MANUAL" : null).setLyricStatus(hasAlbumLyric ? LyricStatusEnum.MANUAL.getId() : LyricStatusEnum.MISSING.getId()).setLyricUpdatedAt(hasAlbumLyric ? LocalDateTime.now() : null); songMapper.insert(song); }
+            for (int i = 0; i < dto.getSongs().size(); i++) {
+                AlbumUploadCommitDTO.SongInfo x = dto.getSongs().get(i);
+                StagedSong raw = staged.get(i);
+                // 逐首歌的歌手：artistIds 优先（顺序即展示顺序），其次旧的单值 artistId，
+                // 最后沿用专辑主艺人。注意专辑的 artist_id 仍是主艺人，与歌曲级歌手是两回事。
+                List<Long> songArtistIds = SongArtistService.normalizeArtistIds(x.getArtistIds(), x.getArtistId());
+                if (songArtistIds.isEmpty()) {
+                    songArtistIds = List.of(artistId);
+                }
+                Long songPrimaryArtistId = songArtistIds.get(0);
+
+                String targetName = "songs/" + UUID.randomUUID() + "-" + safeName(raw.fileName);
+                String audioUrl = minioService.copyObject(raw.object, "songs", targetName.substring(targetName.lastIndexOf('/') + 1));
+                copiedObjects.add(targetName);
+                String albumLyric = x.getLyrics();
+                boolean hasAlbumLyric = StringUtils.hasText(albumLyric);
+                Song song = new Song()
+                        .setArtistId(songPrimaryArtistId)
+                        .setAlbumId(album.getAlbumId())
+                        .setAlbum(album.getAlbumName())
+                        .setSongName(x.getSongName())
+                        .setTrackNumber(x.getTrackNumber() == null ? i + 1 : x.getTrackNumber())
+                        .setDiscNumber(x.getDiscNumber() == null ? 1 : x.getDiscNumber())
+                        .setDuration(durationValue(raw.metadata.getDurationSeconds()))
+                        .setCoverUrl(coverUrl)
+                        .setAudioUrl(audioUrl)
+                        .setReleaseTime(releaseDate)
+                        .setLyric(hasAlbumLyric ? albumLyric : null)
+                        .setLyricSource(hasAlbumLyric ? "MANUAL" : null)
+                        .setLyricStatus(hasAlbumLyric ? LyricStatusEnum.MANUAL.getId() : LyricStatusEnum.MISSING.getId())
+                        .setLyricUpdatedAt(hasAlbumLyric ? LocalDateTime.now() : null);
+                songMapper.insert(song);
+                // 关系表 + 展示串：本方法已由 @Transactional 覆盖，失败会随外层 catch 一起回滚。
+                songArtistService.replaceSongArtists(song.getSongId(), songArtistIds);
+            }
         } catch (Exception e) {
             for (String object : copiedObjects) { try { minioService.deleteObject(object); } catch (Exception ignored) {} }
             throw e;

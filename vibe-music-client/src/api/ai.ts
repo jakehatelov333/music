@@ -95,7 +95,10 @@ export interface AgentSongsEvent {
   data: Array<{
     songId: number
     songName: string
+    /** 多歌手展示串；兼容字段 */
     artistName: string | null
+    /** 结构化歌手列表，按展示顺序 */
+    artists?: { artistId: number; artistName: string }[] | null
     album: string | null
     style: string | null
     duration: string | null

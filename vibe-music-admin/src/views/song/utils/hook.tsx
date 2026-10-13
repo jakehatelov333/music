@@ -280,6 +280,13 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
           artistId: item.artistId,
           songName: item.songName,
           artistName: item.artistName,
+          // 结构化歌手列表，按 display_order 返回；编辑表单据此回填多选
+          artists: Array.isArray(item.artists)
+            ? item.artists.map((artist: any) => ({
+                artistId: artist.artistId,
+                artistName: artist.artistName
+              }))
+            : [],
           album: item.album,
           cover: item.coverUrl,
           audio: item.audioUrl,
@@ -331,6 +338,25 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
   }
 
   function openDialog(title = "新增", row?: FormItemProps) {
+    // 多选值按 display_order 回填；老数据没有 artists 字段时退化为单选值。
+    const rowArtistIds = row?.artists?.length
+      ? row.artists.map((artist: any) => artist.artistId)
+      : row?.artistId
+        ? [row.artistId]
+        : form.artistId
+          ? [form.artistId]
+          : [];
+    // 候选歌手：优先用行上带回来的结构化列表；新增时用左侧歌手树当前选中项补齐名字，
+    // 否则多选标签会显示成裸 id。
+    const rowArtists = row?.artists?.length
+      ? row.artists
+      : (() => {
+          const selectedId = row?.artistId ?? form.artistId;
+          if (!selectedId) return [];
+          const node = treeData.value.find(item => item.value === selectedId);
+          return node ? [{ artistId: selectedId, artistName: node.label }] : [];
+        })();
+
     addDialog({
       title: `${title}歌曲`,
       props: {
@@ -338,6 +364,10 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
           title,
           artistId: row?.artistId ?? form.artistId ?? 0,
           artistName: row?.artistName ?? "",
+          // 多选值按 display_order 回填；老数据没有 artists 字段时退化为单选值
+          artistIds: rowArtistIds,
+          // 结构化歌手列表，供表单把 id 还原成名字
+          artists: rowArtists,
           songId: row?.songId ?? 0,
           songName: row?.songName ?? "",
           album: row?.album ?? "",

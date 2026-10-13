@@ -181,9 +181,10 @@ class UserMusicProfileTest extends AbstractAgentTest {
      */
     @Test
     void splitsCommaSeparatedStylesIntoSeparatePreferences() {
-        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url) "
-                + "VALUES (15,'多风格歌','测试专辑A',1,1,'欧美流行,电子','03:00',"
+        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,artist_names,style,duration,cover_url,audio_url) "
+                + "VALUES (15,'多风格歌','测试专辑A',1,1,'测试歌手A','欧美流行,电子','03:00',"
                 + "'http://minio/15.jpg','http://minio/15.mp3')");
+        jdbc.update("INSERT INTO tb_song_artist(song_id, artist_id, display_order) VALUES (15,1,1)");
         jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) VALUES "
                 + "(1,1,0,15,CURRENT_TIMESTAMP),(2,1,0,10,CURRENT_TIMESTAMP)");
 
@@ -201,9 +202,10 @@ class UserMusicProfileTest extends AbstractAgentTest {
     @Test
     void accumulatesStyleCountsAcrossMultipleRawRows() {
         // 两首歌风格串都含「欧美流行」，但原始串不同：欧美流行,电子 / 欧美流行,嘻哈说唱
-        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url) "
-                + "VALUES (16,'A','测试专辑A',1,1,'欧美流行,电子','03:00','http://minio/16.jpg','http://minio/16.mp3'),"
-                + "(17,'B','测试专辑A',1,1,'欧美流行,嘻哈说唱','03:00','http://minio/17.jpg','http://minio/17.mp3')");
+        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,artist_names,style,duration,cover_url,audio_url) "
+                + "VALUES (16,'A','测试专辑A',1,1,'测试歌手A','欧美流行,电子','03:00','http://minio/16.jpg','http://minio/16.mp3'),"
+                + "(17,'B','测试专辑A',1,1,'测试歌手A','欧美流行,嘻哈说唱','03:00','http://minio/17.jpg','http://minio/17.mp3')");
+        jdbc.update("INSERT INTO tb_song_artist(song_id, artist_id, display_order) VALUES (16,1,1),(17,1,1)");
         jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) VALUES "
                 + "(1,1,0,16,CURRENT_TIMESTAMP),(2,1,0,17,CURRENT_TIMESTAMP)");
 

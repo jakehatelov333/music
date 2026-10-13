@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.tool;
 
+import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.PlaylistMapper;
@@ -85,12 +86,14 @@ public class MusicTools {
         });
     }
 
-    @Tool("按歌手名精确搜索该歌手演唱的歌曲，返回结构化歌曲列表（含 songId 与播放地址）。"
-            + "当用户指定了歌手、想听某位歌手的歌时使用。参数 artistName 为歌手名。")
+    @Tool("按歌手搜索该歌手演唱的歌曲（包含与其他歌手合作演唱的歌曲），"
+            + "返回结构化歌曲列表（含 songId 与播放地址）。"
+            + "当用户指定了歌手、想听某位歌手的歌时使用。参数 artistName 传单个歌手名即可，例如「银临」。"
+            + "返回结果里没有歌曲表示这位歌手没有作品，不代表调用失败。")
     public String searchSongsByArtist(String artistName) {
         return invoke("searchSongsByArtist", "正在搜索该歌手的歌曲…", () -> {
             if (artistName == null || artistName.isBlank()) return ToolResult.invalid("请提供歌手名");
-            List<SongRef> songs = songQuery.search(null, artistName, null, null, 20);
+            List<SongRef> songs = songQuery.searchByArtistName(artistName, 20);
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到歌手「" + artistName + "」的歌曲")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST,
@@ -178,7 +181,11 @@ public class MusicTools {
         return invoke("searchArtists", "正在搜索歌手…", () -> {
             if (keyword == null || keyword.isBlank()) return ToolResult.invalid("请提供搜索关键词");
             LambdaQueryWrapper<Artist> wrapper = new LambdaQueryWrapper<>();
-            wrapper.like(Artist::getArtistName, keyword).or().like(Artist::getArea, keyword).last("LIMIT 10");
+            // 停用（软删除）的歌手不得出现在 Agent 的歌手检索里。
+            // 注意 like 之间是 OR，必须用 and(...) 包起来，否则 OR 会吃掉前面的 status 条件。
+            wrapper.eq(Artist::getStatus, ArtistStatusEnum.ACTIVE.getStatus())
+                    .and(q -> q.like(Artist::getArtistName, keyword).or().like(Artist::getArea, keyword))
+                    .last("LIMIT 10");
             List<ArtistRef> artists = artistMapper.selectList(wrapper).stream()
                     .map(MusicTools::toArtistRef).toList();
             return artists.isEmpty()
@@ -193,7 +200,9 @@ public class MusicTools {
         return invoke("getArtistDetail", "正在查询歌手资料…", () -> {
             if (artistName == null || artistName.isBlank()) return ToolResult.invalid("请提供歌手名");
             LambdaQueryWrapper<Artist> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(Artist::getArtistName, artistName).last("LIMIT 1");
+            wrapper.eq(Artist::getArtistName, artistName)
+                    .eq(Artist::getStatus, ArtistStatusEnum.ACTIVE.getStatus())
+                    .last("LIMIT 1");
             List<Artist> found = artistMapper.selectList(wrapper);
             if (found.isEmpty()) {
                 return ToolResult.rejected(AgentToolCodes.NOT_FOUND, "曲库中没有名为「" + artistName + "」的歌手");

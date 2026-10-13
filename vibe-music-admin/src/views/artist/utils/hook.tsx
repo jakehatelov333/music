@@ -24,7 +24,12 @@ export function useArtist(tableRef: Ref) {
     pageSize: 10,
     artistName: null,
     area: null,
-    gender: null
+    gender: null,
+    /**
+     * 是否包含已停用（软删除）的歌手。
+     * 默认 false：停用记录对业务不可见，只在追溯「合并掉的组合歌手」时才需要打开。
+     */
+    includeDisabled: false
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -104,6 +109,20 @@ export function useArtist(tableRef: Ref) {
       width: 130,
       prop: "birth",
       formatter: ({ birth }) => (birth ? dayjs(birth).format("YYYY-MM-DD") : "")
+    },
+    {
+      label: "状态",
+      prop: "status",
+      width: 90,
+      cellRenderer: ({ row, props }) => (
+        <el-tag
+          size={props.size}
+          type={row.status === "DISABLED" ? "info" : "success"}
+          effect="plain"
+        >
+          {row.status === "DISABLED" ? "已停用" : "启用"}
+        </el-tag>
+      )
     },
     {
       label: "国籍",
@@ -228,7 +247,9 @@ export function useArtist(tableRef: Ref) {
           avatar: item.avatar,
           birth: item.birth,
           area: item.area,
-          introduction: item.introduction
+          introduction: item.introduction,
+          // 软删除标记：仅在开启「包含停用」时才会出现 DISABLED 的行
+          status: item.status
         }));
       } else {
         // 如果返回状态码不为 0 或 data.items 不存在

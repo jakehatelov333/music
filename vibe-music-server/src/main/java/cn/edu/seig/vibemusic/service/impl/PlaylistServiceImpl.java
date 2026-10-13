@@ -22,6 +22,7 @@ import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -55,6 +56,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
     @Autowired private UserFavoriteMapper userFavoriteMapper;
     @Autowired private MinioService minioService;
     @Autowired private PlaylistAccessService playlistAccessService;
+    @Autowired private SongArtistService songArtistService;
 
     // Privacy is mutable. Read it from the database rather than a shared response cache.
     // viewerId lets the SQL push the caller's own playlists to the end and mark favourites.
@@ -142,6 +144,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
             favorites.addAll(userFavoriteMapper.getFavoriteSongIdsByUserId(userId));
         }
         detail.getSongs().forEach(song -> song.setLikeStatus(favorites.contains(song.getSongId()) ? 1 : 0));
+        songArtistService.attachArtists(detail.getSongs());
         return Result.success(detail);
     }
 
@@ -159,6 +162,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
         detail.setLikeStatus(0);
         if (detail.getSongs() == null) detail.setSongs(new ArrayList<>());
         if (detail.getComments() == null) detail.setComments(new ArrayList<>());
+        songArtistService.attachArtists(detail.getSongs());
         return detail;
     }
 

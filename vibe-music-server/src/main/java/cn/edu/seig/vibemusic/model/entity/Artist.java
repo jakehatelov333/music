@@ -73,4 +73,17 @@ public class Artist implements Serializable {
     @TableField("introduction")
     private String introduction;
 
+    /**
+     * 状态：ACTIVE / DISABLED（软删除）。
+     * 用软删除而不是物理删除，因为 tb_song.artist_id 的外键是 ON DELETE CASCADE。
+     */
+    @TableField("status")
+    private String status;
+
+    /**
+     * 若因合并而停用，记录归并到的歌手 id（仅用于追溯，不参与业务判断）。
+     */
+    @TableField("merged_into_artist_id")
+    private Long mergedIntoArtistId;
+
 }

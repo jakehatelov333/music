@@ -13,59 +13,124 @@ import java.util.List;
  * <p>刻意与 {@link SongMapper} 分开：{@code SongMapper} 被大量传统 REST 接口复用，
  * 在其上新增方法会扩大影响面。这里只放 Agent 需要、且传统接口不关心的投影与筛选组合。
  * 所有查询都是只读的，且只返回数据库中真实存在的行。
+ *
+ * <p><b>展示串一律读主表冗余列 {@code s.artist_names}</b>（多歌手已按 display_order 拼好），
+ * 因此这里不再 JOIN {@code tb_artist}。少一个 JOIN 意味着分页 COUNT 不可能被关联行放大。
+ *
+ * <p><b>但「按歌手筛选」不能用 {@code artist_names LIKE}</b>：那是在派生展示串上做子串匹配，
+ * 既会被跨分隔符的片段误命中，也表达不了「这位歌手参与了这首歌」的归属语义。
+ * 因此凡是歌手维度的筛选，参数一律是调用方（{@code AgentArtistResolver}）解析好的
+ * {@code artistIds}，SQL 里用 {@code EXISTS} 查权威关系表 {@code tb_song_artist}。
+ * 与关键词召回（{@code findSongsByKeyword}）不同：那里 {@code artist_names LIKE} 只是召回手段，保留。
  */
 @Mapper
 public interface AgentSongMapper {
 
-    /** 分页插件使用同一组筛选条件计算总数；稳定 ID 排序避免翻页重复。 */
+    /**
+     * 分页插件使用同一组筛选条件计算总数；稳定 ID 排序避免翻页重复。
+     *
+     * <p>{@code artistIds} 为空/为 null 时不加歌手条件（调用方在「给了歌手名但解析不到」时
+     * 应直接返回空页，而不是把空集合当成「不限制」）。
+     */
     @Select("""
-            SELECT s.id AS songId, s.name AS songName, a.name AS artistName,
+            <script>
+            SELECT s.id AS songId, s.name AS songName, s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album, s.style AS style,
                    s.duration AS duration, s.cover_url AS coverUrl, s.audio_url AS audioUrl
             FROM tb_song s
-            LEFT JOIN tb_artist a ON s.artist_id = a.id
             LEFT JOIN tb_album al ON s.album_id = al.id
-            WHERE (#{artistName} IS NULL OR a.name LIKE CONCAT('%', #{artistName}, '%'))
-              AND (#{style} IS NULL OR s.style LIKE CONCAT('%', #{style}, '%'))
-              AND (#{keyword} IS NULL OR s.name LIKE CONCAT('%', #{keyword}, '%')
-                   OR a.name LIKE CONCAT('%', #{keyword}, '%')
+            WHERE (#{keyword} IS NULL OR s.name LIKE CONCAT('%', #{keyword}, '%')
+                   OR s.artist_names LIKE CONCAT('%', #{keyword}, '%')
                    OR COALESCE(al.name, s.album) LIKE CONCAT('%', #{keyword}, '%')
                    OR s.style LIKE CONCAT('%', #{keyword}, '%'))
+              AND (#{style} IS NULL OR s.style LIKE CONCAT('%', #{style}, '%'))
+            <if test="artistIds != null and artistIds.size() > 0">
+              AND EXISTS (SELECT 1 FROM tb_song_artist sa
+                          WHERE sa.song_id = s.id AND sa.artist_id IN
+                          <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
+            </if>
             ORDER BY s.id
+            </script>
             """)
     com.baomidou.mybatisplus.core.metadata.IPage<AgentSongVO> searchPage(
             com.baomidou.mybatisplus.extension.plugins.pagination.Page<AgentSongVO> page,
-            @Param("keyword") String keyword, @Param("artistName") String artistName,
+            @Param("keyword") String keyword, @Param("artistIds") List<Long> artistIds,
             @Param("style") String style);
 
     /**
-     * 组合筛选：歌名 / 歌手 / 专辑 / 风格，全部为可选条件（null 或空串表示不限制）。
-     * 条件之间是 AND，用于“歌手 + 风格”这类精确组合检索。
+     * 组合筛选：歌名 / 歌手归属 / 专辑 / 风格，全部为可选条件（null 或空串表示不限制）。
+     * 条件之间是 AND，用于「歌手 + 风格」这类精确组合检索。
+     *
+     * <p>{@code artistIds} 由调用方解析歌手名得到，走 {@code EXISTS} 关联表，语义是「歌手归属」。
      */
     @Select("""
+            <script>
             SELECT s.id AS songId,
                    s.name AS songName,
-                   a.name AS artistName,
+                   s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album,
                    s.style AS style,
                    s.duration AS duration,
                    s.cover_url AS coverUrl,
                    s.audio_url AS audioUrl
             FROM tb_song s
-                     LEFT JOIN tb_artist a ON s.artist_id = a.id
                      LEFT JOIN tb_album al ON s.album_id = al.id
             WHERE (#{songName} IS NULL OR TRIM(#{songName}) = '' OR s.name LIKE CONCAT('%', TRIM(#{songName}), '%'))
-              AND (#{artistName} IS NULL OR TRIM(#{artistName}) = '' OR a.name LIKE CONCAT('%', TRIM(#{artistName}), '%'))
               AND (#{album} IS NULL OR TRIM(#{album}) = '' OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{album}), '%'))
               AND (#{style} IS NULL OR TRIM(#{style}) = '' OR s.style LIKE CONCAT('%', TRIM(#{style}), '%'))
+            <if test="artistIds != null and artistIds.size() > 0">
+              AND EXISTS (SELECT 1 FROM tb_song_artist sa
+                          WHERE sa.song_id = s.id AND sa.artist_id IN
+                          <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
+            </if>
             ORDER BY s.id
             LIMIT #{limit}
+            </script>
             """)
     List<AgentSongVO> findSongs(@Param("songName") String songName,
-                               @Param("artistName") String artistName,
+                               @Param("artistIds") List<Long> artistIds,
                                @Param("album") String album,
                                @Param("style") String style,
                                @Param("limit") int limit);
+
+    /**
+     * 按<b>歌手归属</b>精确检索：先由 {@code AgentSongQueryService} 把歌手名解析成
+     * {@code tb_artist} 的 id 集合，再用 {@code EXISTS} 查关系表。
+     *
+     * <p>为什么不用 {@code artist_names LIKE}：展示串只是召回手段，无法区分
+     * 「这位歌手参与了这首歌」与「名字恰好是另一个名字的子串」。合作歌曲在
+     * {@code tb_song_artist} 里对每位参与者都有一行，所以 EXISTS 既不漏召回也不误召回。
+     *
+     * <p>{@code artistIds} 为空集合时由调用方短路，不会走到这里。
+     */
+    @Select("""
+            <script>
+            SELECT s.id AS songId,
+                   s.name AS songName,
+                   s.artist_names AS artistName,
+                   COALESCE(al.name, s.album) AS album,
+                   s.style AS style,
+                   s.duration AS duration,
+                   s.cover_url AS coverUrl,
+                   s.audio_url AS audioUrl
+            FROM tb_song s
+                     LEFT JOIN tb_album al ON s.album_id = al.id
+            WHERE EXISTS (
+                      SELECT 1 FROM tb_song_artist sa
+                      WHERE sa.song_id = s.id
+                        AND sa.artist_id IN
+                        <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>
+                  )
+              <if test="style != null and style.trim() != ''">
+              AND s.style LIKE CONCAT('%', TRIM(#{style}), '%')
+              </if>
+            ORDER BY s.id
+            LIMIT #{limit}
+            </script>
+            """)
+    List<AgentSongVO> findSongsByArtistIds(@Param("artistIds") List<Long> artistIds,
+                                           @Param("style") String style,
+                                           @Param("limit") int limit);
 
     /**
      * 单一关键词的宽泛检索：歌名 / 歌手 / 专辑 / 风格之间是 <b>OR</b>。
@@ -74,17 +139,16 @@ public interface AgentSongMapper {
     @Select("""
             SELECT s.id AS songId,
                    s.name AS songName,
-                   a.name AS artistName,
+                   s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album,
                    s.style AS style,
                    s.duration AS duration,
                    s.cover_url AS coverUrl,
                    s.audio_url AS audioUrl
             FROM tb_song s
-                     LEFT JOIN tb_artist a ON s.artist_id = a.id
                      LEFT JOIN tb_album al ON s.album_id = al.id
             WHERE s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
-               OR a.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+               OR s.artist_names LIKE CONCAT('%', TRIM(#{keyword}), '%')
                OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{keyword}), '%')
                OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%')
             ORDER BY s.id
@@ -102,27 +166,33 @@ public interface AgentSongMapper {
      * 因此总能继续拿到后续歌曲。
      *
      * <p>{@code excludeIds} 为空时不加任何排除条件，行为与普通检索一致。
+     *
+     * <p>{@code artistIds} 同样是解析后的歌手归属（{@code EXISTS} 关联表），不是展示串匹配 ——
+     * 否则「排除后仍能取到新歌」的语义会被不精确的歌手筛选放大成误判。
      */
     @Select("""
             <script>
             SELECT s.id AS songId,
                    s.name AS songName,
-                   a.name AS artistName,
+                   s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album,
                    s.style AS style,
                    s.duration AS duration,
                    s.cover_url AS coverUrl,
                    s.audio_url AS audioUrl
             FROM tb_song s
-                     LEFT JOIN tb_artist a ON s.artist_id = a.id
                      LEFT JOIN tb_album al ON s.album_id = al.id
-            WHERE (#{artistName} IS NULL OR TRIM(#{artistName}) = '' OR a.name LIKE CONCAT('%', TRIM(#{artistName}), '%'))
-              AND (#{style} IS NULL OR TRIM(#{style}) = '' OR s.style LIKE CONCAT('%', TRIM(#{style}), '%'))
+            WHERE (#{style} IS NULL OR TRIM(#{style}) = '' OR s.style LIKE CONCAT('%', TRIM(#{style}), '%'))
               AND (#{keyword} IS NULL OR TRIM(#{keyword}) = ''
                    OR s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
-                   OR a.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR s.artist_names LIKE CONCAT('%', TRIM(#{keyword}), '%')
                    OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{keyword}), '%')
                    OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%'))
+            <if test="artistIds != null and artistIds.size() > 0">
+              AND EXISTS (SELECT 1 FROM tb_song_artist sa
+                          WHERE sa.song_id = s.id AND sa.artist_id IN
+                          <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
+            </if>
             <if test="excludeIds != null and excludeIds.size() > 0">
               AND s.id NOT IN
               <foreach collection="excludeIds" item="excludedId" open="(" separator="," close=")">#{excludedId}</foreach>
@@ -132,7 +202,7 @@ public interface AgentSongMapper {
             </script>
             """)
     List<AgentSongVO> findSongsExcluding(@Param("keyword") String keyword,
-                                         @Param("artistName") String artistName,
+                                         @Param("artistIds") List<Long> artistIds,
                                          @Param("style") String style,
                                          @Param("excludeIds") List<Long> excludeIds,
                                          @Param("limit") int limit);
@@ -141,14 +211,13 @@ public interface AgentSongMapper {
     @Select("""
             SELECT s.id AS songId,
                    s.name AS songName,
-                   a.name AS artistName,
+                   s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album,
                    s.style AS style,
                    s.duration AS duration,
                    s.cover_url AS coverUrl,
                    s.audio_url AS audioUrl
             FROM tb_song s
-                     LEFT JOIN tb_artist a ON s.artist_id = a.id
                      LEFT JOIN tb_album al ON s.album_id = al.id
             ORDER BY RAND()
             LIMIT #{limit}
@@ -160,14 +229,13 @@ public interface AgentSongMapper {
             <script>
             SELECT s.id AS songId,
                    s.name AS songName,
-                   a.name AS artistName,
+                   s.artist_names AS artistName,
                    COALESCE(al.name, s.album) AS album,
                    s.style AS style,
                    s.duration AS duration,
                    s.cover_url AS coverUrl,
                    s.audio_url AS audioUrl
             FROM tb_song s
-                     LEFT JOIN tb_artist a ON s.artist_id = a.id
                      LEFT JOIN tb_album al ON s.album_id = al.id
             WHERE s.id IN
             <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>

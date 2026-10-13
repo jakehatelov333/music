@@ -9,7 +9,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 @Data
-public class SongDetailVO implements Serializable {
+public class SongDetailVO implements Serializable, SongArtistAware {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -31,8 +31,14 @@ public class SongDetailVO implements Serializable {
 
     /**
      * 歌手
+     * 多歌手时的展示串（按 display_order 用 " / " 拼接）；兼容字段。
      */
     private String artistName;
+
+    /**
+     * 结构化歌手列表，按 display_order 升序；与 {@link #artistName} 同源派生。无关系时为空列表。
+     */
+    private List<ArtistNameVO> artists;
 
     /**
      * 专辑

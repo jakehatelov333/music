@@ -28,12 +28,11 @@ public interface SearchMapper {
                 s.cover_url AS coverUrl,
                 s.audio_url AS audioUrl,
                 s.release_time AS releaseTime,
-                a.name AS artistName
+                s.artist_names AS artistName
             FROM tb_song s
-            LEFT JOIN tb_artist a ON s.artist_id = a.id
             LEFT JOIN tb_album al ON s.album_id = al.id
             WHERE s.name LIKE CONCAT('%', #{keyword}, '%')
-               OR a.name LIKE CONCAT('%', #{keyword}, '%')
+               OR s.artist_names LIKE CONCAT('%', #{keyword}, '%')
                OR COALESCE(al.name, s.album) LIKE CONCAT('%', #{keyword}, '%')
                OR s.style LIKE CONCAT('%', #{keyword}, '%')
             ORDER BY
@@ -41,9 +40,9 @@ public interface SearchMapper {
                     WHEN s.name = #{keyword} THEN 0
                     WHEN s.name LIKE CONCAT(#{keyword}, '%') THEN 1
                     WHEN s.name LIKE CONCAT('%', #{keyword}, '%') THEN 2
-                    WHEN a.name = #{keyword} THEN 3
-                    WHEN a.name LIKE CONCAT(#{keyword}, '%') THEN 4
-                    WHEN a.name LIKE CONCAT('%', #{keyword}, '%') THEN 5
+                    WHEN s.artist_names = #{keyword} THEN 3
+                    WHEN s.artist_names LIKE CONCAT(#{keyword}, '%') THEN 4
+                    WHEN s.artist_names LIKE CONCAT('%', #{keyword}, '%') THEN 5
                     ELSE 6
                 END,
                 s.release_time DESC,
@@ -58,8 +57,9 @@ public interface SearchMapper {
                 a.name AS artistName,
                 a.avatar
             FROM tb_artist a
-            WHERE a.name LIKE CONCAT('%', #{keyword}, '%')
-               OR a.area LIKE CONCAT('%', #{keyword}, '%')
+            WHERE a.status = 'ACTIVE'
+              AND (a.name LIKE CONCAT('%', #{keyword}, '%')
+               OR a.area LIKE CONCAT('%', #{keyword}, '%'))
             ORDER BY
                 CASE
                     WHEN a.name = #{keyword} THEN 0

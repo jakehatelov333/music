@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import ReCol from "@/components/ReCol";
+import { getArtistList } from "@/api/system";
 import { formRules } from "../utils/rule";
 import { FormProps } from "../utils/types";
 
@@ -9,6 +10,8 @@ const props = withDefaults(defineProps<FormProps>(), {
     title: "新增",
     artistId: null,
     artistName: "",
+    artistIds: [] as number[],
+    artists: [] as { artistId: number; artistName: string }[],
     songId: null,
     songName: "",
     album: "",
@@ -41,11 +44,56 @@ const styleOptions = [
 const ruleFormRef = ref();
 const newFormInline = ref(props.formInline);
 
+const artistOptions = ref<{ artistId: number; artistName: string }[]>([]);
+const artistSearching = ref(false);
+
+/**
+ * 远程搜索歌手。多选值绑定 artistId，顺序即展示顺序（第一个为主艺人）。
+ * 已选中的歌手会被并入候选，保证标签始终能显示名字。
+ */
+async function searchArtists(query: string) {
+  artistSearching.value = true;
+  try {
+    const res = await getArtistList({
+      pageNum: 1,
+      pageSize: 50,
+      ...(query?.trim() ? { artistName: query.trim() } : {})
+    });
+    const items = (res.data?.items || []).map((item: any) => ({
+      artistId: item.artistId as number,
+      artistName: item.artistName as string
+    }));
+    const merged = new Map(artistOptions.value.map(item => [item.artistId, item]));
+    items.forEach(item => merged.set(item.artistId, item));
+    artistOptions.value = [...merged.values()];
+  } catch {
+    // 忽略：搜索失败时仍可用已选中的候选
+  } finally {
+    artistSearching.value = false;
+  }
+}
+
+/** 保持 artistId 与多选第一位一致：专辑归属与旧接口都依赖它。 */
+function handleArtistIdsChange(ids: number[]) {
+  newFormInline.value.artistId = ids.length ? ids[0] : null;
+}
+
 function getRef() {
   return ruleFormRef.value;
 }
 
 defineExpose({ getRef });
+
+onMounted(() => {
+  // 先用表单里带回的歌手填候选，再拉一页做兜底，避免标签显示成裸 id。
+  const seeded = (newFormInline.value.artists || []).filter(
+    item => item?.artistId
+  );
+  if (seeded.length) {
+    artistOptions.value = [...seeded];
+  }
+  searchArtists("");
+});
 </script>
 
 <template>
@@ -67,19 +115,30 @@ defineExpose({ getRef });
         </el-form-item>
       </re-col>
 
-      <re-col
-        v-if="newFormInline.title === '修改'"
-        :value="12"
-        :xs="24"
-        :sm="24"
-      >
-        <el-form-item label="歌手" prop="artistName">
-          <el-input
-            v-model="newFormInline.artistName"
-            clearable
-            disabled
-            placeholder="newFormInline.artistName"
-          />
+      <re-col :value="12" :xs="24" :sm="24">
+        <el-form-item label="歌手" prop="artistIds" required>
+          <el-select
+            v-model="newFormInline.artistIds"
+            multiple
+            filterable
+            remote
+            reserve-keyword
+            :remote-method="searchArtists"
+            :loading="artistSearching"
+            placeholder="搜索并选择歌手，可多选；顺序即展示顺序"
+            class="w-full"
+            @change="handleArtistIdsChange"
+          >
+            <el-option
+              v-for="item in artistOptions"
+              :key="item.artistId"
+              :label="item.artistName"
+              :value="item.artistId"
+            />
+          </el-select>
+          <div class="artist-hint">
+            第一位是主艺人（决定专辑归属）。展示为「{{ newFormInline.artistName || "—" }}」
+          </div>
         </el-form-item>
       </re-col>
 
@@ -192,6 +251,13 @@ defineExpose({ getRef });
 </template>
 
 <style scoped>
+.artist-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+
 .lyric-textarea :deep(textarea) {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;

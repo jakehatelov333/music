@@ -17,6 +17,9 @@
             <id column="songId" property="songId"/>
             <result column="songName" property="songName"/>
             <result column="artistName" property="artistName"/>
+            <!-- albumId 供前端把专辑名做成可跳转链接；必须显式映射 ——
+                 本 resultMap 含嵌套 collection，MyBatis 的 PARTIAL 自动映射对嵌套结果不生效 -->
+            <result column="albumId" property="albumId"/>
             <result column="album" property="album"/>
             <result column="duration" property="duration"/>
             <result column="songCoverUrl" property="coverUrl"/>
@@ -45,12 +48,13 @@
                p.cover_is_custom AS coverIsCustom,
                pb.song_id     AS songId,
                s.name         AS songName,
+               s.album_id     AS albumId,
                s.album        AS album,
                s.duration     AS duration,
                s.cover_url    AS songCoverUrl,
                s.audio_url    AS audioUrl,
                s.release_time AS releaseTime,
-               a.name         AS artistName,
+               s.artist_names AS artistName,
                c.id           AS commentId,
                c.content      AS content,
                c.create_time  AS createTime,
@@ -60,7 +64,6 @@
         FROM tb_playlist p
                  LEFT JOIN tb_playlist_binding pb ON p.id = pb.playlist_id
                  LEFT JOIN tb_song s ON pb.song_id = s.id
-                 LEFT JOIN tb_artist a ON s.artist_id = a.id
                  LEFT JOIN tb_comment c ON p.id = c.playlist_id AND c.type = 1
                  LEFT JOIN tb_user u ON c.user_id = u.id
     </sql>

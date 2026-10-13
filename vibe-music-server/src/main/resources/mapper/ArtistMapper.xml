@@ -15,6 +15,9 @@
             <id column="songId" property="songId"/>
             <result column="songName" property="songName"/>
             <result column="artistNameOfSong" property="artistName"/>
+            <!-- albumId 供前端把专辑名做成可跳转链接；必须显式映射 ——
+                 本 resultMap 含嵌套 collection，MyBatis 的 PARTIAL 自动映射对嵌套结果不生效 -->
+            <result column="albumId" property="albumId"/>
             <result column="album" property="album"/>
             <result column="duration" property="duration"/>
             <result column="songCoverUrl" property="coverUrl"/>
@@ -24,6 +27,8 @@
     </resultMap>
 
     <!-- 查询歌手详情 -->
+    <!-- 歌曲列表走 tb_song_artist（权威关系），因此「该歌手参与演唱的合作歌曲」也会出现；
+         歌手名取歌曲的展示串 s.artist_names，而不是当前这位歌手的名字。 -->
     <select id="getArtistDetailById" resultMap="ArtistDetailVOResultMap">
         SELECT a.id           AS artistId,
                a.name         AS artistName,
@@ -32,17 +37,20 @@
                a.birth        AS birth,
                a.area         AS area,
                a.introduction AS introduction,
-               a.name         AS artistNameOfSong,
+               s.artist_names AS artistNameOfSong,
                s.id           AS songId,
                s.name         AS songName,
+               s.album_id     AS albumId,
                s.album        AS album,
                s.duration     AS duration,
                s.cover_url    AS songCoverUrl,
                s.audio_url    AS audioUrl,
                s.release_time AS releaseTime
         FROM tb_artist a
-                 LEFT JOIN tb_song s ON a.id = s.artist_id
+                 LEFT JOIN tb_song_artist sa ON sa.artist_id = a.id
+                 LEFT JOIN tb_song s ON s.id = sa.song_id
         WHERE a.id = #{artistId}
+          AND a.status = 'ACTIVE'
     </select>
 
 </mapper>

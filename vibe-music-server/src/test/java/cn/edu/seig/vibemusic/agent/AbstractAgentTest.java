@@ -8,6 +8,8 @@ import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.PersonalPlaylistService;
+import cn.edu.seig.vibemusic.service.ArtistNameParser;
+import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
 import cn.edu.seig.vibemusic.service.agent.AgentSongQueryService;
 import cn.edu.seig.vibemusic.service.agent.PendingActionService;
@@ -63,6 +65,10 @@ public abstract class AbstractAgentTest {
     @Autowired protected AgentPendingActionMapper actionMapper;
     @Autowired protected AiTaskMetricMapper metricMapper;
     @Autowired protected PlaylistSelectionHistoryService selectionHistory;
+    @Autowired protected SongArtistService songArtists;
+    @Autowired protected ArtistNameParser artistNameParser;
+    @Autowired protected MusicTools musicTools;
+    @Autowired protected cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profileService;
     @Autowired protected DataSource dataSource;
 
     protected JdbcTemplate jdbc;
@@ -86,6 +92,7 @@ public abstract class AbstractAgentTest {
         jdbc.update("DELETE FROM tb_comment");
         jdbc.update("DELETE FROM tb_playlist_binding");
         jdbc.update("DELETE FROM tb_playlist");
+        jdbc.update("DELETE FROM tb_song_artist");
         jdbc.update("DELETE FROM tb_song");
         jdbc.update("DELETE FROM tb_album");
         jdbc.update("DELETE FROM tb_artist");
@@ -94,12 +101,15 @@ public abstract class AbstractAgentTest {
         jdbc.update("INSERT INTO tb_artist(id, name, area, gender, introduction) "
                 + "VALUES (1,'测试歌手A','内地',0,'华语流行男歌手'), (2,'测试歌手B','中国香港',1,'粤语女歌手')");
         jdbc.update("INSERT INTO tb_album(id, name, artist_id) VALUES (1,'测试专辑A',1)");
-        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url) VALUES "
-                + "(10,'夜色温柔','测试专辑A',1,1,'流行','03:20','http://minio/10.jpg','http://minio/10.mp3'),"
-                + "(11,'晚风轻语','测试专辑A',1,1,'流行','04:05','http://minio/11.jpg','http://minio/11.mp3'),"
-                + "(12,'星河滚烫','测试专辑A',1,1,'摇滚','02:50','http://minio/12.jpg','http://minio/12.mp3'),"
-                + "(13,'雨落长街',NULL,NULL,2,'民谣','03:41','http://minio/13.jpg','http://minio/13.mp3'),"
-                + "(14,'旧巷口的猫',NULL,NULL,2,'粤语','03:12','http://minio/14.jpg','http://minio/14.mp3')");
+        jdbc.update("INSERT INTO tb_song(id,name,album,album_id,artist_id,style,duration,cover_url,audio_url,artist_names) VALUES "
+                + "(10,'夜色温柔','测试专辑A',1,1,'流行','03:20','http://minio/10.jpg','http://minio/10.mp3','测试歌手A'),"
+                + "(11,'晚风轻语','测试专辑A',1,1,'流行','04:05','http://minio/11.jpg','http://minio/11.mp3','测试歌手A'),"
+                + "(12,'星河滚烫','测试专辑A',1,1,'摇滚','02:50','http://minio/12.jpg','http://minio/12.mp3','测试歌手A'),"
+                + "(13,'雨落长街',NULL,NULL,2,'民谣','03:41','http://minio/13.jpg','http://minio/13.mp3','测试歌手B'),"
+                + "(14,'旧巷口的猫',NULL,NULL,2,'粤语','03:12','http://minio/14.jpg','http://minio/14.mp3','测试歌手B')");
+        // 关系表与 tb_song.artist_names 必须同时维护：前者是权威关系，后者是派生展示串。
+        jdbc.update("INSERT INTO tb_song_artist(song_id, artist_id, display_order) VALUES "
+                + "(10,1,1),(11,1,1),(12,1,1),(13,2,1),(14,2,1)");
         ThreadLocalUtil.remove();
     }
 
@@ -111,12 +121,19 @@ public abstract class AbstractAgentTest {
     private void createSchema() {
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user(id BIGINT PRIMARY KEY, username VARCHAR(255), user_avatar VARCHAR(255))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_artist(id BIGINT PRIMARY KEY, name VARCHAR(255), gender INT, "
-                + "avatar VARCHAR(255), birth DATE, area VARCHAR(64), introduction VARCHAR(1000))");
+                + "avatar VARCHAR(255), birth DATE, area VARCHAR(64), introduction VARCHAR(1000), "
+                + "status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', merged_into_artist_id BIGINT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_album(id BIGINT PRIMARY KEY, name VARCHAR(255), artist_id BIGINT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_song(id BIGINT PRIMARY KEY, name VARCHAR(255), album VARCHAR(255), "
-                + "album_id BIGINT, artist_id BIGINT, style VARCHAR(64), duration VARCHAR(20), cover_url VARCHAR(255), "
-                + "audio_url VARCHAR(255), release_time DATE, disc_number INT, track_number INT, lyric CLOB, "
-                + "lyric_source VARCHAR(32), lyric_status INT)");
+                + "album_id BIGINT, artist_id BIGINT, artist_names VARCHAR(512), style VARCHAR(64), duration VARCHAR(20), "
+                + "cover_url VARCHAR(255), audio_url VARCHAR(255), release_time DATE, disc_number INT, track_number INT, "
+                + "lyric CLOB, lyric_source VARCHAR(32), lyric_status INT)");
+        // 歌曲-演唱歌手关系（权威数据源）：多歌手改造后，歌手归属只能查这张表。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_song_artist(song_id BIGINT NOT NULL, artist_id BIGINT NOT NULL, "
+                + "display_order INT NOT NULL DEFAULT 1, "
+                + "PRIMARY KEY(song_id, artist_id), "
+                + "FOREIGN KEY(song_id) REFERENCES tb_song(id) ON DELETE CASCADE, "
+                + "FOREIGN KEY(artist_id) REFERENCES tb_artist(id))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_playlist(id BIGINT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(255), "
                 + "cover_url VARCHAR(255), introduction VARCHAR(2000), style VARCHAR(255), owner_user_id BIGINT, "
                 + "is_public BOOLEAN DEFAULT TRUE, status VARCHAR(16) NOT NULL DEFAULT 'PUBLISHED', "
@@ -224,6 +241,8 @@ public abstract class AbstractAgentTest {
     }
 
     @Autowired protected ArtistMapper artistMapper;
+    @Autowired protected AlbumMapper albumMapper;
+    @Autowired protected SongMapper songMapper;
 
     private ArtistMapper artistMapperBean() {
         return artistMapper;
@@ -255,10 +274,12 @@ public abstract class AbstractAgentTest {
             config.addMapper(SongMapper.class);
             config.addMapper(AgentSongMapper.class);
             config.addMapper(ArtistMapper.class);
+            config.addMapper(AlbumMapper.class);
             config.addMapper(AgentPendingActionMapper.class);
             config.addMapper(AiTaskMetricMapper.class);
             config.addMapper(SearchMapper.class);
             config.addMapper(UserMusicProfileMapper.class);
+            config.addMapper(SongArtistMapper.class);
             // AiMapper 是 MyBatis-Plus 的 BaseMapper：滚动摘要记忆与会话消息读写都走它。
             config.addMapper(AiMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
@@ -277,10 +298,12 @@ public abstract class AbstractAgentTest {
         @Bean SongMapper songs(SqlSessionTemplate session) { return session.getMapper(SongMapper.class); }
         @Bean AgentSongMapper agentSongs(SqlSessionTemplate session) { return session.getMapper(AgentSongMapper.class); }
         @Bean ArtistMapper artists(SqlSessionTemplate session) { return session.getMapper(ArtistMapper.class); }
+        @Bean AlbumMapper albumMapper(SqlSessionTemplate session) { return session.getMapper(AlbumMapper.class); }
         @Bean AgentPendingActionMapper actionMapper(SqlSessionTemplate session) { return session.getMapper(AgentPendingActionMapper.class); }
         @Bean AiTaskMetricMapper metricMapper(SqlSessionTemplate session) { return session.getMapper(AiTaskMetricMapper.class); }
         @Bean SearchMapper search(SqlSessionTemplate session) { return session.getMapper(SearchMapper.class); }
         @Bean UserMusicProfileMapper profiles(SqlSessionTemplate session) { return session.getMapper(UserMusicProfileMapper.class); }
+        @Bean SongArtistMapper songArtistMapper(SqlSessionTemplate session) { return session.getMapper(SongArtistMapper.class); }
         @Bean AiMapper aiMapper(SqlSessionTemplate session) { return session.getMapper(AiMapper.class); }
 
         @Bean PlaylistAccessService access(PlaylistMapper mapper) { return new PlaylistAccessService(mapper); }
@@ -297,7 +320,20 @@ public abstract class AbstractAgentTest {
             return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator, minio);
         }
 
-        @Bean AgentSongQueryService songQuery(AgentSongMapper mapper) { return new AgentSongQueryService(mapper); }
+        @Bean SongArtistService songArtistService(SongArtistMapper mapper, ArtistMapper artists) {
+            return new SongArtistService(mapper, artists);
+        }
+
+        @Bean ArtistNameParser artistNameParser(ArtistMapper artists) { return new ArtistNameParser(artists); }
+
+        @Bean cn.edu.seig.vibemusic.service.agent.AgentArtistResolver artistResolver(ArtistMapper artists) {
+            return new cn.edu.seig.vibemusic.service.agent.AgentArtistResolver(artists);
+        }
+
+        @Bean AgentSongQueryService songQuery(AgentSongMapper mapper, SongArtistService songArtists,
+                                             cn.edu.seig.vibemusic.service.agent.AgentArtistResolver artistResolver) {
+            return new AgentSongQueryService(mapper, songArtists, artistResolver);
+        }
 
         @Bean cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory(
                 AgentPendingActionMapper actions, ObjectMapper json) {

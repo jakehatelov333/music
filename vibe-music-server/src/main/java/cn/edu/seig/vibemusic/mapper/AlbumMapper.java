@@ -74,13 +74,21 @@ public interface AlbumMapper extends BaseMapper<Album> {
             """)
     AlbumDetailVO getAlbumDetailById(@Param("albumId") Long albumId);
 
+    /**
+     * 专辑内的歌曲列表。
+     *
+     * <p><b>歌手名必须取歌曲自己的 {@code artist_names}，不能取专辑主艺人</b>：
+     * 一首歌可能是合作演唱（例如《牵丝戏》是「银临 / Aki阿杰」），而专辑只有一个主艺人。
+     * 早期实现这里 JOIN 了 {@code tb_artist}，导致整张专辑的歌曲都被显示成专辑主艺人的名字 ——
+     * 这正是「搜索某位歌手时，歌曲只显示该歌手名字」的根因。
+     */
     @Select("""
             SELECT
                 s.id AS songId,
                 s.name AS songName,
                 s.album_id AS albumId,
                 COALESCE(al.name, s.album) AS album,
-                ar.name AS artistName,
+                s.artist_names AS artistName,
                 s.duration AS duration,
                 s.cover_url AS coverUrl,
                 s.audio_url AS audioUrl,
@@ -90,7 +98,6 @@ public interface AlbumMapper extends BaseMapper<Album> {
                 s.lyric_status AS lyricStatus
             FROM tb_song s
             INNER JOIN tb_album al ON s.album_id = al.id
-            LEFT JOIN tb_artist ar ON s.artist_id = ar.id
             WHERE s.album_id = #{albumId}
             ORDER BY s.disc_number ASC, s.track_number ASC, s.id ASC
             """)

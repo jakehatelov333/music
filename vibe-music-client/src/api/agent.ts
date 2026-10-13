@@ -11,7 +11,10 @@ const API_BASE: string = import.meta.env.VITE_AI_BASE ?? ''
 export interface AgentSongRef {
   songId: number
   songName: string
+  /** 多歌手展示串，例如「银临 / Aki阿杰」；兼容字段 */
   artistName: string | null
+  /** 结构化歌手列表，按展示顺序；无关系时为空数组 */
+  artists?: { artistId: number; artistName: string }[] | null
   album: string | null
   style: string | null
   duration: string | null
