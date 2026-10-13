@@ -15,7 +15,18 @@ import {
 import { useRouter } from "vue-router";
 import { message } from "@/utils/message";
 import { getAllArtists } from "@/api/system";
-import { clearAlbumUpload, commitAlbumUpload, completeAlbumUploadFile, createAlbumUploadSession, getAlbumUploadSession, parseAlbumUpload, signAlbumUploadFile, type AlbumUploadPrepareResult } from "@/api/albumUpload";
+import {
+  ALBUM_UPLOAD_CONFIRMATION_REQUIRED,
+  clearAlbumUpload,
+  commitAlbumUpload,
+  completeAlbumUploadFile,
+  createAlbumUploadSession,
+  getAlbumUploadSession,
+  parseAlbumUpload,
+  signAlbumUploadFile,
+  type AlbumUploadPendingArtists,
+  type AlbumUploadPrepareResult
+} from "@/api/albumUpload";
 
 defineOptions({ name: "AlbumUpload" });
 const router = useRouter();
@@ -37,7 +48,22 @@ const activeDraftId = ref("");
 const prepared = ref<AlbumUploadPrepareResult>();
 const coverPreview = ref("");
 const form = reactive({ albumName: "", artistName: "", artistId: null as number | null, releaseDate: "", description: "", status: "DRAFT" as const });
+/** 主艺人下拉候选：专辑主艺人必须从已存在的歌手里选，不允许在此新建 */
+const artistOptions = ref<{ artistId: number; artistName: string }[]>([]);
+/** 提交时后端返回的「待创建歌手」清单（code=409），确认后才真正创建 */
+const pendingConfirm = ref<AlbumUploadPendingArtists | null>(null);
+const pendingConfirmVisible = ref(false);
 const canCommit = computed(() => !!prepared.value?.uploadId && !!form.albumName.trim() && prepared.value?.songs?.length > 0 && !committing.value);
+/** 解析阶段就提示「哪些歌手库里没有」，让管理员提交前心里有数（提交时会以后端复核为准） */
+const pendingArtistPreview = computed(() => {
+  const names = new Set<string>();
+  (prepared.value?.songs || []).forEach(row => {
+    (row.artistParsing?.candidates || []).forEach(candidate => {
+      if (!candidate.matched && candidate.artistName) names.add(candidate.artistName);
+    });
+  });
+  return [...names];
+});
 const stepLabels = ["上传文件", "解析信息", "最终确认"];
 const currentStep = computed(() => (prepared.value ? 1 : 0));
 const selectionLabel = computed(() => {
@@ -211,6 +237,7 @@ async function openDraft(uploadId: string) {
         form.releaseDate = savedForm.releaseDate || form.releaseDate;
         form.description = savedForm.description ?? form.description;
       }
+      await syncPrimaryArtistId();
       message("草稿已恢复，可以继续校正并提交", { type: "success" });
     } catch (error: any) {
       message(error?.message || "草稿解析失败", { type: "error" });
@@ -221,6 +248,49 @@ async function openDraft(uploadId: string) {
     message("草稿已打开，请选择原专辑文件夹补传未完成的文件", { type: "info" });
   }
 }
+/** 拉取全部歌手名（不分页），用于主艺人下拉与「名字 → id」回填。 */
+async function loadArtistOptions() {
+  if (artistOptions.value.length) return artistOptions.value;
+  const res = await getAllArtists().catch(() => null);
+  artistOptions.value = Array.isArray(res?.data)
+    ? (res.data as Array<{ artistId?: number; artistName?: string }>)
+        .filter(item => item?.artistId && item?.artistName)
+        .map(item => ({ artistId: item.artistId as number, artistName: item.artistName as string }))
+    : [];
+  return artistOptions.value;
+}
+
+/**
+ * 把解析出的主艺人名字回填成下拉里的 id。
+ * 专辑主艺人必须已存在（不在上传流程里新建），所以名字匹配不上时保持为空、由管理员手选。
+ */
+async function syncPrimaryArtistId() {
+  const options = await loadArtistOptions();
+  if (form.artistId && options.some(item => item.artistId === form.artistId)) return;
+  const name = form.artistName.trim();
+  form.artistId = name
+    ? options.find(item => item.artistName.trim() === name)?.artistId ?? null
+    : null;
+}
+
+function onPrimaryArtistChange(id: number | null) {
+  form.artistName = artistOptions.value.find(item => item.artistId === id)?.artistName || "";
+}
+
+/** 该曲目解析出的候选歌手（未匹配的名字会以红色标签提示） */
+function parsingCandidates(row: { artistParsing?: { candidates?: Array<{ artistId?: number | null; artistName: string; matched: boolean }> } | null }) {
+  return row?.artistParsing?.candidates || [];
+}
+
+/**
+ * 手动改过某行的歌手名后，丢弃解析阶段给出的 id / 结论。
+ * 否则后端会优先采用旧的 artistIds，把管理员刚改的内容悄悄盖掉。
+ */
+function onSongArtistInput(row: { artistIds?: number[] | null; artistParsing?: unknown }) {
+  row.artistIds = null;
+  row.artistParsing = null;
+}
+
 async function prepare() {
   if (!audioFiles.value.length) return message("请先选择至少一首音频", { type: "warning" });
   preparing.value = true;
@@ -288,27 +358,40 @@ async function prepare() {
     form.albumName = res.data.albumName || "";
     form.artistName = res.data.artistName || "";
     form.artistId = res.data.artistId ?? null;
-    if (!form.artistId && form.artistName.trim()) {
-      const artists = await getAllArtists();
-      const match = Array.isArray(artists.data)
-        ? artists.data.find(item => item.artistName?.trim() === form.artistName.trim())
-        : undefined;
-      form.artistId = match?.artistId ?? null;
-    }
-    if (!form.artistId) message(`未找到主艺人“${form.artistName || ""}”，提交前请选择或创建歌手`, { type: "warning" });
+    await syncPrimaryArtistId();
+    if (!form.artistId) message(`未找到主艺人“${form.artistName || ""}”，请在「主艺人」下拉中选择已存在的歌手`, { type: "warning" });
     form.releaseDate = res.data.releaseDate || "";
     message("专辑解析完成，请核对并修改信息", { type: "success" });
   } catch (error: any) { message(error?.message || "专辑解析失败", { type: "error" }); }
   finally { uploading.value = false; preparing.value = false; }
 }
-async function commit() {
+/**
+ * 提交专辑。
+ *
+ * <p>第一次提交不带 `allowCreate`：只要曲目里出现库里不存在的歌手，后端只返回待创建清单
+ * （`code = 409`，不写任何数据）。管理员在弹框里确认后，才带 `allowCreate: true` 重提，
+ * 后端创建歌手并继续入库。
+ */
+async function commit(allowCreate = false) {
   if (!prepared.value || !canCommit.value) return;
+  if (!form.artistId) return message("请先选择专辑主艺人（必须是已存在的歌手）", { type: "warning" });
   if (form.releaseDate && form.releaseDate > todayString()) {
     return message("发行日期不能晚于今天", { type: "warning" });
   }
   committing.value = true;
   try {
-    const res = await commitAlbumUpload({ uploadId: prepared.value.uploadId, album: { ...form }, songs: prepared.value.songs });
+    const res = await commitAlbumUpload({
+      uploadId: prepared.value.uploadId,
+      album: { ...form },
+      songs: prepared.value.songs,
+      allowCreate
+    });
+    if (res.code === ALBUM_UPLOAD_CONFIRMATION_REQUIRED) {
+      pendingConfirm.value = (res.data as AlbumUploadPendingArtists) || null;
+      pendingConfirmVisible.value = !!pendingConfirm.value?.missingArtists?.length;
+      if (!pendingConfirmVisible.value) message(res.message || "提交需要人工确认", { type: "warning" });
+      return;
+    }
     if (res.code !== 0) throw new Error(res.message || "专辑保存失败");
     message(`专辑已保存，共 ${res.data?.songCount ?? prepared.value.songs.length} 首歌曲`, { type: "success" });
     removeDraft(prepared.value.uploadId);
@@ -317,10 +400,17 @@ async function commit() {
   } catch (error: any) { message(error?.message || "专辑保存失败", { type: "error" }); }
   finally { committing.value = false; }
 }
+
+/** 弹框里确认「创建缺失歌手并继续上传」 */
+function confirmCreateArtists() {
+  pendingConfirmVisible.value = false;
+  commit(true);
+}
 async function clear() {
   if (prepared.value?.uploadId) await clearAlbumUpload(prepared.value.uploadId).catch(() => undefined);
-  prepared.value = undefined; audioFiles.value = []; coverFile.value = undefined; form.albumName = ""; form.artistName = ""; form.releaseDate = ""; form.description = "";
+  prepared.value = undefined; audioFiles.value = []; coverFile.value = undefined; form.albumName = ""; form.artistName = ""; form.artistId = null; form.releaseDate = ""; form.description = "";
   localStorage.removeItem("album-upload-id"); uploadProgress.value = {}; uploadErrors.value = {};
+  pendingConfirm.value = null; pendingConfirmVisible.value = false;
   if (prepared.value?.uploadId) removeDraft(prepared.value.uploadId);
   activeDraftId.value = "";
   selectedFolderName.value = "";
@@ -520,6 +610,19 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
         class="mb-4"
       />
 
+      <el-alert
+        v-if="pendingArtistPreview.length"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-4"
+      >
+        <template #title>
+          解析发现 {{ pendingArtistPreview.length }} 位歌手不在库中：{{ pendingArtistPreview.join("、") }}
+        </template>
+        提交时会再次校验，并在创建这些歌手前请你确认；取消则不会创建任何歌手。
+      </el-alert>
+
       <div class="confirm-layout">
         <div class="confirm-cover">
           <el-image
@@ -544,8 +647,25 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
               </el-form-item>
             </el-col>
             <el-col :xs="24" :md="12">
-              <el-form-item label="主艺人">
-                <el-input v-model="form.artistName" placeholder="请输入主艺人" />
+              <el-form-item label="主艺人" required>
+                <el-select
+                  v-model="form.artistId"
+                  filterable
+                  clearable
+                  placeholder="请选择已存在的歌手"
+                  class="w-full"
+                  @change="onPrimaryArtistChange"
+                >
+                  <el-option
+                    v-for="item in artistOptions"
+                    :key="item.artistId"
+                    :label="item.artistName"
+                    :value="item.artistId"
+                  />
+                </el-select>
+                <div v-if="!form.artistId" class="field-hint">
+                  主艺人必须已存在；列表里没有时，请先到「歌手管理」创建。
+                </div>
               </el-form-item>
             </el-col>
             <el-col :xs="24" :md="12">
@@ -591,8 +711,25 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
         <el-table-column label="歌曲名" min-width="220">
           <template #default="{ row }"><el-input v-model="row.songName" /></template>
         </el-table-column>
-        <el-table-column label="艺人" min-width="160">
-          <template #default="{ row }"><el-input v-model="row.artistName" /></template>
+        <el-table-column label="艺人" min-width="240">
+          <template #default="{ row }">
+            <el-input
+              v-model="row.artistName"
+              placeholder="多位歌手用 / 或 、 分隔"
+              @input="onSongArtistInput(row)"
+            />
+            <div v-if="parsingCandidates(row).length" class="artist-parsing-cell">
+              <el-tag
+                v-for="(candidate, index) in parsingCandidates(row)"
+                :key="index"
+                size="small"
+                effect="light"
+                :type="candidate.matched ? 'success' : 'danger'"
+              >
+                {{ candidate.artistName }}{{ candidate.matched ? "" : " · 未匹配" }}
+              </el-tag>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="时长" width="120" prop="durationText" />
         <el-table-column label="文件" min-width="180" prop="fileName" />
@@ -600,11 +737,37 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
 
       <div class="actions">
         <el-button @click="clear">清空任务</el-button>
-        <el-button type="primary" :loading="committing" :disabled="!canCommit" @click="commit">
+        <el-button type="primary" :loading="committing" :disabled="!canCommit" @click="commit()">
           最终确认并上传
         </el-button>
       </div>
     </section>
+
+    <!-- 确认创建缺失歌手：确认后才写库，取消则本次不上传任何内容 -->
+    <el-dialog v-model="pendingConfirmVisible" title="确认创建歌手" width="520px">
+      <p class="create-note">
+        以下 {{ pendingConfirm?.missingArtists?.length || 0 }} 位歌手在库中不存在，确认后将自动创建，并继续把这张专辑入库：
+      </p>
+      <div class="create-tags">
+        <el-tag
+          v-for="name in pendingConfirm?.missingArtists || []"
+          :key="name"
+          type="warning"
+          effect="light"
+        >
+          {{ name }}
+        </el-tag>
+      </div>
+      <p v-if="pendingConfirm?.ambiguousArtists?.length" class="create-warn">
+        另有同名多条记录的歌手，需先到「歌手管理」处理：{{ (pendingConfirm?.ambiguousArtists || []).join("、") }}
+      </p>
+      <template #footer>
+        <el-button :disabled="committing" @click="pendingConfirmVisible = false">取消</el-button>
+        <el-button type="primary" :loading="committing" @click="confirmCreateArtists">
+          创建并上传
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1064,6 +1227,41 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
 
 .confirm-form {
   min-width: 0;
+}
+
+/* ---------- 歌手确认 ---------- */
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-color-warning);
+}
+
+.artist-parsing-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.create-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+}
+
+.create-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.create-warn {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-color-danger);
 }
 
 .songs-heading {

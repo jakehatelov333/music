@@ -701,3 +701,69 @@ ALTER TABLE `tb_artist`
 `AbstractAgentTest`（H2 建 `tb_song_artist` + `tb_song.artist_names` + `tb_artist.status`，夹具补值）；
 新增契约测试：`artistName == artists.join(" / ")`、停用歌手 16 处不可见、事务整体回滚；
 `AgentEvalReportTest` 基线零漂移；`UserMusicProfileTest` 需验证新 `topArtists` 在 H2 可跑。
+
+---
+
+## 11. 追补（2026-10-13）：专辑上传的逐首歌手与「确认后创建」
+
+> §3.2 已把 `AlbumUploadServiceImpl` 标为「易遗漏的写入口」，本节记录它实际暴露出的两个问题与修法。
+
+### 11.1 问题一：解析预览正确，入库后多歌手全丢
+
+**现象**：专辑上传「解析信息」步骤每首歌的「艺人」显示正确（如 `银临、Tacke竹桑`），
+提交后专辑详情里每首歌的艺人全部退化成专辑主艺人 `银临`。
+
+**根因**：解析与提交两段用的歌手字段不是同一个。
+
+| 阶段 | 原来干了什么 |
+|---|---|
+| 解析（`toPrepare` / `prepare`） | `x.setArtistName(m.getArtist())` —— 直接把音频标签里的原始串透传，**看起来完全正确** |
+| 提交（`commit`） | 只用 `normalizeArtistIds(x.getArtistIds(), x.getArtistId())`，**完全没读 `x.getArtistName()`** |
+
+而 `artistIds` 前端根本没传（`AlbumUploadPrepareVO.Song` 当时没有这个字段，
+管理端每行「艺人」只是纯文本 `el-input`），`artistId` 也恒为 `null`
+→ `normalizeArtistIds` 返回空 → 落到 `List.of(专辑主艺人)`。**多歌手被静默抹掉。**
+
+### 11.2 问题二：库里没有的歌手，既不创建也不保留
+
+专辑上传页的「艺人」输入框长得像可以随便填名字，但后端对每首歌的名字**既不创建也不保留**；
+专辑主艺人反而因为 `isActiveArtist` 校验直接报错阻断。同一份数据在两个流程里语义不一致。
+
+### 11.3 修法（业务决策：**A 确认后创建**；专辑主艺人**必须已存在**）
+
+**新增 `ArtistProvisioningService`**（`service/`）——「歌手名 → 歌手 id」的**唯一写入口**：
+
+- `resolve(raw)`：只读解析，返回 `slots`（有序歌手位，`artistId` 为空表示待创建）+
+  `missingNames`（库里没有，确认后可建）+ `ambiguousNames`（同名多条，必须人工处理）。
+  与 `ArtistNameParser` 共用同一套分隔符/匹配规则；判定优先级与 §6 一致。
+- `createMissing(names)` / `resolveOrCreateId(name)`：真正落库，复用 `ArtistServiceImpl.addArtist`
+  （因此天然带重名校验与 `artistCache` 失效）；并发重名收敛为「复用已存在的那条」。
+- `SongUploadServiceImpl` 的私有 `createArtist` 已删除并改为委托本类，**创建歌手不再有两套实现**。
+
+**`AlbumUploadCommitDTO` 新增 `allowCreate`**；`Result` 新增 `code = 409`
+（`CODE_CONFIRMATION_REQUIRED`）与 `Result.confirmationRequired(msg, data)`。
+
+**`commit` 的歌手流程改为三段**（全部在写任何数据之前完成解析）：
+
+1. 逐首歌：显式 `artistIds`/`artistId` → 否则解析 `artistName` → 否则沿用专辑主艺人；
+2. 汇总缺失/歧义名单：有歧义 → 直接报错；有缺失且未确认 → 返回 `409` + `AlbumUploadPendingArtistsVO`（**不写库**）；
+3. 已确认 → `createMissing` 建歌手，把名字换成 id，再走原有的转存与插歌。
+   建歌手与歌曲入库**同一事务**，后续任一步失败一起回滚。
+
+> ⚠️ 这一步的顺序很关键：`@Transactional` 方法里 `return Result.error(...)` **不会回滚**。
+> 因此所有校验（含 `minioService.objectExists`）必须排在 `createMissing` 之前，
+> 否则会出现「歌手建了、歌曲没入库」的残留。
+
+**解析阶段回传解析结论**：`AlbumUploadPrepareVO.Song` 新增 `artistIds`（仅
+`EXACT_MATCH`/`SPLIT_CONFIRMED` 时非空）与 `artistParsing`，前端据此显示「已匹配 / 未匹配」标签。
+
+**管理端 `views/album-upload/index.vue`**：
+
+- 主艺人由纯文本输入改为**可搜索下拉**（数据源 `GET /admin/getAllArtistNames`），直接落实「必须已存在」；
+- 曲目行「艺人」保留可编辑文本，下方用标签展示解析结果（未匹配为红色）；
+  **手动改过某行名字后会清空该行的 `artistIds`**，否则后端会优先用旧 id 把改动盖掉；
+- 提交收到 `409` 时弹出「确认创建歌手」对话框，列出将创建的歌手名；
+  点「创建并上传」才带 `allowCreate: true` 重提，点「取消」则什么都不写。
+
+**测试**：`ArtistProvisioningServiceTest`（9 例）覆盖多歌手拆分、完整匹配不拆（保护含逗号的合法艺名）、
+未知单名、停用记录可重建、同名歧义阻断、批量创建去重复用、歧义时不建歌手。

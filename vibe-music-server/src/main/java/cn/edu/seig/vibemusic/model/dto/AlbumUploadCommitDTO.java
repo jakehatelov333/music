@@ -11,6 +11,13 @@ public class AlbumUploadCommitDTO implements Serializable {
     private String uploadId;
     private AlbumInfo album;
     private List<SongInfo> songs;
+    /**
+     * 管理员已确认「可以创建库中不存在的歌手」。
+     *
+     * <p>为 {@code null}/{@code false} 时，只要出现库里没有的歌手名，提交会返回
+     * {@code code = 409} 与待创建清单（不写任何数据）；前端弹确认框后再带 {@code true} 重新提交。
+     */
+    private Boolean allowCreate;
 
     @Data
     public static class AlbumInfo implements Serializable {

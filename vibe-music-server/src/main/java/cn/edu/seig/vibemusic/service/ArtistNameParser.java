@@ -61,6 +61,17 @@ public class ArtistNameParser {
         return raw != null && SEPARATOR.matcher(raw).find();
     }
 
+    /**
+     * 精确匹配<b>启用中</b>的歌手，返回全部命中的 id。
+     *
+     * <p>调用方靠返回条数区分三种情况：{@code 0} 条 = 库里没有（可创建）、
+     * {@code 1} 条 = 唯一命中（直接复用）、{@code ≥2} 条 = 同名歧义（既不能自动匹配也不能创建）。
+     * 只读，不写库。
+     */
+    public List<Long> findActiveExactIds(String name) {
+        return findExact(name).stream().map(Artist::getArtistId).toList();
+    }
+
     /** 解析歌手文本；任何异常路径都只返回 UNRESOLVED，不抛异常、不写库。 */
     public ArtistParsingVO parse(String raw) {
         String value = raw == null ? "" : raw.trim();

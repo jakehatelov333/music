@@ -5,7 +5,6 @@ import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
-import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
 import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
 import cn.edu.seig.vibemusic.model.dto.SongUploadCommitDTO;
 import cn.edu.seig.vibemusic.model.dto.SongUploadSession;
@@ -19,8 +18,8 @@ import cn.edu.seig.vibemusic.model.vo.SongUploadMetadataVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadPrepareVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
+import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
-import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.ISongUploadService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
@@ -81,11 +80,11 @@ public class SongUploadServiceImpl implements ISongUploadService {
     @Autowired
     private IAudioMetadataService audioMetadataService;
     @Autowired
-    private IArtistService artistService;
-    @Autowired
     private SongArtistService songArtistService;
     @Autowired
     private ArtistNameParser artistNameParser;
+    @Autowired
+    private ArtistProvisioningService artistProvisioningService;
     @Autowired
     private PlatformTransactionManager transactionManager;
 
@@ -309,17 +308,21 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 finalArtistIds = requestedArtistIds;
             } else {
                 Artist resolved = resolveArtist(dto);
-                if (resolved == null) {
+                Long resolvedId;
+                if (resolved != null) {
+                    resolvedId = resolved.getArtistId();
+                } else {
                     // 含明确分隔符却没给出确认后的歌手列表 → 拒绝自动新建「A/B」这类伪歌手记录，
                     // 让管理员回到上传预览走人工确认（对应 docs §6 的判定优先级）。
                     if (artistNameParser.looksSplittable(dto.getArtistName())) {
                         return Result.error("歌手名「" + dto.getArtistName()
                                 + "」疑似多位歌手合作，请先在上传预览中确认歌手列表");
                     }
-                    resolved = createArtist(dto.getArtistName());
+                    // 创建歌手统一走 ArtistProvisioningService（与专辑上传共用同一实现）。
+                    resolvedId = artistProvisioningService.resolveOrCreateId(dto.getArtistName());
                     artistCreated = true;
                 }
-                finalArtistIds = List.of(resolved.getArtistId());
+                finalArtistIds = List.of(resolvedId);
             }
             Long primaryArtistId = finalArtistIds.get(0);
             if (!minioService.objectExists(session.getAudioObjectName())) {
@@ -439,28 +442,6 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 log.warn("清理过期歌曲上传任务失败，uploadId={}", uploadId, e);
             }
         }
-    }
-
-    private Artist createArtist(String artistName) {
-        if (!StringUtils.hasText(artistName)) {
-            throw new IllegalArgumentException("歌手名不能为空");
-        }
-        String normalizedName = artistName.trim();
-        ArtistAddDTO addDTO = new ArtistAddDTO();
-        addDTO.setArtistName(normalizedName);
-        Result addResult = artistService.addArtist(addDTO);
-        if (addResult.getCode() != 0) {
-            Artist existing = matchArtist(normalizedName);
-            if (existing != null) {
-                return existing;
-            }
-            throw new IllegalStateException(addResult.getMessage());
-        }
-        Artist created = matchArtist(normalizedName);
-        if (created == null) {
-            throw new IllegalStateException("歌手创建失败");
-        }
-        return created;
     }
 
     private Artist resolveArtist(SongUploadCommitDTO dto) {

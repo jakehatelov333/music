@@ -10,8 +10,12 @@ import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
 import cn.edu.seig.vibemusic.model.entity.Album;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
+import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumUploadPrepareVO;
+import cn.edu.seig.vibemusic.model.vo.ArtistParsingVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.service.ArtistNameParser;
+import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAlbumUploadService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
@@ -53,6 +57,8 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     @Autowired private MinioService minioService;
     @Autowired private IAudioMetadataService metadataService;
     @Autowired private SongArtistService songArtistService;
+    @Autowired private ArtistNameParser artistNameParser;
+    @Autowired private ArtistProvisioningService artistProvisioningService;
 
     /** 主艺人必须存在且处于启用状态（停用歌手不能再挂新专辑）。 */
     private boolean isActiveArtist(Long artistId) {
@@ -113,7 +119,9 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             saveSession(id, sessionEntries);
             AlbumUploadPrepareVO vo = new AlbumUploadPrepareVO(); vo.setUploadId(id); vo.setAlbumName(album); vo.setArtistName(artist); vo.setCoverUrl(coverUrl); vo.setReleaseDate(firstReleaseDate(staged));
             List<AlbumUploadPrepareVO.Song> songs = new ArrayList<>();
-            for (int i = 0; i < staged.size(); i++) { StagedSong s = staged.get(i); AudioMetadataDTO m = s.metadata; AlbumUploadPrepareVO.Song x = new AlbumUploadPrepareVO.Song(); x.setStagingKey(s.object); x.setFileName(s.fileName); x.setSongName(StringUtils.hasText(m.getTitle()) ? m.getTitle() : s.fileName); x.setArtistName(m.getArtist()); x.setTrackNumber(m.getTrackNumber() == null ? trackNumberOf(s.fileName, i + 1) : m.getTrackNumber()); x.setDiscNumber(m.getDiscNumber() == null ? 1 : m.getDiscNumber()); x.setDuration(m.getDurationSeconds()); x.setDurationText(m.getDurationText()); x.setFileSize(s.size); x.setCoverUrl(coverUrl); songs.add(x); }
+            for (int i = 0; i < staged.size(); i++) {
+                songs.add(buildSongVO(staged.get(i), i + 1, coverUrl));
+            }
             vo.setSongs(songs); return Result.success(vo);
         } catch (Exception e) { minioService.deleteObjectsByPrefix("staging/album-upload/" + id + "/"); return Result.error("专辑解析失败：" + e.getMessage()); }
     }
@@ -133,10 +141,26 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         if (!StringUtils.hasText(a.getAlbumName())) return Result.error("专辑名称不能为空");
         LocalDate releaseDate = a.getReleaseDate() != null ? a.getReleaseDate() : LocalDate.now();
         if (releaseDate.isBefore(LocalDate.of(1900, 1, 1)) || releaseDate.isAfter(LocalDate.now())) return Result.error("发行日期不能晚于今天");
-        if (artistId == null || !isActiveArtist(artistId)) return Result.error("主艺人不能为空，请选择或创建歌手");
+        if (artistId == null || !isActiveArtist(artistId)) return Result.error("主艺人不能为空，请从歌手列表中选择已存在的歌手");
         for (StagedSong item : staged) {
             if (!minioService.objectExists(item.object)) return Result.error("文件尚未上传完成：" + item.fileName);
         }
+        // ---- 歌手：先只读解析并决定是否需要管理员确认，此步不写任何数据、不转存任何文件 ----
+        ArtistAssignment assignment = planArtists(dto, artistId);
+        if (!assignment.ambiguousNames().isEmpty()) {
+            return Result.error("以下歌手存在同名多条记录，请先到歌手管理确认后再上传："
+                    + String.join("、", assignment.ambiguousNames()));
+        }
+        if (!assignment.missingNames().isEmpty() && !Boolean.TRUE.equals(dto.getAllowCreate())) {
+            // 第一段：只回清单、不落库。管理员在弹框确认后带 allowCreate=true 重新提交。
+            return Result.confirmationRequired(
+                    "检测到 " + assignment.missingNames().size() + " 位歌手尚不存在，确认后将自动创建并继续上传",
+                    pendingArtists(assignment, dto.getSongs().size()));
+        }
+        // 第二段：把缺失的名字真正建成歌手，再把名字换回 id。
+        // 创建歌手与歌曲入库处在同一事务里，后续任一步失败都会一起回滚。
+        List<List<Long>> songArtistIdsPerSong =
+                assignment.bind(artistProvisioningService.createMissing(assignment.missingNames()));
         List<String> copiedObjects = new ArrayList<>();
         String coverUrl = a.getCoverUrl();
         Album album = albumMapper.selectOne(new QueryWrapper<Album>().eq("artist_id", artistId).eq("name", a.getAlbumName().trim()));
@@ -158,9 +182,9 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             for (int i = 0; i < dto.getSongs().size(); i++) {
                 AlbumUploadCommitDTO.SongInfo x = dto.getSongs().get(i);
                 StagedSong raw = staged.get(i);
-                // 逐首歌的歌手：artistIds 优先（顺序即展示顺序），其次旧的单值 artistId，
-                // 最后沿用专辑主艺人。注意专辑的 artist_id 仍是主艺人，与歌曲级歌手是两回事。
-                List<Long> songArtistIds = SongArtistService.normalizeArtistIds(x.getArtistIds(), x.getArtistId());
+                // 逐首歌的歌手已在上面统一解析（顺序即展示顺序，第一个为主艺人）。
+                // 注意专辑的 artist_id 仍是专辑主艺人，与歌曲级歌手是两回事。
+                List<Long> songArtistIds = songArtistIdsPerSong.get(i);
                 if (songArtistIds.isEmpty()) {
                     songArtistIds = List.of(artistId);
                 }
@@ -198,6 +222,83 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         // 万一清理失败，由 AlbumUploadCleanupTask（每小时）与后台“清除草稿”兜底。
         cleanupStagingAfterCommit(dto.getUploadId());
         return Result.success(Map.of("albumId", album.getAlbumId(), "songCount", dto.getSongs().size()));
+    }
+
+    /**
+     * 一次提交的歌手计划：逐首歌的有序歌手位 + 全专辑汇总的「待创建 / 同名歧义」名单。
+     *
+     * <p>做成不可变记录而不是就地改 DTO，是为了把「解析（只读）」与「创建（写库）」两段
+     * 明确分开：解析阶段算出的清单可以直接回给管理员确认，确认后才走 {@link #bind}。
+     */
+    private record ArtistAssignment(List<List<ArtistProvisioningService.ArtistSlot>> slotsPerSong,
+                                    List<String> missingNames,
+                                    List<String> ambiguousNames) {
+
+        /** 是否需要管理员确认（存在库里没有、可创建的歌手）。 */
+        boolean requiresConfirmation() {
+            return !missingNames.isEmpty();
+        }
+
+        /**
+         * 把歌手位里的待创建名字换成真实 id。
+         * 任一名字拿不到 id（创建失败）立即抛异常，由外层事务整体回滚，不留半成品。
+         */
+        List<List<Long>> bind(Map<String, Long> createdArtists) {
+            List<List<Long>> result = new ArrayList<>(slotsPerSong.size());
+            for (List<ArtistProvisioningService.ArtistSlot> slots : slotsPerSong) {
+                List<Long> ids = new ArrayList<>(slots.size());
+                for (ArtistProvisioningService.ArtistSlot slot : slots) {
+                    Long id = slot.artistId() != null ? slot.artistId() : createdArtists.get(slot.artistName());
+                    if (id == null) {
+                        throw new IllegalStateException("歌手「" + slot.artistName() + "」创建失败，上传已中止");
+                    }
+                    ids.add(id);
+                }
+                result.add(SongArtistService.normalizeArtistIds(ids, null));
+            }
+            return result;
+        }
+    }
+
+    /**
+     * 只读地确定每首歌的歌手（<b>不写库、不转存文件</b>）。
+     *
+     * <p>优先级：显式 {@code artistIds} / 旧单值 {@code artistId} → 解析音频标签里的歌手串
+     * （可能是「银临、Tacke竹桑」这种多歌手）→ 歌手字段全空时沿用专辑主艺人。
+     *
+     * <p><b>关键</b>：库里不存在的名字既不静默丢弃、也不擅自创建，而是汇总进
+     * {@code missingNames} 交给管理员确认 —— 这是「解析结果与入库结果不一致」的根治点。
+     */
+    private ArtistAssignment planArtists(AlbumUploadCommitDTO dto, Long albumArtistId) {
+        List<List<ArtistProvisioningService.ArtistSlot>> slotsPerSong = new ArrayList<>(dto.getSongs().size());
+        LinkedHashSet<String> missing = new LinkedHashSet<>();
+        LinkedHashSet<String> ambiguous = new LinkedHashSet<>();
+        for (AlbumUploadCommitDTO.SongInfo x : dto.getSongs()) {
+            List<Long> explicitIds = SongArtistService.normalizeArtistIds(x.getArtistIds(), x.getArtistId());
+            if (!explicitIds.isEmpty()) {
+                slotsPerSong.add(explicitIds.stream()
+                        .map(id -> new ArtistProvisioningService.ArtistSlot(id, null)).toList());
+                continue;
+            }
+            if (StringUtils.hasText(x.getArtistName())) {
+                ArtistProvisioningService.Resolution resolution =
+                        artistProvisioningService.resolve(x.getArtistName());
+                slotsPerSong.add(resolution.slots());
+                missing.addAll(resolution.missingNames());
+                ambiguous.addAll(resolution.ambiguousNames());
+                continue;
+            }
+            slotsPerSong.add(List.of(new ArtistProvisioningService.ArtistSlot(albumArtistId, null)));
+        }
+        return new ArtistAssignment(List.copyOf(slotsPerSong), List.copyOf(missing), List.copyOf(ambiguous));
+    }
+
+    private static AlbumUploadPendingArtistsVO pendingArtists(ArtistAssignment assignment, int songCount) {
+        AlbumUploadPendingArtistsVO vo = new AlbumUploadPendingArtistsVO();
+        vo.setMissingArtists(assignment.missingNames());
+        vo.setAmbiguousArtists(assignment.ambiguousNames());
+        vo.setSongCount(songCount);
+        return vo;
     }
 
     /** 事务提交后再清理暂存目录与会话；无事务时直接清理。异常一律吞掉并记日志，避免影响已成功的入库结果。 */
@@ -340,8 +441,57 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     private AlbumUploadPrepareVO toPrepare(String id, List<StagedSong> staged, String album, String artist, String coverUrl) {
         AlbumUploadPrepareVO vo = new AlbumUploadPrepareVO(); vo.setUploadId(id); vo.setAlbumName(album); vo.setArtistName(artist); vo.setCoverUrl(coverUrl); vo.setReleaseDate(firstReleaseDate(staged));
         List<AlbumUploadPrepareVO.Song> songs = new ArrayList<>();
-        for (int i=0;i<staged.size();i++) { StagedSong s=staged.get(i); AudioMetadataDTO m=s.metadata; AlbumUploadPrepareVO.Song x=new AlbumUploadPrepareVO.Song(); x.setStagingKey(s.object); x.setFileName(s.fileName); x.setSongName(StringUtils.hasText(m.getTitle())?m.getTitle():s.fileName); x.setArtistName(m.getArtist()); x.setTrackNumber(m.getTrackNumber()==null?trackNumberOf(s.fileName,i+1):m.getTrackNumber()); x.setDiscNumber(m.getDiscNumber()==null?1:m.getDiscNumber()); x.setDuration(m.getDurationSeconds()); x.setDurationText(m.getDurationText()); x.setFileSize(s.size); x.setCoverUrl(coverUrl); songs.add(x); }
+        for (int i = 0; i < staged.size(); i++) {
+            songs.add(buildSongVO(staged.get(i), i + 1, coverUrl));
+        }
         vo.setSongs(songs); return vo;
+    }
+
+    /**
+     * 组装预览里的单首曲目。歌手的解析结论在这里一并算出（<b>只读，绝不建歌手</b>）：
+     * 高置信度时给出可直接预填的 {@code artistIds}，其余情况把未匹配的名字原样交给管理员核对。
+     *
+     * @param fallbackTrack 文件名里读不到曲序时的兜底序号（从 1 开始）
+     */
+    private AlbumUploadPrepareVO.Song buildSongVO(StagedSong s, int fallbackTrack, String coverUrl) {
+        AudioMetadataDTO m = s.metadata;
+        AlbumUploadPrepareVO.Song x = new AlbumUploadPrepareVO.Song();
+        x.setStagingKey(s.object);
+        x.setFileName(s.fileName);
+        x.setSongName(StringUtils.hasText(m.getTitle()) ? m.getTitle() : s.fileName);
+        x.setArtistName(m.getArtist());
+        x.setTrackNumber(m.getTrackNumber() == null ? trackNumberOf(s.fileName, fallbackTrack) : m.getTrackNumber());
+        x.setDiscNumber(m.getDiscNumber() == null ? 1 : m.getDiscNumber());
+        x.setDuration(m.getDurationSeconds());
+        x.setDurationText(m.getDurationText());
+        x.setFileSize(s.size);
+        x.setCoverUrl(coverUrl);
+        ArtistParsingVO parsing = artistNameParser.parse(m.getArtist());
+        x.setArtistParsing(parsing);
+        x.setArtistIds(confidentArtistIds(parsing));
+        return x;
+    }
+
+    /**
+     * 只有「完整匹配」或「每一段都唯一命中」才自动预填歌手，与单曲上传的判定规则保持一致；
+     * 其余情况（含未匹配、同名歧义）返回 {@code null}，交给管理员人工确认，绝不替用户猜。
+     */
+    private static List<Long> confidentArtistIds(ArtistParsingVO parsing) {
+        if (parsing == null || parsing.getCandidates() == null) {
+            return null;
+        }
+        boolean confident = ArtistNameParser.STRATEGY_EXACT_MATCH.equals(parsing.getStrategy())
+                || ArtistNameParser.STRATEGY_SPLIT_CONFIRMED.equals(parsing.getStrategy());
+        if (!confident) {
+            return null;
+        }
+        List<Long> ids = parsing.getCandidates().stream()
+                .filter(ArtistParsingVO.Candidate::isMatched)
+                .map(ArtistParsingVO.Candidate::getArtistId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        return ids.isEmpty() ? null : ids;
     }
 
     private void saveSession(String id, List<StagedSong> entries) { try { stringRedisTemplate.opsForValue().set(REDIS_PREFIX+id, objectMapper.writeValueAsString(entries), SESSION_TTL_HOURS, java.util.concurrent.TimeUnit.HOURS); } catch(Exception e) { throw new IllegalStateException("上传状态保存失败",e); } }

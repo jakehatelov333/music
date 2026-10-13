@@ -1,0 +1,272 @@
+package cn.edu.seig.vibemusic.service.impl;
+
+import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
+import cn.edu.seig.vibemusic.mapper.AlbumMapper;
+import cn.edu.seig.vibemusic.mapper.ArtistMapper;
+import cn.edu.seig.vibemusic.mapper.SongMapper;
+import cn.edu.seig.vibemusic.model.dto.AlbumUploadCommitDTO;
+import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
+import cn.edu.seig.vibemusic.model.entity.Album;
+import cn.edu.seig.vibemusic.model.entity.Artist;
+import cn.edu.seig.vibemusic.model.entity.Song;
+import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
+import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.service.ArtistNameParser;
+import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
+import cn.edu.seig.vibemusic.service.IArtistService;
+import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.SongArtistService;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * 专辑上传提交的「逐首歌手 + 确认后创建」两段式流程。
+ *
+ * <p>这份测试盯的是回归点：<b>解析出来的多歌手不能在入库时退化</b>。历史上
+ * {@code commit} 只认 {@code artistIds}/{@code artistId}，前端又只传文本，
+ * 结果每首歌都被赋成专辑主艺人 —— 预览里明明是对的，入库后就没了。
+ *
+ * <p>同时钉住「确认前不写任何数据」：未带 {@code allowCreate} 时只能返回 409 清单，
+ * 不能建歌手、不能转存音频、不能插歌。
+ */
+class AlbumUploadCommitArtistTest {
+
+    private static final String UPLOAD_ID = "e2e-upload-id";
+    private static final long EXISTING_ARTIST_ID = 143L;
+    private static final String EXISTING_ARTIST_NAME = "银临";
+    private static final String NEW_ARTIST_NAME = "E2E临时歌手A";
+
+    private final List<Artist> artistStore = new ArrayList<>();
+    private final AtomicLong sequence = new AtomicLong(200);
+
+    private AlbumMapper albumMapper;
+    private ArtistMapper artistMapper;
+    private SongMapper songMapper;
+    private MinioService minioService;
+    private SongArtistService songArtistService;
+    private IArtistService artistService;
+    private AlbumUploadServiceImpl service;
+
+    @BeforeEach
+    void setUp() {
+        artistStore.clear();
+        sequence.set(200);
+        artistStore.add(artist(EXISTING_ARTIST_ID, EXISTING_ARTIST_NAME));
+
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), Artist.class);
+
+        albumMapper = mock(AlbumMapper.class);
+        artistMapper = mock(ArtistMapper.class);
+        songMapper = mock(SongMapper.class);
+        minioService = mock(MinioService.class);
+        songArtistService = mock(SongArtistService.class);
+
+        when(artistMapper.selectById(any())).thenAnswer(invocation -> {
+            Object id = invocation.getArgument(0);
+            return artistStore.stream()
+                    .filter(item -> item.getArtistId().equals(id))
+                    .findFirst().orElse(null);
+        });
+        when(artistMapper.selectList(any())).thenAnswer(invocation -> matching(invocation.getArgument(0)));
+
+        artistService = mock(IArtistService.class);
+        when(artistService.addArtist(any(ArtistAddDTO.class))).thenAnswer(invocation -> {
+            ArtistAddDTO addDTO = invocation.getArgument(0);
+            Artist created = artist(sequence.incrementAndGet(), addDTO.getArtistName());
+            artistStore.add(created);
+            return Result.success("新增成功");
+        });
+
+        ArtistNameParser parser = new ArtistNameParser(artistMapper);
+        ArtistProvisioningService provisioningService =
+                new ArtistProvisioningService(parser, artistService);
+
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(anyString())).thenReturn(stagingSessionJson());
+
+        when(minioService.objectExists(anyString())).thenReturn(true);
+        when(minioService.copyObject(anyString(), anyString(), anyString()))
+                .thenReturn("http://minio.local/object");
+
+        doAnswer(invocation -> {
+            invocation.getArgument(0, Album.class).setAlbumId(9001L);
+            return 1;
+        }).when(albumMapper).insert(any(Album.class));
+
+        AtomicLong songId = new AtomicLong(7000);
+        doAnswer(invocation -> {
+            invocation.getArgument(0, Song.class).setSongId(songId.incrementAndGet());
+            return 1;
+        }).when(songMapper).insert(any(Song.class));
+
+        service = new AlbumUploadServiceImpl();
+        ReflectionTestUtils.setField(service, "albumMapper", albumMapper);
+        ReflectionTestUtils.setField(service, "artistMapper", artistMapper);
+        ReflectionTestUtils.setField(service, "songMapper", songMapper);
+        ReflectionTestUtils.setField(service, "minioService", minioService);
+        ReflectionTestUtils.setField(service, "songArtistService", songArtistService);
+        ReflectionTestUtils.setField(service, "artistNameParser", parser);
+        ReflectionTestUtils.setField(service, "artistProvisioningService", provisioningService);
+        ReflectionTestUtils.setField(service, "stringRedisTemplate", redisTemplate);
+        ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
+    }
+
+    @Test
+    void unconfirmedCommitOnlyReturnsTheMissingArtistListAndWritesNothing() {
+        Result<Object> result = service.commit(commitDTO(false));
+
+        assertEquals(Result.CODE_CONFIRMATION_REQUIRED, result.getCode().intValue());
+        AlbumUploadPendingArtistsVO pending = (AlbumUploadPendingArtistsVO) result.getData();
+        assertEquals(List.of(NEW_ARTIST_NAME), pending.getMissingArtists());
+        assertTrue(pending.getAmbiguousArtists().isEmpty());
+        assertEquals(2, pending.getSongCount());
+
+        verify(artistService, never()).addArtist(any(ArtistAddDTO.class));
+        verify(albumMapper, never()).insert(any(Album.class));
+        verify(songMapper, never()).insert(any(Song.class));
+        verify(minioService, never()).copyObject(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void confirmedCommitKeepsEveryPerSongArtistInOrder() {
+        Result<Object> result = service.commit(commitDTO(true));
+
+        assertEquals(0, result.getCode().intValue());
+        Long createdId = artistStore.stream()
+                .filter(item -> NEW_ARTIST_NAME.equals(item.getArtistName()))
+                .findFirst().orElseThrow().getArtistId();
+        assertNotNull(createdId);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Long>> artistIdsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(songArtistService, times(2)).replaceSongArtists(any(), artistIdsCaptor.capture());
+        // 顺序即展示顺序：主艺人 银临 在前，新创建的歌手在后；两首歌都要完整保留
+        assertEquals(List.of(EXISTING_ARTIST_ID, createdId), artistIdsCaptor.getAllValues().get(0));
+        assertEquals(List.of(EXISTING_ARTIST_ID, createdId), artistIdsCaptor.getAllValues().get(1));
+
+        verify(artistService, times(1)).addArtist(any(ArtistAddDTO.class));
+        verify(songMapper, times(2)).insert(any(Song.class));
+        verify(minioService, times(2)).copyObject(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void explicitArtistIdsWinOverTheRawArtistNameText() {
+        AlbumUploadCommitDTO dto = commitDTO(false);
+        // 前端（或管理员）已经明确选了歌手 → 不再按文本解析，也就不会要求创建任何歌手
+        dto.getSongs().forEach(song -> song.setArtistIds(List.of(EXISTING_ARTIST_ID)));
+
+        Result<Object> result = service.commit(dto);
+
+        assertEquals(0, result.getCode().intValue());
+        verify(artistService, never()).addArtist(any(ArtistAddDTO.class));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Long>> artistIdsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(songArtistService, times(2)).replaceSongArtists(any(), artistIdsCaptor.capture());
+        assertEquals(List.of(EXISTING_ARTIST_ID), artistIdsCaptor.getAllValues().get(0));
+    }
+
+    // ------------------------------------------------------------------ 夹具
+
+    private AlbumUploadCommitDTO commitDTO(boolean allowCreate) {
+        AlbumUploadCommitDTO dto = new AlbumUploadCommitDTO();
+        dto.setUploadId(UPLOAD_ID);
+        dto.setAllowCreate(allowCreate);
+
+        AlbumUploadCommitDTO.AlbumInfo album = new AlbumUploadCommitDTO.AlbumInfo();
+        album.setAlbumName("E2E专辑-临时删除");
+        album.setArtistId(EXISTING_ARTIST_ID);
+        album.setReleaseDate(LocalDate.now());
+        dto.setAlbum(album);
+
+        List<AlbumUploadCommitDTO.SongInfo> songs = new ArrayList<>();
+        songs.add(songInfo("01 第一首.mp3", "第一首", 1));
+        songs.add(songInfo("02 第二首.mp3", "第二首", 2));
+        dto.setSongs(songs);
+        return dto;
+    }
+
+    private AlbumUploadCommitDTO.SongInfo songInfo(String fileName, String songName, int trackNumber) {
+        AlbumUploadCommitDTO.SongInfo song = new AlbumUploadCommitDTO.SongInfo();
+        song.setFileName(fileName);
+        song.setSongName(songName);
+        song.setArtistName(EXISTING_ARTIST_NAME + "、" + NEW_ARTIST_NAME);
+        song.setTrackNumber(trackNumber);
+        song.setDiscNumber(1);
+        return song;
+    }
+
+    /** 与 {@code AlbumUploadServiceImpl.StagedSong} 的 Jackson 形态一致（Redis 会话里的暂存条目）。 */
+    private static String stagingSessionJson() {
+        return "["
+                + stagedEntry("01 第一首.mp3") + ","
+                + stagedEntry("02 第二首.mp3")
+                + "]";
+    }
+
+    private static String stagedEntry(String fileName) {
+        return "{\"object\":\"staging/album-upload/" + UPLOAD_ID + "/" + fileName + "\","
+                + "\"url\":\"\",\"fileName\":\"" + fileName + "\",\"size\":1024,"
+                + "\"metadata\":{\"durationSeconds\":180.5,\"durationText\":\"03:00\"}}";
+    }
+
+    private static Artist artist(long id, String name) {
+        Artist artist = new Artist();
+        artist.setArtistId(id);
+        artist.setArtistName(name);
+        artist.setStatus(ArtistStatusEnum.ACTIVE.getStatus());
+        return artist;
+    }
+
+    /**
+     * 内存库替身：按「查询条件里出现过的字符串」做等值过滤，等价于
+     * {@code WHERE name = ? AND status = ?}（出现 ACTIVE 参数时同时按状态过滤）。
+     * MyBatis-Plus 的参数是懒注册的，必须先取一次 SQL 片段。
+     */
+    private List<Artist> matching(Object wrapperArgument) {
+        if (!(wrapperArgument instanceof AbstractWrapper<?, ?, ?> wrapper)) {
+            return List.of();
+        }
+        wrapper.getSqlSegment();
+        Set<String> values = wrapper.getParamNameValuePairs().values().stream()
+                .filter(String.class::isInstance)
+                .map(String::valueOf)
+                .collect(Collectors.toSet());
+        boolean activeOnly = values.contains(ArtistStatusEnum.ACTIVE.getStatus());
+        return artistStore.stream()
+                .filter(item -> values.contains(item.getArtistName()))
+                .filter(item -> !activeOnly || ArtistStatusEnum.isActive(item.getStatus()))
+                .toList();
+    }
+}
