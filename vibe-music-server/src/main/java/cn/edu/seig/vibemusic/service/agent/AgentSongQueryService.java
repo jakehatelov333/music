@@ -23,6 +23,25 @@ public class AgentSongQueryService {
 
     private final AgentSongMapper songs;
 
+    public record SongPage(List<SongRef> songs, long total, int page, int size) {}
+
+    public SongPage page(String keyword, String artistName, String style, int page, int size) {
+        keyword = blankToNull(keyword);
+        artistName = blankToNull(artistName);
+        style = blankToNull(style);
+        if (keyword == null && artistName == null && style == null) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "请提供搜索条件");
+        }
+        if (page < 1 || page > 100000 || size < 1 || size > MAX_RESULTS) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "分页参数无效");
+        }
+        var result = songs.searchPage(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size),
+                keyword, artistName, style);
+        return new SongPage(toRefs(result.getRecords()), result.getTotal(), page, size);
+    }
+
     public List<SongRef> search(String songName, String artistName, String album, String style, int limit) {
         return toRefs(songs.findSongs(blankToNull(songName), blankToNull(artistName),
                 blankToNull(album), blankToNull(style), clamp(limit)));

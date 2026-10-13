@@ -104,6 +104,75 @@ class AiAssistantFactoryTest {
         assertTrue(leases.isEmpty());
     }
 
+    @Test void blockingReplayKeepsHistoryAfterQwenMessageConversion() throws Exception {
+        List<List<dev.langchain4j.data.message.ChatMessage>> requests = new ArrayList<>();
+        when(model.generate(anyList(), anyList())).thenAnswer(call -> {
+            requests.add(new ArrayList<>(call.getArgument(0)));
+            return answer("记住了你的音乐偏好");
+        });
+        chat("u1", "我叫雨禾，喜欢下雨天听周杰伦");
+        chat("u1", "我刚才说了什么？");
+
+        assertReplay(requests.get(1));
+        // 切换用户仍须隔离上下文。
+        chat("u2", "你好");
+        assertFalse(requests.get(2).toString().contains("雨禾"));
+    }
+
+    @Test void streamingReplayKeepsHistoryAfterQwenMessageConversion() throws Exception {
+        List<List<dev.langchain4j.data.message.ChatMessage>> requests = new ArrayList<>();
+        doAnswer(call -> {
+            requests.add(new ArrayList<>(call.getArgument(0)));
+            StreamingResponseHandler<AiMessage> handler = call.getArgument(2);
+            handler.onNext("记住了你的音乐偏好");
+            handler.onComplete(answer("记住了你的音乐偏好"));
+            return null;
+        }).when(streaming).generate(anyList(), anyList(), any());
+        for (String query : List.of("我叫雨禾，喜欢下雨天听周杰伦", "我刚才说了什么？")) {
+            CompletableFuture<String> result = new CompletableFuture<>();
+            try (AiAssistantFactory.Run run = factory.create("guest_chat_v2_replay")) {
+                run.assistant().chatStream("guest_chat_v2_replay", query)
+                        .onNext(token -> {}).onComplete(response -> result.complete(response.content().text()))
+                        .onError(result::completeExceptionally).start();
+                assertEquals("记住了你的音乐偏好", result.get(2, TimeUnit.SECONDS));
+            }
+        }
+        assertReplay(requests.get(1));
+        assertEquals(4, history.get("guest_chat_v2_replay").size());
+        assertTrue(leases.isEmpty());
+    }
+
+    /** 验证真实供应商适配器处理后的消息，而不仅是数据库中有没有历史。 */
+    private void assertReplay(List<dev.langchain4j.data.message.ChatMessage> messages) throws Exception {
+        var conversion = Class.forName("dev.langchain4j.model.dashscope.QwenHelper")
+                .getDeclaredMethod("toQwenMessages", List.class);
+        conversion.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<com.alibaba.dashscope.common.Message> wire =
+                (List<com.alibaba.dashscope.common.Message>) conversion.invoke(null, messages);
+        assertEquals(List.of("system", "user", "assistant", "user"),
+                wire.stream().map(com.alibaba.dashscope.common.Message::getRole).toList(),
+                "Qwen 转换后必须保留上一轮用户消息和助手回复");
+        assertEquals("我叫雨禾，喜欢下雨天听周杰伦", wire.get(1).getContent());
+        assertEquals("记住了你的音乐偏好", wire.get(2).getContent());
+        assertInstanceOf(SystemMessage.class, messages.get(0));
+    }
+
+    @Test void replacingSystemPromptKeepsItFirstWithoutPersistingOrDuplicatingHistory() {
+        try (MysqlChatMemoryStore.Conversation memory = store.open("u1",
+                new AiRunBudget(Duration.ofSeconds(10), 4), Duration.ofSeconds(10))) {
+            memory.add(SystemMessage.from("旧系统提示词"));
+            memory.add(UserMessage.from("保留的用户问题"));
+            memory.add(AiMessage.from("保留的助手回复"));
+            memory.add(SystemMessage.from("新的摘要与偏好"));
+            assertEquals(List.of(SystemMessage.from("新的摘要与偏好"),
+                    UserMessage.from("保留的用户问题"), AiMessage.from("保留的助手回复")), memory.messages());
+            assertEquals(2, history.get("u1").size());
+            assertFalse(contexts.get("u1").contains("系统提示词"));
+            assertFalse(contexts.get("u1").contains("新的摘要与偏好"));
+        }
+    }
+
     @Test void fullHistoryKeepsStableIdsAndTimestampsAfterWindowEviction() {
         when(model.generate(anyList(), anyList())).thenAnswer(call -> {
             assertTrue(((List<?>) call.getArgument(0)).size() <= MysqlChatMemoryStore.WINDOW_SIZE);

@@ -1,22 +1,32 @@
 import { http } from '@/utils/http'
 import { UserStore } from '@/stores/modules/user'
-import type { PendingAction } from '@/api/agent'
+import type { AgentSongRef, PendingAction } from '@/api/agent'
 
 export type AiChatResponse = string
 
-/** 后端基地址，与 utils/http 保持一致。 */
-const API_BASE = 'http://localhost:8080'
+/**
+ * 后端基地址。默认留空 = 同源（开发时由 Vite dev server 代理到 8080）。
+ *
+ * <p><b>为什么同源：</b>游客会话身份存在 Cookie（vibe_guest_session）里。
+ * 前端跑在 8090、后端在 8080 属于跨端口，Chrome 对这类请求的
+ * SameSite=Lax Cookie 收发不稳定，会出现"每轮对话都是新会话"——
+ * 模型看起来完全没有记忆。同源后 Cookie 必然随请求发送。
+ * 部署到不同域时可用 VITE_AI_BASE 指定绝对地址。
+ */
+const API_BASE: string = import.meta.env.VITE_AI_BASE ?? ''
 
 export const aiSimpleChat = (query: string) =>
   http<AiChatResponse>('post', '/ai/chat', {
     data: { query },
     withCredentials: true,
+    baseURL: API_BASE,
     timeout: 65000,
   })
 
 export const aiHistory = () =>
   http<any>('get', '/ai/chat/history', {
     withCredentials: true,
+    baseURL: API_BASE,
     timeout: 30000,
   })
 
@@ -24,7 +34,29 @@ export const aiRecent = (limit = 10) =>
   http<any>('get', '/ai/chat/recent', {
     params: { limit },
     withCredentials: true,
+    baseURL: API_BASE,
     timeout: 30000,
+  })
+
+export interface SongSearch {
+  keyword?: string | null
+  artistName?: string | null
+  style?: string | null
+}
+
+export interface SongPage {
+  songs: AgentSongRef[]
+  total: number
+  page: number
+  size: number
+}
+
+export const aiSongPage = (search: SongSearch, page = 1, size = 5) =>
+  http<SongPage>('get', '/ai/songs', {
+    params: { ...search, page, size },
+    withCredentials: true,
+    baseURL: API_BASE,
+    timeout: 20000,
   })
 
 /** 当前登录用户自己的 Agent 任务指标（真实耗时、模型调用次数与 Token 用量）。 */
@@ -32,6 +64,7 @@ export const aiMetrics = (limit = 10) =>
   http<any>('get', '/ai/chat/metrics', {
     params: { limit },
     withCredentials: true,
+    baseURL: API_BASE,
     timeout: 20000,
   })
 
@@ -51,6 +84,7 @@ export interface AgentToolEvent {
 
 /** 结构化歌曲数据事件。 */
 export interface AgentSongsEvent {
+  search?: SongSearch | null
   taskId: string
   toolCallId: string
   ok: boolean
@@ -151,7 +185,7 @@ export const aiStreamChat = (
       let dataLines: string[] = []
       let completed = false
 
-      const parseJson = <T,>(raw: string): T | null => {
+      const parseJson = <T>(raw: string): T | null => {
         try {
           return JSON.parse(raw) as T
         } catch {

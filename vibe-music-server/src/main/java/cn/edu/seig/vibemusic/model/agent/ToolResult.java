@@ -23,8 +23,17 @@ public record ToolResult<T>(
         String message,
         String kind,
         int total,
-        T data
+        T data,
+        SongSearch search
 ) {
+    public ToolResult(boolean ok, String code, String message, String kind, int total, T data) {
+        this(ok, code, message, kind, total, data, null);
+    }
+
+    public ToolResult<T> withSearch(SongSearch search) {
+        return new ToolResult<>(ok, code, message, kind, total, data, search);
+    }
+
     public static <T> ToolResult<T> ok(String kind, String message, T data, int total) {
         return new ToolResult<>(true, AgentToolCodes.OK, message, kind, total, data);
     }

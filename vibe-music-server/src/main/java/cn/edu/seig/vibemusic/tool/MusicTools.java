@@ -70,7 +70,7 @@ public class MusicTools {
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到与「" + keyword + "」相关的歌曲，可以换个关键词试试")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST, "找到 " + songs.size() + " 首与「" + keyword + "」相关的歌曲",
-                            songs, songs.size());
+                            songs, songs.size()).withSearch(new SongSearch(keyword, null, null));
         });
     }
 
@@ -83,7 +83,8 @@ public class MusicTools {
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到歌手「" + artistName + "」的歌曲")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST,
-                            "找到歌手「" + artistName + "」的 " + songs.size() + " 首歌曲", songs, songs.size());
+                            "歌手「" + artistName + "」的歌曲", songs, songs.size())
+                            .withSearch(new SongSearch(null, artistName, null));
         });
     }
 
@@ -95,7 +96,8 @@ public class MusicTools {
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到风格为「" + styleName + "」的歌曲")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST,
-                            "找到 " + songs.size() + " 首「" + styleName + "」风格的歌曲", songs, songs.size());
+                            "「" + styleName + "」风格的歌曲", songs, songs.size())
+                            .withSearch(new SongSearch(null, null, styleName));
         });
     }
 

@@ -1,6 +1,12 @@
 import { http } from '@/utils/http'
 import type { Result } from '@/api/system'
 
+/**
+ * 与 api/ai.ts 保持同一策略：默认同源（Vite 代理到 8080）。
+ * 游客会话身份在 Cookie 里，跨端口收发不稳定，同源才能保证连续对话。
+ */
+const API_BASE: string = import.meta.env.VITE_AI_BASE ?? ''
+
 /** 待确认任务的预览歌曲，字段与后端 SongRef 对齐。 */
 export interface AgentSongRef {
   songId: number
@@ -56,12 +62,14 @@ export const listPendingActions = (chatId?: string, signal?: AbortSignal) =>
   http<Result<PendingAction[]>>('get', '/ai/actions/pending', {
     params: chatId ? { chatId } : {},
     signal,
+    baseURL: API_BASE,
     timeout: 20000,
   })
 
 export const getPendingAction = (taskId: string, signal?: AbortSignal) =>
   http<Result<PendingAction>>('get', `/ai/actions/${taskId}`, {
     signal,
+    baseURL: API_BASE,
     timeout: 20000,
   })
 
@@ -74,6 +82,7 @@ export const updatePendingAction = (
   http<Result<PendingAction>>('put', `/ai/actions/${taskId}`, {
     data: draft,
     signal,
+    baseURL: API_BASE,
     timeout: 20000,
   })
 
@@ -89,11 +98,13 @@ export const confirmPendingAction = (
   http<Result<PendingAction>>('post', `/ai/actions/${taskId}/confirm`, {
     params: version === undefined ? {} : { version },
     signal,
+    baseURL: API_BASE,
     timeout: 30000,
   })
 
 export const cancelPendingAction = (taskId: string, signal?: AbortSignal) =>
   http<Result<PendingAction>>('post', `/ai/actions/${taskId}/cancel`, {
     signal,
+    baseURL: API_BASE,
     timeout: 20000,
   })

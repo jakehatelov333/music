@@ -66,9 +66,19 @@ public class MysqlChatMemoryStore {
 
         @Override public synchronized void add(dev.langchain4j.data.message.ChatMessage message) {
             checkOpen();
-            window.add(message);
             // LC 每次注入系统提示词；不能反复写进历史，也不持久化提示词。
-            if (message.type() == ChatMessageType.SYSTEM) return;
+            if (message.type() == ChatMessageType.SYSTEM) {
+                // 0.36.2 的窗口会把系统消息追加到末尾；Qwen 转换时会丢弃它前面的历史。
+                // 在当前请求的内存窗口内重排，始终保持「系统提示词 → 历史 → 当前问题」。
+                // 直接操作 window，避免再次经过本类 add() 而重复追加数据库历史。
+                List<dev.langchain4j.data.message.ChatMessage> history = window.messages().stream()
+                        .filter(value -> value.type() != ChatMessageType.SYSTEM).toList();
+                window.clear();
+                window.add(message);
+                history.forEach(window::add);
+                return;
+            }
+            window.add(message);
             List<dev.langchain4j.data.message.ChatMessage> context = window.messages().stream()
                     .filter(value -> value.type() != ChatMessageType.SYSTEM).toList();
             aiService.appendConversation(chatId, token, ChatMessageSerializer.messagesToJson(context), encode(message));

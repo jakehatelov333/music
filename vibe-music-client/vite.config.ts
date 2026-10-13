@@ -16,7 +16,19 @@ export default defineConfig(({ mode }) => {
       port: 8090,
       host: true,
       // 代理配置
-      proxy: createProxy(viteEnv.VITE_PROXY),
+      proxy: {
+        ...createProxy(viteEnv.VITE_PROXY),
+        // AI 助手（/ai/**）必须走同源代理：
+        // 游客会话身份存在 Cookie 里，而浏览器到 localhost:8080 是跨端口请求，
+        // Chrome 对跨端口 SameSite=Lax Cookie 的收发不稳定（时带时不带），
+        // 会导致每一轮对话都变成新会话——模型"没有记忆"。
+        // 同源之后 Cookie 是第一方的，必然随请求发送，对话记忆才连续。
+        // 注意不能并进 createProxy：它会把前缀剥掉（/ai/... → /...），路径就错了。
+        '/ai': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+      },
     },
     resolve: {
       alias: {

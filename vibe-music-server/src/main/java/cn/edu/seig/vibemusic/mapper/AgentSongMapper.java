@@ -17,6 +17,27 @@ import java.util.List;
 @Mapper
 public interface AgentSongMapper {
 
+    /** 分页插件使用同一组筛选条件计算总数；稳定 ID 排序避免翻页重复。 */
+    @Select("""
+            SELECT s.id AS songId, s.name AS songName, a.name AS artistName,
+                   COALESCE(al.name, s.album) AS album, s.style AS style,
+                   s.duration AS duration, s.cover_url AS coverUrl, s.audio_url AS audioUrl
+            FROM tb_song s
+            LEFT JOIN tb_artist a ON s.artist_id = a.id
+            LEFT JOIN tb_album al ON s.album_id = al.id
+            WHERE (#{artistName} IS NULL OR a.name LIKE CONCAT('%', #{artistName}, '%'))
+              AND (#{style} IS NULL OR s.style LIKE CONCAT('%', #{style}, '%'))
+              AND (#{keyword} IS NULL OR s.name LIKE CONCAT('%', #{keyword}, '%')
+                   OR a.name LIKE CONCAT('%', #{keyword}, '%')
+                   OR COALESCE(al.name, s.album) LIKE CONCAT('%', #{keyword}, '%')
+                   OR s.style LIKE CONCAT('%', #{keyword}, '%'))
+            ORDER BY s.id
+            """)
+    com.baomidou.mybatisplus.core.metadata.IPage<AgentSongVO> searchPage(
+            com.baomidou.mybatisplus.extension.plugins.pagination.Page<AgentSongVO> page,
+            @Param("keyword") String keyword, @Param("artistName") String artistName,
+            @Param("style") String style);
+
     /**
      * 组合筛选：歌名 / 歌手 / 专辑 / 风格，全部为可选条件（null 或空串表示不限制）。
      * 条件之间是 AND，用于“歌手 + 风格”这类精确组合检索。

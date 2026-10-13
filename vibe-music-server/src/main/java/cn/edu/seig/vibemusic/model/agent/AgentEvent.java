@@ -29,8 +29,14 @@ public record AgentEvent(
         Integer total,
         String kind,
         Object data,
-        Long durationMs
+        Long durationMs,
+        SongSearch search
 ) {
+    public AgentEvent(String type, String taskId, String toolCallId, String tool, String phase,
+                      Boolean ok, String code, String message, Integer total, String kind,
+                      Object data, Long durationMs) {
+        this(type, taskId, toolCallId, tool, phase, ok, code, message, total, kind, data, durationMs, null);
+    }
     public static final String START = "start";
     public static final String TOOL = "tool";
     public static final String SONGS = "songs";
@@ -58,7 +64,7 @@ public record AgentEvent(
 
     public static AgentEvent songs(String taskId, String toolCallId, ToolResult<?> result) {
         return new AgentEvent(SONGS, taskId, toolCallId, null, null, result.ok(), result.code(),
-                result.message(), result.total(), result.kind(), result.data(), null);
+                result.message(), result.total(), result.kind(), result.data(), null, result.search());
     }
 
     /** 待确认动作：payload 为 {@code PendingActionVO}，前端据此渲染确认卡片。 */
