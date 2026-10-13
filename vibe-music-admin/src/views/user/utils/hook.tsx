@@ -88,7 +88,16 @@ export function useUser(tableRef: Ref) {
           src={row.avatar || userAvatar}
           preview-src-list={Array.of(row.avatar || userAvatar)}
           class="w-[36px] h-[36px] rounded-full align-middle"
-        />
+        >
+          {{
+            error: () => (
+              <img
+                src={userAvatar}
+                class="w-[36px] h-[36px] rounded-full align-middle"
+              />
+            )
+          }}
+        </el-image>
       ),
       width: 90
     },
@@ -402,6 +411,7 @@ export function useUser(tableRef: Ref) {
         h(ReCropperPreview, {
           ref: cropRef,
           imgSrc: row.avatar || userAvatar,
+          fallbackSrc: userAvatar,
           onCropper: info => (avatarInfo.value = info)
         }),
       beforeSure: done => {

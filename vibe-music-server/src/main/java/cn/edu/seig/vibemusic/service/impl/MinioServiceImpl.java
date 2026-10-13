@@ -134,9 +134,48 @@ public class MinioServiceImpl implements MinioService {
         if (!StringUtils.hasText(fileUrl)) {
             return;
         }
-        String prefix = endpoint + "/" + bucketName + "/";
-        String objectName = fileUrl.startsWith(prefix) ? fileUrl.substring(prefix.length()) : fileUrl;
-        deleteObject(objectName);
+        deleteObject(resolveObjectName(fileUrl));
+    }
+
+    /**
+     * 从公开访问 URL 中解析出 MinIO 对象名。
+     *
+     * <p>刻意不拿 {@code minio.endpoint} 拼前缀做 {@code startsWith} 比较：历史数据里主机名
+     * 既有 {@code localhost} 也有 {@code 127.0.0.1}，一旦对不上就会把整条 URL 当成对象名，
+     * 删除随即静默失败（S3 DELETE 幂等，不存在的 key 同样返回成功），旧文件便永远留在桶里。
+     *
+     * <p>这里只按 {@code /{bucket}/} 定位，因此天然兼容：主机名差异、历史脏数据中多出来的
+     * 路径段（例如 MinIO Console 的 {@code /browser/}），以及直接传入纯对象名的调用。
+     */
+    private String resolveObjectName(String fileUrl) {
+        String raw = fileUrl.trim();
+
+        // 丢弃 scheme://host:port，只保留 path
+        int schemeIdx = raw.indexOf("://");
+        if (schemeIdx >= 0) {
+            int pathStart = raw.indexOf('/', schemeIdx + 3);
+            raw = pathStart >= 0 ? raw.substring(pathStart) : "";
+        }
+
+        // 丢弃查询串与片段
+        int cut = raw.length();
+        int queryIdx = raw.indexOf('?');
+        if (queryIdx >= 0) {
+            cut = queryIdx;
+        }
+        int fragmentIdx = raw.indexOf('#');
+        if (fragmentIdx >= 0 && fragmentIdx < cut) {
+            cut = fragmentIdx;
+        }
+        raw = raw.substring(0, cut);
+
+        String marker = "/" + bucketName + "/";
+        int bucketIdx = raw.indexOf(marker);
+        if (bucketIdx >= 0) {
+            return raw.substring(bucketIdx + marker.length());
+        }
+        // 已经是对象名（不带 bucket 前缀）时原样返回
+        return raw.startsWith("/") ? raw.substring(1) : raw;
     }
 
     @Override

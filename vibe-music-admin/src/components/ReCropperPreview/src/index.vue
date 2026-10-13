@@ -10,6 +10,11 @@ defineOptions({
 
 const props = defineProps({
   imgSrc: String,
+  /** 原图加载失败时的兜底图（如默认头像），留空则维持原行为 */
+  fallbackSrc: {
+    type: String,
+    default: ""
+  },
   uploadable: {
     type: Boolean,
     default: false
@@ -27,7 +32,7 @@ const popoverRef = ref();
 const refCropper = ref();
 const showPopover = ref(false);
 const cropperImg = ref<string>("");
-const currentImgSrc = ref(props.imgSrc || "");
+const currentImgSrc = ref(props.imgSrc || props.fallbackSrc || "");
 const cropperKey = ref(0);
 const localImgSrc = ref("");
 
@@ -35,7 +40,7 @@ watch(
   () => props.imgSrc,
   value => {
     if (!localImgSrc.value) {
-      currentImgSrc.value = value || "";
+      currentImgSrc.value = value || props.fallbackSrc || "";
       cropperKey.value += 1;
       showPopover.value = false;
     }
@@ -46,6 +51,19 @@ function onCropper({ base64, blob, info }) {
   infos.value = info;
   cropperImg.value = base64;
   emit("cropper", { base64, blob, info });
+}
+
+/**
+ * 原图加载失败时（例如历史数据里遗留的失效地址）降级到兜底图，
+ * 否则 Cropper 永远等不到 ready，裁剪区会一直空白且不报错。
+ */
+function handleImgError() {
+  if (!props.fallbackSrc || currentImgSrc.value === props.fallbackSrc) {
+    return;
+  }
+  currentImgSrc.value = props.fallbackSrc;
+  cropperKey.value += 1;
+  showPopover.value = false;
 }
 
 function handleSelect(uploadFile: UploadFile) {
@@ -115,6 +133,7 @@ defineExpose({ hidePopover });
             :circled="circled"
             @cropper="onCropper"
             @readied="showPopover = true"
+            @error="handleImgError"
           />
           <p v-show="showPopover" class="mt-1 text-center">
             温馨提示：右键上方裁剪区可开启功能菜单

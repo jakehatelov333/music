@@ -82,6 +82,8 @@ const props = {
 export default defineComponent({
   name: "ReCropper",
   props,
+  // 显式声明，避免这些监听器又被当作普通 attrs 透传到根节点上
+  emits: ["cropper", "readied", "error"],
   setup(props, { attrs, emit }) {
     const tippyElRef = ref<ElRef<HTMLImageElement>>();
     const imgElRef = ref<ElRef<HTMLImageElement>>();
@@ -450,6 +452,7 @@ export default defineComponent({
           src={inSrc}
           alt={alt}
           crossorigin={crossorigin}
+          onError={() => this.$emit("error")}
         />
       </div>
     ) : null;
