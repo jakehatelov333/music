@@ -16,9 +16,10 @@ import dev.langchain4j.service.TokenStream;
  * 命中即 return"——只要注解还在，provider 就永远不会被调用，动态提示词会静默失效。
  * 这一点已用字节码验证过，改动前请先确认版本行为未变。
  *
- * <p>{@link #SYSTEM_PROMPT} 的内容同时约束两件事：一是"只用工具返回的真实数据回答"，
- * 二是"创建歌单必须先出预览、由用户确认，工具调用成功不代表业务已执行"。
- * 后者是防止模型抢跑写操作的关键 —— 模型的任何文本都不能替代服务端的真实执行结果。
+ * <p>{@link #SYSTEM_PROMPT} 的内容同时约束三件事：一是"只用工具返回的真实数据回答"，
+ * 二是"创建歌单必须先出预览、由用户确认，工具调用成功不代表业务已执行"，
+ * 三是"连续创建同类歌单时优先选用本会话近期没用过的歌"（见第 13~17 条）。
+ * 后者是防止模型抢跑写操作与机械重复选曲的关键 —— 模型的任何文本都不能替代服务端的真实执行结果。
  */
 public interface MusicAssistant {
 
@@ -44,6 +45,7 @@ public interface MusicAssistant {
                然后用搜索类工具检索真实歌曲，挑出合适的歌曲。
             7. 必须调用 preparePlaylistCreation 工具来生成待确认预览，参数 songIds 用英文逗号分隔，
                只能使用搜索工具返回过的真实 songId。不要自己发明 ID。
+               即使你在上文对话或历史歌单里见过某个 songId，也必须来自本轮工具返回的结果才能使用。
             8. 即使你在上文对话里见过类似的歌单预览，本轮也**必须重新调用 preparePlaylistCreation**。
                工具调用是按轮次生效的：上一轮调用过，不代表这一轮也调用过。
             9. 只有在本轮真的调用成功（返回 code 为 OK）之后，才可以说
@@ -56,6 +58,26 @@ public interface MusicAssistant {
             11. 如果用户的条件信息不足（例如没说歌单名称、也没说想要什么歌），
                 请先向用户询问，不要随意补全关键参数。
             12. 如果检索到的歌曲数量少于用户要求，请如实说明实际找到多少首，不要凑数。
+
+            选曲策略（区分普通搜索与创建歌单）：
+            13. 用户要新建歌单时，**第一步就用 searchPlaylistCandidates 检索候选歌曲**，
+                不要用 searchSongs / searchSongsByArtist / getSongsByStyle 来为歌单挑歌 ——
+                后者不会排除近期用过的歌，很容易把上一份歌单原样再挑一遍。
+                searchSongs / searchSongsByArtist / getSongsByStyle 只用于「用户想找歌、想听歌」的场景。
+            14. 用户本轮明确提出的歌手、风格、歌名、数量等条件永远优先于历史去重。
+                用户点名要的歌曲必须保留，即使它出现在之前的歌单里；
+                历史只用来帮忙避免无意重复，不能覆盖本轮的需求。
+            15. 如果 searchPlaylistCandidates 返回的数量少于你想要的，说明近期可用的新歌不足：
+                如实告诉用户实际能提供多少首，并询问是否接受复用旧歌。
+                不要编造歌曲，不要反复调用同一个工具，也不要在用户没有明确同意时
+                直接生成与上一份歌单完全相同的预览。
+            16. 用户明确要求「沿用上一份歌单」「保留这些歌」「重新生成原来那版」时，
+                允许重复选曲：调用 preparePlaylistCreation 时把 allowReuse 填 "true"。
+                其余情况一律不要填 allowReuse。
+            17. 如果 preparePlaylistCreation 返回 code 为 REJECTED 并提示歌曲与近期歌单完全相同，
+                说明你挑回了同一批歌。**必须在本轮内立刻补救**：先调用 searchPlaylistCandidates
+                取回未使用过的歌曲，再用新的 songId 重新调用 preparePlaylistCreation。
+                不要回复用户「没有生成预览」就把事情推回给用户，也不要原样重试同一个 songIds。
             """;
 
     String chat(@MemoryId String chatId, @UserMessage String userMessage);

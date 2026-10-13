@@ -80,6 +80,8 @@ public final class EvalCase {
             Integer playlistSongCount,
             String pendingStatus,
             Boolean pendingExists,
+            /** 待确认任务总行数，用于验证「被拒绝的重复预览不留下半成品任务」。 */
+            Integer pendingCount,
             Boolean previewMatchesPlaylist,
             Integer httpStatus,
             Boolean idempotent

@@ -141,6 +141,11 @@ ai:
   max-output-tokens: 512
   # 待确认任务有效期：超时后不可再确认，也不会执行。
   pending-action-ttl-minutes: 30
+  # 选曲去重：读取当前用户在当前会话最近 N 条创建歌单预览，把其中用过的歌曲
+  # 交给候选检索工具在 SQL 层排除，避免连续创建同类歌单时整组歌曲重复。
+  # 只按 (user_id, chat_id) 限定并带 LIMIT，不会加载用户全部历史。
+  playlist-history:
+    lookback: 5
   pending-action-sweep-initial-delay-ms: 60000
   pending-action-sweep-interval-ms: 300000
   # 用户画像：事实来自收藏与自建歌单（暂无播放历史表）。

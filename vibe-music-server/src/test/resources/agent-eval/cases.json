@@ -217,6 +217,44 @@
       "expect": { "success": true, "toolFailures": 1, "pendingExists": false, "playlistCreated": false }
     },
     {
+      "id": "candidate-01", "category": "CREATE_CANDIDATE",
+      "intent": "新建歌单时优先调用候选检索工具，其返回的真实歌曲可直接用于生成预览",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "再帮我建一个测试歌手A的歌单", "script": [
+        { "tool": "searchPlaylistCandidates", "args": { "artistName": "测试歌手A", "keyword": "", "style": "", "limit": "3" } },
+        { "tool": "preparePlaylistCreation", "args": { "title": "歌手A精选", "introduction": "", "style": "流行", "songIds": "10,11,12" } },
+        { "text": "已生成预览，请在下方确认" } ] },
+      "expect": { "success": true, "tools": ["searchPlaylistCandidates", "preparePlaylistCreation"],
+        "eventTypes": ["start", "tool", "songs", "confirm"], "songCount": 3, "toolFailures": 0,
+        "pendingExists": true, "pendingCount": 1, "pendingStatus": "PENDING", "playlistCreated": false }
+    },
+    {
+      "id": "candidate-02", "category": "CREATE_CANDIDATE",
+      "intent": "候选检索三个条件全为空时返回可纠正的参数错误，而不是「没有新歌」",
+      "flow": "AGENT_PREPARE", "login": true,
+      "args": { "query": "随便建个歌单", "script": [
+        { "tool": "searchPlaylistCandidates", "args": { "artistName": "", "keyword": "", "style": "" } },
+        { "text": "请告诉我想要什么风格的歌" } ] },
+      "expect": { "success": true, "tools": ["searchPlaylistCandidates"], "code": "INVALID_ARGUMENT",
+        "toolFailures": 1, "pendingExists": false, "playlistCreated": false }
+    },
+    {
+      "id": "dup-01", "category": "CREATE_DUPLICATE",
+      "intent": "同一会话重复提交完全相同的歌曲集合：服务端拒绝，不产生第二条待确认任务",
+      "flow": "PREPARE_DUPLICATE",
+      "args": { "title": "重复歌单", "introduction": "", "style": "流行", "songs": [10, 11] },
+      "expect": { "success": true, "httpStatus": 409, "pendingStatus": "PENDING",
+        "pendingCount": 1, "playlistCreated": false, "playlistSongCount": 0 }
+    },
+    {
+      "id": "dup-reuse-01", "category": "CREATE_DUPLICATE",
+      "intent": "用户明确要求复用旧歌时，相同歌曲集合仍可生成新的独立待确认任务",
+      "flow": "PREPARE_REUSE",
+      "args": { "title": "沿用上一份", "introduction": "", "style": "流行", "songs": [10, 11] },
+      "expect": { "success": true, "pendingStatus": "PENDING", "pendingCount": 2,
+        "playlistCreated": false, "playlistSongCount": 0 }
+    },
+    {
       "id": "svc-prepare-01", "category": "PREPARE_ONLY",
       "intent": "准备阶段只落待确认任务，绝不创建歌单与关联",
       "flow": "PREPARE_ONLY",

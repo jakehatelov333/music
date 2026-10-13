@@ -92,6 +92,51 @@ public interface AgentSongMapper {
             """)
     List<AgentSongVO> findSongsByKeyword(@Param("keyword") String keyword, @Param("limit") int limit);
 
+    /**
+     * 歌单候选检索：与 {@link #findSongsByKeyword} 同样把关键词当作 <b>OR</b> 宽泛匹配，
+     * 额外支持「歌手 + 风格」的精确收窄，并在 <b>SQL 里</b>排除 {@code excludeIds}。
+     *
+     * <p><b>为什么排除必须写进 SQL 而不是 Java 过滤：</b>如果先 {@code LIMIT 20} 取出前 20 首，
+     * 再在内存里把已用过的歌剔掉，当曲库里其实还有很多未使用歌曲时，结果会被误判成「没有新歌」。
+     * 这里 {@code NOT IN} 与 {@code LIMIT} 在同一条语句里，数据库先排除再截取，
+     * 因此总能继续拿到后续歌曲。
+     *
+     * <p>{@code excludeIds} 为空时不加任何排除条件，行为与普通检索一致。
+     */
+    @Select("""
+            <script>
+            SELECT s.id AS songId,
+                   s.name AS songName,
+                   a.name AS artistName,
+                   COALESCE(al.name, s.album) AS album,
+                   s.style AS style,
+                   s.duration AS duration,
+                   s.cover_url AS coverUrl,
+                   s.audio_url AS audioUrl
+            FROM tb_song s
+                     LEFT JOIN tb_artist a ON s.artist_id = a.id
+                     LEFT JOIN tb_album al ON s.album_id = al.id
+            WHERE (#{artistName} IS NULL OR TRIM(#{artistName}) = '' OR a.name LIKE CONCAT('%', TRIM(#{artistName}), '%'))
+              AND (#{style} IS NULL OR TRIM(#{style}) = '' OR s.style LIKE CONCAT('%', TRIM(#{style}), '%'))
+              AND (#{keyword} IS NULL OR TRIM(#{keyword}) = ''
+                   OR s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR a.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%'))
+            <if test="excludeIds != null and excludeIds.size() > 0">
+              AND s.id NOT IN
+              <foreach collection="excludeIds" item="excludedId" open="(" separator="," close=")">#{excludedId}</foreach>
+            </if>
+            ORDER BY s.id
+            LIMIT #{limit}
+            </script>
+            """)
+    List<AgentSongVO> findSongsExcluding(@Param("keyword") String keyword,
+                                         @Param("artistName") String artistName,
+                                         @Param("style") String style,
+                                         @Param("excludeIds") List<Long> excludeIds,
+                                         @Param("limit") int limit);
+
     /** 随机推荐；仅用于“随便来点歌”这类无明确条件的请求。 */
     @Select("""
             SELECT s.id AS songId,

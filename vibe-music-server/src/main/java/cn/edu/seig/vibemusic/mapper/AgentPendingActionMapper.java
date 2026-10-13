@@ -51,6 +51,28 @@ public interface AgentPendingActionMapper {
     List<AgentPendingAction> findPending(@Param("userId") Long userId, @Param("chatId") String chatId,
                                          @Param("now") LocalDateTime now);
 
+    /**
+     * 当前用户在当前会话中最近的若干条创建歌单预览，用于「选曲去重」。
+     *
+     * <p><b>为什么要单独一条查询：</b>去重只需要「近期用过哪些歌」，不需要用户全部历史。
+     * 这里把 user_id、chat_id、action_type 三个条件全部写进 SQL，并由 LIMIT 限制扫描行数，
+     * 因此不会为了排除历史歌曲而把用户的历史记录全量加载进内存。
+     *
+     * <p><b>为什么不过滤 status：</b>只要预览曾经展示给用户，这些歌就算「已经用过」——
+     * 包括用户尚未确认（PENDING）、已取消（CANCELLED）、已过期（EXPIRED）与已成功（SUCCEEDED）的。
+     * 唯一例外是被解析失败或数据损坏的行，由上层服务跳过并记日志。
+     *
+     * <p>按自增主键倒序而不是 created_at：同一毫秒内创建的多条任务也能得到稳定顺序。
+     */
+    @Select("""
+            SELECT * FROM tb_agent_pending_action
+            WHERE user_id = #{userId} AND chat_id = #{chatId} AND action_type = #{actionType}
+            ORDER BY id DESC
+            LIMIT #{limit}
+            """)
+    List<AgentPendingAction> findRecentByChat(@Param("userId") Long userId, @Param("chatId") String chatId,
+                                              @Param("actionType") String actionType, @Param("limit") int limit);
+
     /** 不限定会话的待确认任务：前端不知道 chatId 时（例如换了设备）也能找回自己的待确认操作。 */
     @Select("""
             SELECT * FROM tb_agent_pending_action

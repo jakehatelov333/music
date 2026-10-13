@@ -11,6 +11,7 @@ import cn.edu.seig.vibemusic.service.PersonalPlaylistService;
 import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
 import cn.edu.seig.vibemusic.service.agent.AgentSongQueryService;
 import cn.edu.seig.vibemusic.service.agent.PendingActionService;
+import cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService;
 import cn.edu.seig.vibemusic.service.impl.PlaylistServiceImpl;
 import cn.edu.seig.vibemusic.tool.MusicTools;
 import cn.edu.seig.vibemusic.tool.PlaylistActionTools;
@@ -61,6 +62,7 @@ public abstract class AbstractAgentTest {
     @Autowired protected PlaylistMapper playlists;
     @Autowired protected AgentPendingActionMapper actionMapper;
     @Autowired protected AiTaskMetricMapper metricMapper;
+    @Autowired protected PlaylistSelectionHistoryService selectionHistory;
     @Autowired protected DataSource dataSource;
 
     protected JdbcTemplate jdbc;
@@ -213,7 +215,7 @@ public abstract class AbstractAgentTest {
     protected MusicTools readTools(RecordingSink sink, Long userId, String chatId, AgentMetrics metrics) {
         AgentContext context = AgentContext.of(userId, chatId, "task-" + chatId, sink)
                 .withMetrics(metrics);
-        return new MusicTools(songQuery, artistMapperBean(), playlists, context);
+        return new MusicTools(songQuery, artistMapperBean(), playlists, selectionHistory, context);
     }
 
     protected PlaylistActionTools actionTools(RecordingSink sink, Long userId, String chatId, AgentMetrics metrics) {
@@ -297,6 +299,14 @@ public abstract class AbstractAgentTest {
 
         @Bean AgentSongQueryService songQuery(AgentSongMapper mapper) { return new AgentSongQueryService(mapper); }
 
+        @Bean cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory(
+                AgentPendingActionMapper actions, ObjectMapper json) {
+            var service = new cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService(actions, json);
+            // @Value 字段在纯 Java 配置里不会自动注入，这里显式给值（与 PendingActionService 同样的做法）。
+            org.springframework.test.util.ReflectionTestUtils.setField(service, "lookback", 5);
+            return service;
+        }
+
         @Bean cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profileService(
                 UserMusicProfileMapper mapper, ObjectMapper json) {
             var service = new cn.edu.seig.vibemusic.service.agent.UserMusicProfileService(mapper, json);
@@ -310,8 +320,9 @@ public abstract class AbstractAgentTest {
             return new cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder(mapper);
         }
 
-        @Bean MusicTools musicTools(AgentSongQueryService songQuery, ArtistMapper artists, PlaylistMapper playlists) {
-            return new MusicTools(songQuery, artists, playlists);
+        @Bean MusicTools musicTools(AgentSongQueryService songQuery, ArtistMapper artists, PlaylistMapper playlists,
+                                    cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory) {
+            return new MusicTools(songQuery, artists, playlists, selectionHistory);
         }
 
         @Bean PlaylistActionTools playlistActionTools(PendingActionService pendingActions) {
@@ -319,8 +330,9 @@ public abstract class AbstractAgentTest {
         }
 
         @Bean PendingActionService pendingActions(AgentPendingActionMapper actions, AgentSongQueryService songQuery,
-                                                  PersonalPlaylistService personal, ObjectMapper json) {
-            PendingActionService service = new PendingActionService(actions, songQuery, personal, json);
+                                                  PersonalPlaylistService personal, ObjectMapper json,
+                                                  cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory) {
+            PendingActionService service = new PendingActionService(actions, songQuery, personal, json, selectionHistory);
             // @Value 字段在纯 Java 配置里不会自动注入，这里显式给一个较短的有效期便于测试。
             org.springframework.test.util.ReflectionTestUtils.setField(service, "ttlMinutes", 30);
             return service;

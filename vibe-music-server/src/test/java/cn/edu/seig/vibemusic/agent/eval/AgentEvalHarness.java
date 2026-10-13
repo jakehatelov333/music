@@ -206,6 +206,28 @@ public class AgentEvalHarness {
                     outcome.pendingStatus = preview.getStatus();
                     outcome.success = true;
                 }
+                // 选曲去重：同一会话再建一份完全相同的歌单应被服务端拒绝，且不留下半成品任务。
+                case "PREPARE_DUPLICATE" -> {
+                    PendingActionVO preview = prepare(testCase);
+                    outcome.pending = preview;
+                    outcome.pendingStatus = preview.getStatus();
+                    try {
+                        pendingActions.prepare(1L, testCase.chatId(), draft(testCase));
+                        outcome.success = false;
+                        outcome.failureCategory = "NOT_REJECTED";
+                    } catch (ResponseStatusException e) {
+                        outcome.httpStatus = e.getStatusCode().value();
+                        outcome.success = e.getStatusCode().value() == 409;
+                    }
+                }
+                // 用户明确要求复用旧歌时，完全相同的歌单必须能正常生成预览（且是新的独立任务）。
+                case "PREPARE_REUSE" -> {
+                    prepare(testCase);
+                    PendingActionVO reused = pendingActions.prepare(1L, testCase.chatId(), draft(testCase), true);
+                    outcome.pending = reused;
+                    outcome.pendingStatus = reused.getStatus();
+                    outcome.success = true;
+                }
                 case "CREATE_CONFIRM" -> confirm(testCase, outcome, 1);
                 case "CREATE_MODIFY_CONFIRM" -> {
                     PendingActionVO preview = prepare(testCase);
@@ -479,6 +501,12 @@ public class AgentEvalHarness {
         if (expect.pendingExists() != null) {
             boolean exists = jdbc.queryForObject("SELECT COUNT(*) FROM tb_agent_pending_action", Integer.class) > 0;
             if (exists != expect.pendingExists()) return "期望待确认记录存在=" + expect.pendingExists() + "，实际 " + exists;
+        }
+        if (expect.pendingCount() != null) {
+            int actual = jdbc.queryForObject("SELECT COUNT(*) FROM tb_agent_pending_action", Integer.class);
+            if (actual != expect.pendingCount()) {
+                return "期望待确认任务 " + expect.pendingCount() + " 条，实际 " + actual;
+            }
         }
         if (expect.playlistCreated() != null) {
             boolean created = jdbc.queryForObject("SELECT COUNT(*) FROM tb_playlist", Integer.class) > 0;

@@ -3,6 +3,7 @@ package cn.edu.seig.vibemusic.tool;
 import cn.edu.seig.vibemusic.model.agent.*;
 import cn.edu.seig.vibemusic.model.vo.PendingActionVO;
 import cn.edu.seig.vibemusic.service.agent.PendingActionService;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,10 @@ import java.util.List;
  *
  * <p>与只读工具一样，本类通过 {@link #withContext} 返回新实例来绑定上下文，
  * 保证 Spring 单例被并发请求复用时互不干扰。
+ *
+ * <p><b>{@code allowReuse}：</b>服务端会拒绝与近期歌单歌曲完全相同的预览。
+ * 唯一的放行信号是本工具的 {@code allowReuse} 参数 —— 它由模型根据<b>本轮</b>用户是否
+ * 明确要求复用旧歌来填写，服务端不自行猜测，也不提供「永久复用」开关。
  */
 @Slf4j
 @Component
@@ -53,8 +58,14 @@ public class PlaylistActionTools {
             + "本工具不会真正写入歌单，用户需要在界面上点击确认后才会创建。"
             + "参数：title 歌单名称；introduction 歌单简介，可为空；style 歌单风格，可为空；"
             + "songIds 歌曲 ID 列表，用英文逗号分隔，例如 \"101,102,103\"，"
-            + "只能使用搜索工具返回过的真实 songId，不要编造。")
-    public String preparePlaylistCreation(String title, String introduction, String style, String songIds) {
+            + "只能使用搜索工具返回过的真实 songId，不要编造；"
+            + "allowReuse 只有在本轮用户明确要求「沿用/复用上一份歌单的歌曲」「保留这些歌」"
+            + "或「重新生成原来那版」时才填 \"true\"，其余情况留空。"
+            + "如果返回 code 为 REJECTED 且提示歌曲与近期歌单完全相同，"
+            + "请换一批候选歌曲重新生成，不要原样重试。")
+    public String preparePlaylistCreation(String title, String introduction, String style, String songIds,
+                                          @P(value = "本轮用户是否明确要求复用旧歌；是则填 true，否则留空",
+                                                  required = false) String allowReuse) {
         String toolName = "preparePlaylistCreation";
         String toolCallId = context.nextToolCallId(toolName);
         context.emit(AgentEvent.toolStart(context.taskId(), toolCallId, toolName, "正在准备歌单预览…"));
@@ -71,7 +82,8 @@ public class PlaylistActionTools {
                     result = ToolResult.invalid("songIds 不能为空，请先用搜索工具获取真实歌曲 ID");
                 } else {
                     preview = pendingActions.prepare(context.userId(), context.chatId(),
-                            new PlaylistDraft(title, introduction, style, false, ids));
+                            new PlaylistDraft(title, introduction, style, false, ids),
+                            parseAllowReuse(allowReuse));
                     result = ToolResult.ok(AgentToolKinds.PLAYLIST_PREVIEW,
                             "已生成待确认的歌单预览：「" + preview.getTitle() + "」共 "
                                     + preview.getSongCount() + " 首歌曲。请在界面上点击确认后创建。",
@@ -97,6 +109,20 @@ public class PlaylistActionTools {
             context.emit(AgentEvent.confirm(context.taskId(), toolCallId, preview));
         }
         return MusicTools.json(result);
+    }
+
+    /**
+     * 解析模型给出的「本轮是否明确要求复用旧歌」信号。
+     *
+     * <p>只有明确的正向写法才算复用；留空、缺失或无法识别一律按「不复用」处理 ——
+     * 宁可多让模型换一批歌，也不要在用户没要求的情况下放行完全重复的歌单。
+     */
+    public static boolean parseAllowReuse(String raw) {
+        if (raw == null) return false;
+        return switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "true", "1", "yes", "y", "是", "复用" -> true;
+            default -> false;
+        };
     }
 
     /** 兼容模型可能给出的几种写法：CSV、JSON 数组、空格分隔。 */

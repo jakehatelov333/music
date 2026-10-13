@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.model.vo.AgentSongVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -55,6 +56,23 @@ public class AgentSongQueryService {
 
     public List<SongRef> random(int limit) {
         return toRefs(songs.findRandomSongs(clamp(limit)));
+    }
+
+    /**
+     * 歌单候选检索：语义与 {@link #searchByKeyword} 的宽泛关键词一致，
+     * 额外支持歌手/风格收窄，并在 <b>SQL 层</b>排除 {@code excludeIds} 中的歌曲。
+     *
+     * <p>排除必须发生在 {@code LIMIT} 之前（见 {@code AgentSongMapper#findSongsExcluding}），
+     * 否则「曲库里还有大量未使用歌曲」会被误判成「没有新歌」。
+     *
+     * @param excludeIds 需要排除的歌曲 ID（通常是本会话近期歌单已用过的）；为空表示不排除
+     */
+    public List<SongRef> searchExcluding(String keyword, String artistName, String style,
+                                         Collection<Long> excludeIds, int limit) {
+        List<Long> excluded = excludeIds == null ? List.of()
+                : excludeIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        return toRefs(songs.findSongsExcluding(blankToNull(keyword), blankToNull(artistName), blankToNull(style),
+                excluded, clamp(limit)));
     }
 
     public List<SongRef> byIds(List<Long> ids) {

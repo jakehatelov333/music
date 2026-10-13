@@ -425,7 +425,8 @@ class PlaylistBusinessTest {
         }
         @Bean MusicTools tools(PlaylistMapper playlists) {
             return new MusicTools(mock(cn.edu.seig.vibemusic.service.agent.AgentSongQueryService.class),
-                    mock(ArtistMapper.class), playlists);
+                    mock(ArtistMapper.class), playlists,
+                    mock(cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService.class));
         }
     }
 }

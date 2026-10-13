@@ -117,7 +117,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", null, "c1", "m");
         String raw = actionTools(sink, null, "c1", metrics).preparePlaylistCreation(
-                "夜间驾驶", "", "流行", "10,11");
+                "夜间驾驶", "", "流行", "10,11", null);
 
         ToolResult<?> result = parse(raw);
         assertFalse(result.ok());
@@ -133,7 +133,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", 1L, "c1", "m");
         String raw = actionTools(sink, 1L, "c1", metrics).preparePlaylistCreation(
-                "夜间驾驶", "适合开车听", "流行", "10, 11");
+                "夜间驾驶", "适合开车听", "流行", "10, 11", null);
 
         ToolResult<?> result = parse(raw);
         assertTrue(result.ok(), result.message());
@@ -159,7 +159,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     void fabricatedSongIdsAreRejected() throws Exception {
         RecordingSink sink = new RecordingSink();
         String raw = actionTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m"))
-                .preparePlaylistCreation("假歌单", "", "流行", "10,999999");
+                .preparePlaylistCreation("假歌单", "", "流行", "10,999999", null);
 
         ToolResult<?> result = parse(raw);
         assertFalse(result.ok());
@@ -216,7 +216,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", 1L, "c1", "m");
         AgentContext context = AgentContext.of(1L, "c1", "task-c1", sink).withMetrics(metrics);
-        MusicTools tools = new MusicTools(broken, artistMapper, playlists, context);
+        MusicTools tools = new MusicTools(broken, artistMapper, playlists, selectionHistory, context);
 
         ToolResult<?> result = parse(tools.searchSongs("夜色"));
         assertFalse(result.ok());

@@ -41,6 +41,10 @@ import java.util.UUID;
  * 抢占先提交，其他并发请求才能立刻看到 EXECUTING 并走幂等重放；
  * 真正的创建在 {@code PersonalPlaylistService#create} 自己的事务里完成，
  * 歌单与歌曲关联要么一起成功、要么一起回滚。
+ *
+ * <p><b>选曲去重：</b>{@link #prepare} 在落库前会与当前用户当前会话近期的歌单预览比对，
+ * 完全相同的歌曲集合会被拒绝（详见该方法说明）。这只影响「准备预览」这一步，
+ * 不改变「先预览、确认后才写入」的既有流程，也不影响确认、修改、取消、过期与幂等语义。
  */
 @Slf4j
 @Service
@@ -62,6 +66,7 @@ public class PendingActionService {
     private final AgentSongQueryService songs;
     private final PersonalPlaylistService personalPlaylists;
     private final ObjectMapper json;
+    private final PlaylistSelectionHistoryService selectionHistory;
 
     @Value("${ai.pending-action-ttl-minutes:30}")
     private int ttlMinutes;
@@ -71,12 +76,44 @@ public class PendingActionService {
      *
      * <p>{@code userId} 由调用方（Agent 工具）从 {@code AgentContext} 注入，
      * 该值最终来源是服务端 JWT 解析，模型无法指定。
+     *
+     * <p>等价于 {@code prepare(userId, chatId, rawDraft, false)}：默认不允许与近期歌单完全重复。
      */
     public PendingActionVO prepare(Long userId, String chatId, PlaylistDraft rawDraft) {
+        return prepare(userId, chatId, rawDraft, false);
+    }
+
+    /**
+     * 生成待确认任务，并在落库前做一次<b>重复校验</b>。
+     *
+     * <p><b>为什么需要这一层：</b>候选检索已经会在数据库层排除近期用过的歌，
+     * 但那只约束了「走候选检索工具」的路径。模型完全可能用普通搜索工具挑回同一批歌，
+     * 于是第二份预览与第一份一字不差。这里用「规范化后的歌曲集合是否完全相同」兜底。
+     *
+     * <p><b>不是永久封禁：</b>比较的是集合相等而不是有交集，因此只重一两首、或用户主动要求
+     * 保留某首歌，都不会被拦下。用户明确要求复用上一份歌单时，{@code allowReuse} 为 {@code true}
+     * 即跳过校验 —— 这个信号只能来自本轮工具调用的参数，也就是模型对本轮用户意图的理解结果，
+     * 服务端不会自己猜测。
+     *
+     * <p><b>重试有界：</b>被拒绝时返回的是结构化错误（{@code REJECTED}），模型据此换歌重试；
+     * 重试次数由现有的单次任务工具调用预算（{@code ai.max-tool-calls}）限制，不会死循环。
+     *
+     * @param allowReuse 本轮用户是否明确要求复用旧歌（沿用上一份歌单 / 保留指定歌曲 / 重新生成原方案）
+     */
+    public PendingActionVO prepare(Long userId, String chatId, PlaylistDraft rawDraft, boolean allowReuse) {
         if (userId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录后再创建歌单");
         PlaylistDraft draft = rawDraft.normalized();
         validateDraft(draft);
         List<SongRef> resolved = resolveSongs(draft.songIds());
+        if (!allowReuse && selectionHistory.isDuplicateOfRecent(userId, chatId, draft.songIds())) {
+            // 这条消息会直接进模型的工具结果，措辞必须"下一步该做什么"而不是"为什么被拒"。
+            // 实测教训：早期版本只说"请换一批候选歌曲"，模型会停下来反问用户，用户拿不到任何卡片。
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "这份歌单与近期生成的歌单歌曲完全相同，没有生成新的预览。"
+                            + "请立刻调用 searchPlaylistCandidates（沿用同样的歌手/风格条件）取回未使用过的歌曲，"
+                            + "再用它返回的 songId 重新调用本工具；不要停下来询问用户，也不要原样重试。"
+                            + "只有当用户本轮已经明确要求复用上一份歌单时，才改用 allowReuse=true 重新调用。");
+        }
 
         LocalDateTime now = LocalDateTime.now();
         AgentPendingAction action = new AgentPendingAction();
