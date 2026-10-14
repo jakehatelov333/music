@@ -63,6 +63,7 @@ export function useBanner(formData: any, tableRef: Ref) {
       label: "轮播图编号",
       prop: "bannerId",
       minWidth: 100,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {

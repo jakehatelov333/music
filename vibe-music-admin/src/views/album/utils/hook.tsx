@@ -59,6 +59,7 @@ export function useAlbum(tableRef: Ref) {
       label: "专辑编号",
       prop: "albumId",
       width: 100,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
@@ -99,12 +100,14 @@ export function useAlbum(tableRef: Ref) {
       label: "歌曲数量",
       prop: "songCount",
       width: 110,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
       label: "状态",
       prop: "status",
       width: 110,
+      className: "nowrap-col",
       cellRenderer: ({ row }) => (
         <el-tag type={row.status === "PUBLISHED" ? "success" : "info"}>
           {row.status === "PUBLISHED" ? "已发布" : "草稿"}

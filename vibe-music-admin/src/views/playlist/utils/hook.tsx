@@ -57,6 +57,7 @@ export function usePlaylist(tableRef: Ref) {
       label: "歌单编号",
       prop: "playlistId",
       width: 90,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
@@ -99,6 +100,7 @@ export function usePlaylist(tableRef: Ref) {
       label: "发布状态",
       prop: "status",
       width: 100,
+      className: "nowrap-col",
       cellRenderer: ({ row }) => (
         <el-tag type={row.status === "PUBLISHED" ? "success" : "info"}>
           {row.status === "PUBLISHED" ? "已发布" : "草稿"}
@@ -109,6 +111,7 @@ export function usePlaylist(tableRef: Ref) {
       label: "可见性",
       prop: "isPublic",
       width: 90,
+      className: "nowrap-col",
       cellRenderer: ({ row }) => (
         <el-tag type={row.isPublic ? "primary" : "warning"}>
           {row.isPublic ? "公开" : "私人"}
@@ -120,6 +123,7 @@ export function usePlaylist(tableRef: Ref) {
       prop: "songCount",
       width: 90,
       align: "center",
+      className: "nowrap-col",
       sortable: "custom"
     },
     {

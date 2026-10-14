@@ -80,6 +80,7 @@ export function useUser(tableRef: Ref) {
       label: "用户编号",
       prop: "userId",
       width: 90,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
@@ -115,6 +116,7 @@ export function useUser(tableRef: Ref) {
       label: "手机号码",
       prop: "phone",
       minWidth: 90,
+      className: "nowrap-col",
       formatter: ({ phone }) => {
         if (!phone) {
           return null;
@@ -131,6 +133,7 @@ export function useUser(tableRef: Ref) {
       label: "状态",
       prop: "userStatus",
       minWidth: 90,
+      className: "nowrap-col",
       cellRenderer: scope => (
         <el-switch
           v-model={scope.row.userStatus}

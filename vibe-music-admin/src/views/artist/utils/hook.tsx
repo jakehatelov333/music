@@ -93,6 +93,7 @@ export function useArtist(tableRef: Ref) {
       label: "类型",
       prop: "gender",
       width: 50,
+      className: "nowrap-col",
       cellRenderer: ({ row, props }) => (
         <el-tag
           size={props.size}
@@ -129,6 +130,7 @@ export function useArtist(tableRef: Ref) {
       label: "状态",
       prop: "status",
       width: 90,
+      className: "nowrap-col",
       cellRenderer: ({ row, props }) => (
         <el-tag
           size={props.size}
@@ -142,12 +144,16 @@ export function useArtist(tableRef: Ref) {
     {
       label: "国籍",
       prop: "area",
-      minWidth: 100
+      // 国籍是短文本：不换行 + 给足宽度，避免被挤成「中」「国」两行
+      minWidth: 110,
+      width: 110,
+      className: "nowrap-col"
     },
     {
       label: "简介",
       prop: "introduction",
-      width: 460,
+      // 简介收窄，把横向空间让给编号/国籍等短列（否则表格过宽时短列被压到最小宽度）
+      width: 260,
       formatter: ({ introduction }) => {
         if (!introduction) {
           return "";
@@ -155,7 +161,7 @@ export function useArtist(tableRef: Ref) {
         if (typeof introduction !== "string") {
           return "无效数据";
         }
-        const maxChars = 60; // 两行最多60个字符
+        const maxChars = 30; // 两行最多30个字符（列宽已收窄）
         if (introduction.length > maxChars) {
           return introduction.slice(0, maxChars) + "...";
         }

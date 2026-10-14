@@ -68,6 +68,7 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
       label: "歌曲编号",
       prop: "songId",
       width: 90,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
@@ -126,6 +127,7 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
       label: "歌词",
       prop: "lyricStatus",
       width: 96,
+      className: "nowrap-col",
       cellRenderer: ({ row }) => {
         const status = row.lyricStatus;
         const hasLyric =

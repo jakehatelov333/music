@@ -36,12 +36,14 @@ export function useFeedback(tableRef: Ref) {
       label: "反馈编号",
       prop: "feedbackId",
       minWidth: 100,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {
       label: "用户编号",
       prop: "userId",
       minWidth: 100,
+      className: "nowrap-col",
       sortable: "custom"
     },
     {

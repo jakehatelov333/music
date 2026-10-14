@@ -20,6 +20,12 @@
   margin-left: 2px !important;
 }
 
+/* 表头文字一律不换行：列被挤窄时「国籍」会被拆成「国」「籍」上下两行。
+   表头都是短标签，不换行 + 浏览器自动按最小内容宽撑开列，比换行好看得多。 */
+.el-table th.el-table__cell > .cell {
+  white-space: nowrap;
+}
+
 /* 表头排序图标：与标题保持同一行、紧贴标题右侧。
    Element Plus 表头 .cell 默认允许换行（white-space: normal），列宽偏窄时
    ▲▼ 会被折到标题下方、看起来像「竖排按钮」。这里改成不换行的 flex 行，
@@ -34,6 +40,12 @@
 .el-table th.el-table__cell.is-sortable > .cell > .caret-wrapper {
   flex: none;
   margin-left: 2px;
+}
+
+/* 短文本列（国籍、状态、类型…）：单元格内容同样不换行，避免列被挤窄时
+   「中国」被拆成「中」「国」两行。用法：在列配置里加 className: "nowrap-col" */
+.el-table .nowrap-col > .cell {
+  white-space: nowrap;
 }
 
 /* 自定义 popover 的类名 */
