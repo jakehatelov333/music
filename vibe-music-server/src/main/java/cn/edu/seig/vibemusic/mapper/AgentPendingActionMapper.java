@@ -150,6 +150,24 @@ public interface AgentPendingActionMapper {
     int cancelPendingByChat(@Param("userId") Long userId, @Param("chatId") String chatId,
                             @Param("now") LocalDateTime now);
 
+    /**
+     * 清空用户全部会话时，取消其名下所有仍待确认的任务。
+     *
+     * <p><b>为什么不复用 {@link #cancelPendingByChat} 逐个会话取消：</b>待确认任务表里可能存在
+     * chat_id 已经不在 {@code ai_chat_state} 中的历史任务（例如会话行被删但任务被保留）。
+     * 按 user 取消能一次覆盖全部，不依赖「先枚举出所有 chat_id」——枚举必然漏掉这些孤儿，
+     * 而它们恰恰是「用户看不到、却能点确认建歌单」的那一类。
+     *
+     * <p>只动 PENDING：SUCCEEDED 是「这个歌单由这次对话创建」的追溯凭据，EXECUTING 正在写库，
+     * 两者都不该被本次清除改写（与 {@link #cancelPendingByChat} 同一原则）。
+     */
+    @Update("""
+            UPDATE tb_agent_pending_action
+            SET status = 'CANCELLED', updated_at = #{now}
+            WHERE user_id = #{userId} AND status = 'PENDING'
+            """)
+    int cancelPendingByUser(@Param("userId") Long userId, @Param("now") LocalDateTime now);
+
     @Update("""
             UPDATE tb_agent_pending_action
             SET status = 'EXPIRED', updated_at = #{now}

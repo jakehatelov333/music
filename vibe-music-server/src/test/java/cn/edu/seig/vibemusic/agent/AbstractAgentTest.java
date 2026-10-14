@@ -247,7 +247,7 @@ public abstract class AbstractAgentTest {
     protected MusicTools readTools(RecordingSink sink, Long userId, String chatId, AgentMetrics metrics) {
         AgentContext context = AgentContext.of(userId, chatId, "task-" + chatId, sink)
                 .withMetrics(metrics);
-        return new MusicTools(songQuery, artistMapperBean(), playlists, selectionHistory, context);
+        return new MusicTools(songQuery, artistMapperBean(), playlists, selectionHistory, memoryPreferenceService, context);
     }
 
     protected PlaylistActionTools actionTools(RecordingSink sink, Long userId, String chatId, AgentMetrics metrics) {
@@ -388,8 +388,9 @@ public abstract class AbstractAgentTest {
         }
 
         @Bean MusicTools musicTools(AgentSongQueryService songQuery, ArtistMapper artists, PlaylistMapper playlists,
-                                    cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory) {
-            return new MusicTools(songQuery, artists, playlists, selectionHistory);
+                                    cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory,
+                                    cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService memoryPreferences) {
+            return new MusicTools(songQuery, artists, playlists, selectionHistory, memoryPreferences);
         }
 
         @Bean PlaylistActionTools playlistActionTools(PendingActionService pendingActions) {
@@ -398,8 +399,10 @@ public abstract class AbstractAgentTest {
 
         @Bean PendingActionService pendingActions(AgentPendingActionMapper actions, AgentSongQueryService songQuery,
                                                   PersonalPlaylistService personal, ObjectMapper json,
-                                                  cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory) {
-            PendingActionService service = new PendingActionService(actions, songQuery, personal, json, selectionHistory);
+                                                  cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory,
+                                                  cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService memoryPreferences) {
+            PendingActionService service = new PendingActionService(actions, songQuery, personal, json, selectionHistory,
+                    memoryPreferences);
             // @Value 字段在纯 Java 配置里不会自动注入，这里显式给一个较短的有效期便于测试。
             org.springframework.test.util.ReflectionTestUtils.setField(service, "ttlMinutes", 30);
             return service;

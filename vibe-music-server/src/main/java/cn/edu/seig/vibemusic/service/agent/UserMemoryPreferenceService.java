@@ -108,6 +108,62 @@ public class UserMemoryPreferenceService {
     }
 
     /**
+     * 结构化排除约束：检索与执行链路用来做<b>确定性过滤</b>的最小数据形态。
+     *
+     * <p><b>为什么只有这两个维度：</b>歌手与风格在写入时已被校验过
+     * （歌手是真实且启用的 {@code artist_id}，风格落在曲库派生集合内），
+     * 因此可以直接落到 SQL 的 {@code EXISTS} / token 精确比对上。
+     * 自由文本 {@code EXCLUDE_NOTE} 无法确定性判定，<b>刻意不在这里</b> ——
+     * 它只能作为提示词里的「模型辅助规则」，这是本方案明确的能力边界。
+     *
+     * <p>该对象由 {@link #exclusionConstraints(Long)} 生成，内部复用同一套
+     * {@link #merge} 合并逻辑（排除优先 / 冲突记录 / 自动画像只补充），
+     * 因此检索层看到的排除集合与 {@code overview} 展示的「最终生效偏好」永远一致。
+     */
+    public record ExclusionConstraints(Set<Long> excludedArtistIds, Set<String> excludedStyleNames) {
+
+        public static ExclusionConstraints none() {
+            return new ExclusionConstraints(Set.of(), Set.of());
+        }
+
+        public boolean isEmpty() {
+            return excludedArtistIds.isEmpty() && excludedStyleNames.isEmpty();
+        }
+    }
+
+    /**
+     * 取当前用户「最终生效偏好」里的结构化排除约束，供检索/执行链路做确定性过滤。
+     *
+     * <p><b>唯一合并入口：</b>内部走与 {@link #overview} 完全相同的 {@link #merge}，
+     * 不新写第二套「生效偏好」计算逻辑。
+     *
+     * <p>游客（{@code userId == null}）或关闭个性化时返回空约束 ——
+     * 这与页面文案「关闭后不再用于个性化」一致，且不影响「当前请求本身」：
+     * 用户这次明确说的条件属于当前请求约束，优先级高于长期偏好。
+     */
+    public ExclusionConstraints exclusionConstraints(Long userId) {
+        if (userId == null || !isPersonalizationEnabled(userId)) return ExclusionConstraints.none();
+        try {
+            List<UserMemoryPreference> preferences = memoryMapper.listByUser(userId);
+            if (preferences.isEmpty()) return ExclusionConstraints.none();
+            Merged merged = merge(userId, preferences);
+            Set<Long> artistIds = new HashSet<>();
+            for (EffectivePreferenceItemVO item : merged.effective.excludeArtists()) {
+                if (item.targetId() != null) artistIds.add(item.targetId());
+            }
+            Set<String> styleNames = new LinkedHashSet<>();
+            for (EffectivePreferenceItemVO item : merged.effective.excludeStyles()) {
+                if (item.value() != null && !item.value().isBlank()) styleNames.add(item.value().strip());
+            }
+            return new ExclusionConstraints(Set.copyOf(artistIds), Set.copyOf(styleNames));
+        } catch (RuntimeException e) {
+            // 与提示词注入同一条降级策略：偏好数据坏掉绝不能让检索整体失败。
+            log.warn("结构化排除约束计算失败，按空约束处理，类型={}", e.getClass().getSimpleName());
+            return ExclusionConstraints.none();
+        }
+    }
+
+    /**
      * 合并规则（优先级高 → 低）：当前请求约束（由基础提示词与本次对话承担）
      * &gt; 手动排除条件（硬约束）&gt; 手动喜欢项（优先参考）&gt; 自动画像补充。
      *

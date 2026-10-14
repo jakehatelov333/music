@@ -3,6 +3,7 @@ package cn.edu.seig.vibemusic.controller;
 
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.model.dto.*;
+import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IUserService;
@@ -184,7 +185,7 @@ public class UserController {
      * @return 结果
      */
     @DeleteMapping("/deleteAccount")
-    public Result deleteAccount(@RequestHeader("Authorization") String token) {
+    public Result<AccountDeletionResultVO> deleteAccount(@RequestHeader("Authorization") String token) {
         return userService.deleteAccount(token);
     }
 

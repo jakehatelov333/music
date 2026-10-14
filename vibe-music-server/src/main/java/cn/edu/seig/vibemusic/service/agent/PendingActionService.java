@@ -67,6 +67,7 @@ public class PendingActionService {
     private final PersonalPlaylistService personalPlaylists;
     private final ObjectMapper json;
     private final PlaylistSelectionHistoryService selectionHistory;
+    private final UserMemoryPreferenceService memoryPreferences;
 
     @Value("${ai.pending-action-ttl-minutes:30}")
     private int ttlMinutes;
@@ -105,6 +106,7 @@ public class PendingActionService {
         PlaylistDraft draft = rawDraft.normalized();
         validateDraft(draft);
         List<SongRef> resolved = resolveSongs(draft.songIds());
+        rejectExcludedSongs(userId, resolved);
         if (!allowReuse && selectionHistory.isDuplicateOfRecent(userId, chatId, draft.songIds())) {
             // 这条消息会直接进模型的工具结果，措辞必须"下一步该做什么"而不是"为什么被拒"。
             // 实测教训：早期版本只说"请换一批候选歌曲"，模型会停下来反问用户，用户拿不到任何卡片。
@@ -142,6 +144,7 @@ public class PendingActionService {
                 Boolean.TRUE.equals(input.getIsPublic()), input.getSongIds()).normalized();
         validateDraft(draft);
         List<SongRef> resolved = resolveSongs(draft.songIds());
+        rejectExcludedSongs(userId, resolved);
         int nextVersion = action.getVersion() + 1;
         int updated = actions.updateDraft(taskId, userId, write(draft),
                 write(preview(draft, resolved, nextVersion)), nextVersion, input.getVersion(), LocalDateTime.now());
@@ -301,6 +304,57 @@ public class PendingActionService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "部分歌曲已不存在，请重新选择");
         }
         return resolved;
+    }
+
+    /**
+     * 确定性排除校验：草稿里只要有一首歌命中用户长期偏好的排除规则（排除歌手 / 排除风格），
+     * 就拒绝生成预览。
+     *
+     * <p><b>为什么必须在服务端做：</b>「提示词里告诉模型不要推荐」不等于「候选查询真的过滤了」。
+     * 模型完全可能用普通搜索工具（那是有意不加排除的）挑回被排除的歌，再塞进本工具。
+     * 这里是「排除的歌曲不得出现在最终结果里」这条硬规则的最后一道闸。
+     *
+     * <p><b>判定依据是真实业务数据，不是文本猜测：</b>歌手用 {@link SongRef#artists()} 里的
+     * {@code artistId}（来自 {@code tb_song_artist} 的权威关系），风格用 {@link SongRef#style()}
+     * 的逗号多值 token 精确比对（不整串相等、不子串误命中）。
+     *
+     * <p><b>关闭个性化 / 游客：</b>{@link UserMemoryPreferenceService#exclusionConstraints(Long)}
+     * 返回空约束，本方法直接放行。
+     */
+    private void rejectExcludedSongs(Long userId, List<SongRef> resolved) {
+        UserMemoryPreferenceService.ExclusionConstraints exclusions =
+                memoryPreferences.exclusionConstraints(userId);
+        if (exclusions.isEmpty()) return;
+        List<String> hits = resolved.stream()
+                .filter(song -> isExcluded(song, exclusions))
+                .map(SongRef::songName)
+                .toList();
+        if (hits.isEmpty()) return;
+        // 措辞必须"下一步该做什么"：柔性措辞会让模型停下来反问用户，用户拿不到任何卡片。
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "这份歌单里有 " + hits.size() + " 首歌曲命中了你设置的排除条件（" + String.join("、", hits) + "），"
+                        + "没有生成预览。请立刻调用 searchPlaylistCandidates（沿用本次的歌手/风格条件）"
+                        + "重新挑选未被排除的歌曲，再用它返回的 songId 重新调用本工具；"
+                        + "不要停下来询问用户，也不要原样重试。");
+    }
+
+    /** 命中任一排除歌手（含合作曲的任一演唱者）或任一排除风格（逗号多值 token 精确匹配）即视为被排除。 */
+    private static boolean isExcluded(SongRef song, UserMemoryPreferenceService.ExclusionConstraints exclusions) {
+        if (song.artists() != null) {
+            for (var artist : song.artists()) {
+                if (artist.getArtistId() != null
+                        && exclusions.excludedArtistIds().contains(artist.getArtistId())) {
+                    return true;
+                }
+            }
+        }
+        String style = song.style();
+        if (style != null && !exclusions.excludedStyleNames().isEmpty()) {
+            for (String token : style.split("[,，]")) {
+                if (exclusions.excludedStyleNames().contains(token.strip())) return true;
+            }
+        }
+        return false;
     }
 
     private PlaylistPreview preview(PlaylistDraft draft, List<SongRef> resolved, int version) {

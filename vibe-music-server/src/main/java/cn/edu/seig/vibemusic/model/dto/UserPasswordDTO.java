@@ -1,6 +1,7 @@
 package cn.edu.seig.vibemusic.model.dto;
 
 import cn.edu.seig.vibemusic.constant.MessageConstant;
+import cn.edu.seig.vibemusic.constant.PasswordRules;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import lombok.Data;
@@ -16,26 +17,24 @@ public class UserPasswordDTO implements Serializable {
 
     /**
      * 旧密码
-     * 密码格式：8-18 位数字、字母、符号的任意两种组合
+     * 只校验非空：历史用户的旧密码可能不符合当前强度规则，不能因此挡住改密。
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
-    @Pattern(regexp = "^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\\W]{8,18}$", message = MessageConstant.PASSWORD + MessageConstant.FORMAT_ERROR)
     private String oldPassword;
 
     /**
      * 新密码
-     * 密码格式：8-18 位数字、字母、符号的任意两种组合
+     * 密码格式：8-18 位，必须同时包含字母和数字，不能包含空格
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
-    @Pattern(regexp = "^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\\W]{8,18}$", message = MessageConstant.PASSWORD + MessageConstant.FORMAT_ERROR)
+    @Pattern(regexp = PasswordRules.PATTERN, message = PasswordRules.MESSAGE)
     private String newPassword;
 
     /**
      * 确认密码
-     * 密码格式：8-18 位数字、字母、符号的任意两种组合
+     * 只校验非空：与新密码是否一致由 service 层校验。
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
-    @Pattern(regexp = "^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\\W]{8,18}$", message = MessageConstant.PASSWORD + MessageConstant.FORMAT_ERROR)
     private String repeatPassword;
 
 }

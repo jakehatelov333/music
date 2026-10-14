@@ -5,11 +5,14 @@ import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.enumeration.UserStatusEnum;
+import cn.edu.seig.vibemusic.mapper.AccountCleanupMapper;
+import cn.edu.seig.vibemusic.mapper.AccountCleanupTaskMapper;
 import cn.edu.seig.vibemusic.mapper.FeedbackMapper;
 import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.dto.*;
 import cn.edu.seig.vibemusic.model.entity.Feedback;
 import cn.edu.seig.vibemusic.model.entity.User;
+import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.PageResult;
@@ -25,6 +28,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheConfig;
@@ -32,9 +36,12 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.DigestUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,8 +56,13 @@ import java.util.concurrent.TimeUnit;
  * @since 2025-01-09
  */
 @Service
+@Slf4j
 @CacheConfig(cacheNames = "userCache")
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
+
+    /** 账号注销时清理的外部资源类型。 */
+    private static final String RESOURCE_REDIS_TOKEN = "REDIS_TOKEN";
+    private static final String RESOURCE_MINIO_AVATAR = "MINIO_AVATAR";
 
     @Autowired
     private UserMapper userMapper;
@@ -62,6 +74,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     private MinioService minioService;
     @Autowired
     private FeedbackMapper feedbackMapper;
+    @Autowired
+    private AccountCleanupMapper accountCleanupMapper;
+    @Autowired
+    private AccountCleanupTaskMapper accountCleanupTaskMapper;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     /**
      * 发送验证码
@@ -256,6 +274,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
         Long userId = TypeConversionUtil.toLong(userIdObj);
         User user = userMapper.selectById(userId);
+        if (user == null) {
+            return Result.error(MessageConstant.USER + MessageConstant.NOT_EXIST);
+        }
         if (!user.getPassword().equals(DigestUtils.md5DigestAsHex(userPasswordDTO.getOldPassword().getBytes()))) {
             return Result.error(MessageConstant.OLD_PASSWORD_ERROR);
         }
@@ -328,12 +349,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     /**
      * 注销账户
      *
+     * <p>顺序与边界：
+     * <ol>
+     *     <li>DB 事务：删反馈（RESTRICT，必须先删）→ 清理无外键表（会话/消息/任务指标）→ 删用户
+     *         （其余级联表由 FK ON DELETE CASCADE 处理）。任一步异常 → 整个事务回滚，不留部分删除。</li>
+     *     <li>DB 提交后清理外部资源：先 Redis token（安全关键），再 MinIO 头像（孤儿文件无害）。</li>
+     * </ol>
+     * 外部清理失败不回滚（DB 已提交且不可逆），而是落一条待重试记录，返回
+     * {@code cleanupPending=true}，绝不报成"注销失败"。
+     *
      * @param token 认证token
      * @return 结果
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
-    public Result deleteAccount(String token) {
+    public Result<AccountDeletionResultVO> deleteAccount(String token) {
         Map<String, Object> map = ThreadLocalUtil.get();
         Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
         Long userId = TypeConversionUtil.toLong(userIdObj);
@@ -341,27 +371,82 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 查询用户信息，获取头像 URL
         User user = userMapper.selectById(userId);
         if (user == null) {
-            return Result.error(MessageConstant.USER + MessageConstant.NOT_EXIST);
+            // 幂等：用户已不存在（重复注销，或上次注销后 token 未被成功作废）。视为已注销成功，
+            // 不报错、不二次误删、也不动 token。
+            return Result.success(MessageConstant.ACCOUNT_DELETED,
+                    new AccountDeletionResultVO(true, false, List.of()));
         }
-
-        // 删除头像
         String userAvatar = user.getUserAvatar();
+
+        // 1) DB 事务：反馈 + 无外键表 + 用户行，全部成功或全部回滚
+        try {
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+                // tb_feedback 外键为 ON DELETE RESTRICT，不先删会在删用户时 FK 报错
+                feedbackMapper.delete(new QueryWrapper<Feedback>().eq("user_id", userId));
+
+                // 无外键、不会随 tb_user 级联的表必须显式清理
+                List<String> chatIds = accountCleanupMapper.selectChatIdsByUserId(userId);
+                if (chatIds != null && !chatIds.isEmpty()) {
+                    accountCleanupMapper.deleteChatMessagesByChatIds(chatIds);
+                }
+                accountCleanupMapper.deleteChatStateByUserId(userId);
+                accountCleanupMapper.deleteTaskMetricsByUserId(userId);
+
+                // 收藏/歌单/待确认任务/画像/偏好/设置/评论由外键 ON DELETE CASCADE 处理。
+                // 返回 0 说明用户已被并发请求删除：同样视为注销成功，不报错。
+                userMapper.deleteById(userId);
+            });
+        } catch (RuntimeException e) {
+            log.error("账号注销事务失败，userId={}", userId, e);
+            return Result.error(MessageConstant.ACCOUNT_DELETE_FAILED);
+        }
+
+        // 2) DB 已提交，再清理外部资源。失败不回滚，落重试记录
+        List<String> pending = new ArrayList<>();
+        try {
+            // 先作废 token：token 留在 Redis 里等于注销后登录态仍然有效，安全关键
+            stringRedisTemplate.delete(token);
+        } catch (RuntimeException e) {
+            log.error("注销后作废 Redis token 失败，userId={}", userId, e);
+            pending.add(RESOURCE_REDIS_TOKEN);
+            recordCleanupTask(userId, RESOURCE_REDIS_TOKEN, token, e);
+        }
+
         if (userAvatar != null && !userAvatar.isEmpty()) {
-            minioService.deleteFile(userAvatar);
+            try {
+                minioService.deleteFile(userAvatar);
+            } catch (RuntimeException e) {
+                log.error("注销后删除 MinIO 头像失败，userId={}", userId, e);
+                pending.add(RESOURCE_MINIO_AVATAR);
+                recordCleanupTask(userId, RESOURCE_MINIO_AVATAR, userAvatar, e);
+            }
         }
 
-        // 删除用户提交的反馈：tb_feedback 外键为 ON DELETE RESTRICT，不先删会在删用户时 FK 报错
-        feedbackMapper.delete(new QueryWrapper<Feedback>().eq("user_id", userId));
-
-        // 删除用户
-        if (userMapper.deleteById(userId) == 0) {
-            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        if (pending.isEmpty()) {
+            return Result.success(MessageConstant.ACCOUNT_DELETED,
+                    new AccountDeletionResultVO(true, false, List.of()));
         }
+        return Result.success(MessageConstant.ACCOUNT_DELETED_PARTIAL,
+                new AccountDeletionResultVO(true, true, pending));
+    }
 
-        // 注销token：token 留在 Redis 里等于注销后登录态仍然有效，必须随账号一起作废
-        stringRedisTemplate.delete(token);
+    /**
+     * 落一条外部资源清理重试记录。记录本身失败只记日志，不能让已完成的注销对外报错。
+     */
+    private void recordCleanupTask(Long userId, String resourceType, String resourceRef, RuntimeException cause) {
+        try {
+            accountCleanupTaskMapper.upsertPending(userId, resourceType, resourceRef,
+                    truncate(cause.getMessage()), LocalDateTime.now());
+        } catch (RuntimeException e) {
+            log.error("记录账号注销清理重试任务失败，userId={}，type={}", userId, resourceType, e);
+        }
+    }
 
-        return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
+    private static String truncate(String message) {
+        if (message == null) {
+            return null;
+        }
+        return message.length() <= 500 ? message : message.substring(0, 500);
     }
 
     /**

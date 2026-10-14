@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.service.agent;
 
 import cn.edu.seig.vibemusic.mapper.AgentPendingActionMapper;
 import cn.edu.seig.vibemusic.mapper.AiMapper;
+import cn.edu.seig.vibemusic.model.vo.ClearConversationsResultVO;
 import cn.edu.seig.vibemusic.model.vo.ConversationVO;
 import cn.edu.seig.vibemusic.service.IAiService;
 import lombok.RequiredArgsConstructor;
@@ -9,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
@@ -41,6 +43,9 @@ public class ConversationService {
 
     /** 默认会话的命名前缀。与 phase7 之前完全一致，因此老用户的历史对话仍然可见、可续。 */
     public static final String USER_PREFIX = "user_chat_id_";
+
+    /** 批量抢占租约时使用的租约时长（秒）。清除是短事务，取与单会话清除一致的 30 秒即可。 */
+    private static final long CLEAR_LEASE_SECONDS = 30;
 
     private final AiMapper aiMapper;
     private final AgentPendingActionMapper actions;
@@ -142,5 +147,74 @@ public class ConversationService {
         clear(userId, chatId);
         int removed = aiMapper.deleteConversationRow(chatId, userId);
         log.info("删除会话 chatId={} 删除会话行={}", chatId, removed);
+    }
+
+    /**
+     * 清空当前用户的<b>全部</b>会话：消息、摘要、待确认任务、会话行一次收拾干净。
+     *
+     * <p><b>为什么不能用「列表 + 逐个 delete」实现：</b>列表接口有
+     * {@code ai.conversation.list-limit}（默认 20）上限，而且带 {@code EXISTS(chat_messages)}
+     * 过滤 —— 超过上限的会话、以及「建了行但一句话没说」的空会话都不会出现在列表里，
+     * 逐个删必然漏掉它们；更糟的是逐个删是多次独立事务，中途失败会留下「删了一半」的中间态。
+     * 这里改为按 {@code user_id} 一次性覆盖，并用批量租约把整个过程封成一个原子动作。
+     *
+     * <p><b>并发策略（顺序即理由）：</b>
+     * <ol>
+     *     <li><b>先数</b>该用户有多少会话行（{@code countConversationsByUser}），为抢占做基准；</li>
+     *     <li><b>再批量抢租约</b>：只抢占空闲（无令牌或租约已过期）的行。抢到的行数必须等于基准行数，
+     *         否则说明有会话正在生成 —— 此时把已抢到的租约释放回去并抛 409，<b>不改动任何数据</b>。
+     *         抢到租约后，清除期间并发的生成请求都会因为抢不到租约而失败，不会写进来；</li>
+     *     <li>取消该用户全部 PENDING 待确认任务；</li>
+     *     <li>删消息 → 清摘要 → 删会话行。顺序不能颠倒：消息与摘要都靠
+     *         {@code ai_chat_state.user_id} 定位，会话行先删掉它们就成了无法回收的孤儿；</li>
+     *     <li>删除会话行同时带走 {@code context_json} 与本次租约 —— 行没了，也就不会留下脏租约，
+     *         下一次 {@code resolve} 能干净地重建默认会话。</li>
+     * </ol>
+     *
+     * <p><b>事务：</b>整段清理包在一个事务里，任何一步失败都整体回滚，绝不会把「部分成功」
+     * 当成「全部成功」返回。冲突（409）走的是事务内的显式回滚：租约的批量抢占也一并撤销。
+     *
+     * <p><b>{@code tb_ai_task_metric} 不删：</b>它是每任务一行的运行指标（调用次数、耗时、
+     * token、成功与否），不含任何消息内容，属于运行观测而非会话内容。清空会话不该抹掉成本与
+     * 可用性统计；它的 {@code chat_id} 只是一个关联标识，会话行删除后这些指标仍可独立统计。
+     *
+     * @return 本次实际清除的各类计数；没有任何会话时返回全 0（幂等）
+     */
+    @Transactional
+    public ClearConversationsResultVO clearAll(Long userId) {
+        if (userId == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录后再清空会话");
+        }
+        int expected = aiMapper.countConversationsByUser(userId);
+        if (expected == 0) {
+            // 幂等：没有会话时不是错误，返回全 0 让前端可以放心地重复点击。
+            return new ClearConversationsResultVO(0, 0, 0, 0);
+        }
+        String token = UUID.randomUUID().toString();
+        int acquired = aiMapper.acquireAllConversations(userId, token, CLEAR_LEASE_SECONDS);
+        if (acquired != expected) {
+            // 有会话正被生成占用（或行数在数数与抢租约之间发生了变化）。
+            // 先把已经抢到的释放掉，保证「一个都没删」的承诺成立。
+            aiMapper.releaseAllConversations(userId, token);
+            log.info("清空全部会话被拒绝：存在正在生成的会话 userId={} 目标={} 抢到={}",
+                    userId, expected, acquired);
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "有对话正在生成回复，请等待生成结束后再清空全部会话");
+        }
+        try {
+            LocalDateTime now = LocalDateTime.now();
+            int cancelled = actions.cancelPendingByUser(userId, now);
+            int messages = aiMapper.deleteMessagesByUser(userId);
+            int summaries = aiMapper.clearSummariesByUser(userId);
+            int conversations = aiMapper.deleteConversationsByUser(userId);
+            log.info("清空全部会话完成 userId={} 会话={} 消息={} 摘要={} 取消待确认任务={}",
+                    userId, conversations, messages, summaries, cancelled);
+            return new ClearConversationsResultVO(conversations, messages, summaries, cancelled);
+        } catch (RuntimeException ex) {
+            // 清理中途失败：主动释放租约，避免留下「会话还在、却没人能说话」的脏租约。
+            // 事务（生产环境）会进一步把已执行的语句整体回滚。
+            aiMapper.releaseAllConversations(userId, token);
+            throw ex;
+        }
     }
 }

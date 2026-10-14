@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.service;
 
 import cn.edu.seig.vibemusic.model.dto.*;
 import cn.edu.seig.vibemusic.model.entity.User;
+import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.PageResult;
@@ -51,7 +52,7 @@ public interface IUserService extends IService<User> {
     Result logout(String token);
 
     // 注销账号
-    Result deleteAccount(String token);
+    Result<AccountDeletionResultVO> deleteAccount(String token);
 
     // 获取所有用户数量
     Result<Long> getAllUsersCount();

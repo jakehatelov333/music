@@ -79,9 +79,19 @@ export const updateUserAvatar = (formData: FormData) => {
   })
 }
 
+/** 注销账号结果。用于区分「注销失败」与「账号已删除但外部资源清理待后台重试」。 */
+export interface AccountDeletionResultVO {
+  /** 账号本身是否已删除 */
+  accountDeleted: boolean
+  /** 是否存在待后台重试的外部资源清理 */
+  cleanupPending: boolean
+  /** 待清理项，取值 "REDIS_TOKEN" / "MINIO_AVATAR" */
+  pendingItems: string[]
+}
+
 /** 注销账号 */
 export const deleteUser = () => {
-  return http<Result>('delete', '/user/deleteAccount')
+  return http<Result<AccountDeletionResultVO>>('delete', '/user/deleteAccount')
 }
 
 /** 获取轮播图 */

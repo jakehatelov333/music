@@ -9,6 +9,7 @@ import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Playlist;
 import cn.edu.seig.vibemusic.service.agent.AgentSongQueryService;
 import cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService;
+import cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -37,8 +38,11 @@ import java.util.function.Supplier;
  * 保证同一个 Spring 单例 bean 被并发请求复用时不会串上下文。
  *
  * <p><b>两类搜索语义不同：</b>普通搜索（{@code searchSongs} / {@code searchSongsByArtist} /
- * {@code getSongsByStyle}）面向「用户想找歌」，不受任何历史影响；
- * {@code searchPlaylistCandidates} 面向「为新建歌单挑歌」，会排除本会话近期歌单已用过的歌曲。
+ * {@code getSongsByStyle}）面向「用户想找歌」，是<b>用户当前明确发起的请求</b>，
+ * 不受任何长期偏好或历史影响 —— 用户这次就是要找某位被排除的歌手/风格，也必须搜得到
+ * （「当前请求优先于长期偏好」）。{@code searchPlaylistCandidates} 与 {@code getRandomSongs}
+ * 面向「服务端替用户挑歌」，才会应用<b>确定性排除</b>：本会话近期歌单已用过的歌曲
+ * （候选检索）与用户长期偏好里的排除歌手/排除风格（两者都应用）。
  * 两者不能互相替代，也不要给普通搜索加上排除逻辑。
  */
 @Slf4j
@@ -49,28 +53,37 @@ public class MusicTools {
     private final ArtistMapper artistMapper;
     private final PlaylistMapper playlistMapper;
     private final PlaylistSelectionHistoryService selectionHistory;
+    private final UserMemoryPreferenceService memoryPreferences;
     private final AgentContext context;
 
     @Autowired
     public MusicTools(AgentSongQueryService songQuery, ArtistMapper artistMapper, PlaylistMapper playlistMapper,
-                      PlaylistSelectionHistoryService selectionHistory) {
-        this(songQuery, artistMapper, playlistMapper, selectionHistory, AgentContext.none());
+                      PlaylistSelectionHistoryService selectionHistory,
+                      UserMemoryPreferenceService memoryPreferences) {
+        this(songQuery, artistMapper, playlistMapper, selectionHistory, memoryPreferences, AgentContext.none());
     }
 
     public MusicTools(AgentSongQueryService songQuery, ArtistMapper artistMapper, PlaylistMapper playlistMapper,
-                      PlaylistSelectionHistoryService selectionHistory, AgentContext context) {
+                      PlaylistSelectionHistoryService selectionHistory,
+                      UserMemoryPreferenceService memoryPreferences, AgentContext context) {
         this.songQuery = songQuery;
         this.artistMapper = artistMapper;
         this.playlistMapper = playlistMapper;
         this.selectionHistory = selectionHistory;
+        this.memoryPreferences = memoryPreferences;
         this.context = context == null ? AgentContext.none() : context;
     }
 
     /** 绑定本次运行的可信上下文，返回新实例；单例 bean 本身始终是无上下文的。 */
     public MusicTools withContext(AgentContext value) {
-        return new MusicTools(songQuery, artistMapper, playlistMapper, selectionHistory, value);
+        return new MusicTools(songQuery, artistMapper, playlistMapper, selectionHistory, memoryPreferences, value);
     }
 
+    /**
+     * 普通关键词搜索。<b>刻意不应用任何排除规则</b>（既不排除近期歌单用过的歌，也不排除用户偏好里的排除项）：
+     * 这是「用户当前明确发起的请求」，优先级高于长期偏好与历史。用户这次主动搜被排除的歌手/风格，
+     * 也必须能搜到 —— 排除规则只作用于「服务端替用户挑歌」的候选检索与随机推荐。
+     */
     @Tool("搜索歌曲。支持按歌名、歌手名、专辑名、风格的模糊关键词查找，"
             + "返回带 songId、歌手、专辑、封面和播放地址的结构化歌曲列表。"
             + "当用户想找歌、想按条件挑歌、或需要拿到歌曲 ID 以便后续创建歌单时使用。"
@@ -86,6 +99,7 @@ public class MusicTools {
         });
     }
 
+    /** 按歌手搜索。<b>不应用排除规则</b>：用户当前明确要听这位歌手时，长期偏好里的排除项不生效。 */
     @Tool("按歌手搜索该歌手演唱的歌曲（包含与其他歌手合作演唱的歌曲），"
             + "返回结构化歌曲列表（含 songId 与播放地址）。"
             + "当用户指定了歌手、想听某位歌手的歌时使用。参数 artistName 传单个歌手名即可，例如「银临」。"
@@ -102,6 +116,7 @@ public class MusicTools {
         });
     }
 
+    /** 按风格查找。<b>不应用排除规则</b>：用户当前明确点某风格时，长期偏好里的排除项不生效。 */
     @Tool("按音乐风格查找歌曲，返回结构化歌曲列表。参数 styleName 为风格名，例如「流行」「摇滚」「民谣」。")
     public String getSongsByStyle(String styleName) {
         return invoke("getSongsByStyle", "正在按风格查找歌曲…", () -> {
@@ -116,18 +131,23 @@ public class MusicTools {
     }
 
     /**
-     * 歌单候选检索：与普通搜索最大的区别是<b>排除本会话近期歌单已经用过的歌曲</b>。
+     * 歌单候选检索：与普通搜索最大的区别是<b>排除本会话近期歌单已经用过的歌曲</b>，
+     * 以及<b>用户长期偏好里的排除歌手/排除风格</b>。
      *
-     * <p>它是「连续创建同类歌单」不再重复选曲的关键一环：排除条件由服务端从
-     * {@link PlaylistSelectionHistoryService} 取到（用户 + 会话双重隔离），
-     * 并交给 SQL 的 {@code NOT IN} 执行，因此不会因为原有的 {@code LIMIT} 而丢歌。
+     * <p>它是「连续创建同类歌单」不再重复选曲的关键一环：历史排除条件由服务端从
+     * {@link PlaylistSelectionHistoryService} 取到（用户 + 会话双重隔离）；
+     * 偏好排除由 {@link UserMemoryPreferenceService#exclusionConstraints(Long)} 取到
+     * （内部复用同一套合并逻辑）。两者都交给 SQL 在 {@code LIMIT} 之前执行，
+     * 因此不会因为原有的 {@code LIMIT} 而丢歌，也不会让「提示词里说了别推荐」停留在口头。
      *
      * <p>普通搜索工具（{@link #searchSongs}、{@link #searchSongsByArtist}、
      * {@link #getSongsByStyle}）刻意<b>不</b>做任何排除：用户只是想听某位歌手的歌时，
-     * 不应该因为以前建过歌单就搜不到。
+     * 不应该因为以前建过歌单、或曾经排除过该歌手就搜不到 ——
+     * 「用户当前明确发起的请求」优先于「长期偏好」。
      */
     @Tool("为创建歌单检索候选歌曲。与普通搜索的区别：会排除当前用户在当前会话近期歌单预览中"
-            + "已经用过的歌曲，所以「再建一个同类歌单」时不会重复上一份歌单的歌曲。"
+            + "已经用过的歌曲，也会排除用户长期偏好里明确排除的歌手与风格，"
+            + "所以「再建一个同类歌单」时不会重复上一份歌单、也不会推荐用户不想听的歌。"
             + "artistName、keyword、style 至少填一个，不用的留空字符串；limit 可留空，默认 10，最大 20。"
             + "返回的 songId 都是数据库里真实存在的歌曲，可直接用于 preparePlaylistCreation。"
             + "如果返回数量少于期望，说明近期可用的新歌不足，应如实告诉用户实际能提供多少首，不要编造歌曲。")
@@ -146,17 +166,24 @@ public class MusicTools {
             SongSearch criteria = new SongSearch(word, artist, styleName);
             // 历史严格按 (userId, chatId) 隔离；游客或缺少会话时得到空集合，等价于不过滤。
             Set<Long> used = selectionHistory.recentSongIds(context.userId(), context.chatId());
-            List<SongRef> fresh = songQuery.searchExcluding(word, artist, styleName, used, parseLimit(limit));
+            // 长期偏好里的结构化排除（游客 / 关闭个性化 → 空约束）。
+            UserMemoryPreferenceService.ExclusionConstraints exclusions =
+                    memoryPreferences.exclusionConstraints(context.userId());
+            List<SongRef> fresh = songQuery.searchExcluding(word, artist, styleName, used, exclusions,
+                    parseLimit(limit));
             if (!fresh.isEmpty()) {
                 return ToolResult.ok(AgentToolKinds.SONG_LIST,
-                        "找到 " + fresh.size() + " 首近期歌单未使用过的" + describeScope(artist, word, styleName) + "歌曲",
+                        "找到 " + fresh.size() + " 首近期歌单未使用过、且未命中排除条件的"
+                                + describeScope(artist, word, styleName) + "歌曲",
                         fresh, fresh.size()).withSearch(criteria);
             }
-            // 没有新候选：先区分「曲库里本来就没有」与「符合条件但都用过了」，两种情况给模型的提示不同。
-            boolean anyExists = !songQuery.searchExcluding(word, artist, styleName, List.of(), 1).isEmpty();
+            // 没有新候选：先区分「曲库里本来就没有（含被偏好排除）」与「符合条件但都用过了」。
+            boolean anyExists = !songQuery.searchExcluding(word, artist, styleName, List.of(), exclusions, 1).isEmpty();
             if (!anyExists) {
                 return ToolResult.empty(AgentToolKinds.SONG_LIST,
-                        "未找到" + describeScope(artist, word, styleName) + "的歌曲").withSearch(criteria);
+                        "未找到" + describeScope(artist, word, styleName) + "的可推荐歌曲（可能曲库中没有，"
+                                + "或已被你设置的排除条件过滤掉）。不要改用其它工具绕过排除条件去推荐这些歌曲。")
+                        .withSearch(criteria);
             }
             return ToolResult.empty(AgentToolKinds.SONG_LIST,
                     describeScope(artist, word, styleName) + "的歌曲在近期歌单里已经全部用过了，没有可用的新歌。"
@@ -166,10 +193,17 @@ public class MusicTools {
         });
     }
 
-    @Tool("随机获取推荐歌曲，用于音乐发现。用户说「随便来点歌」「推荐一些歌」且没有明确条件时使用。")
+    /**
+     * 随机推荐：这是「无明确条件」的推荐路径，最容易把用户已排除的歌手/风格又推回来，
+     * 因此必须应用与候选检索相同的结构化排除约束（SQL 层，{@code LIMIT} 之前）。
+     */
+    @Tool("随机获取推荐歌曲，用于音乐发现。用户说「随便来点歌」「推荐一些歌」且没有明确条件时使用。"
+            + "会自动避开用户长期偏好里排除的歌手与风格。")
     public String getRandomSongs() {
         return invoke("getRandomSongs", "正在挑选歌曲…", () -> {
-            List<SongRef> songs = songQuery.random(10);
+            UserMemoryPreferenceService.ExclusionConstraints exclusions =
+                    memoryPreferences.exclusionConstraints(context.userId());
+            List<SongRef> songs = songQuery.random(10, exclusions);
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "曲库中暂无歌曲数据")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST, "为你随机挑选了 " + songs.size() + " 首歌", songs, songs.size());

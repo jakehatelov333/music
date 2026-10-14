@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.controller;
 
+import cn.edu.seig.vibemusic.model.vo.ClearConversationsResultVO;
 import cn.edu.seig.vibemusic.model.vo.ConversationVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
@@ -54,5 +55,21 @@ public class ConversationController {
     public Result<String> delete(@PathVariable String chatId) {
         conversations.delete(PlaylistAccessService.requireUserId(), chatId);
         return Result.success("会话已删除");
+    }
+
+    /**
+     * 清空当前用户的<b>全部</b>会话。
+     *
+     * <p><b>为什么没有 userId 参数：</b>清除范围只能来自服务端认证上下文。任何客户端传入的
+     * 用户标识都会被无视 —— 接受它就等于给「清空别人的会话」留了一个入口。
+     * 游客（无认证）一律 401。
+     *
+     * <p>存在正在生成的会话时返回 409，且不删除任何数据（详见
+     * {@link ConversationService#clearAll}）；没有会话时返回 200 与全 0 计数，保证幂等。
+     */
+    @DeleteMapping
+    public Result<ClearConversationsResultVO> clearAll() {
+        ClearConversationsResultVO result = conversations.clearAll(PlaylistAccessService.requireUserId());
+        return Result.success("已清空全部会话", result);
     }
 }

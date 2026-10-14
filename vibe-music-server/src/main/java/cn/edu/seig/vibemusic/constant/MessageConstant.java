@@ -50,6 +50,10 @@ public class MessageConstant {
     public static final String NEW_PASSWORD_ERROR = "新密码不能与原密码相同";
     public static final String PASSWORD_NOT_MATCH = "两次填写的新密码不一样";
 
+    public static final String ACCOUNT_DELETED = "账号已注销";
+    public static final String ACCOUNT_DELETED_PARTIAL = "账号已注销；部分外部数据清理将在后台重试";
+    public static final String ACCOUNT_DELETE_FAILED = "账号注销失败，请稍后重试";
+
     public static final String EMAIL_SEND_SUCCESS = "邮件发送成功";
     public static final String EMAIL_SEND_FAILED = "邮件发送失败";
 

@@ -4,6 +4,7 @@ import { Message, Lock, Key } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { sendEmailCode, resetPassword } from '@/api/system'
+import { PASSWORD_PATTERN, PASSWORD_RULE_MESSAGE } from '@/utils/password'
 
 const emit = defineEmits(['success', 'switch-tab'])
 
@@ -36,8 +37,8 @@ const resetRules = reactive<FormRules>({
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
     {
-      pattern: /^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\W]{8,18}$/,
-      message: '密码格式：8-18位数字、字母、符号的任意两种组合',
+      pattern: PASSWORD_PATTERN,
+      message: PASSWORD_RULE_MESSAGE,
       trigger: 'blur',
     },
   ],

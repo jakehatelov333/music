@@ -84,6 +84,33 @@ export const deleteConversation = (chatId: string, signal?: AbortSignal) =>
     timeout: 20000,
   })
 
+/** 清除全部会话返回的统计结果。字段与后端 ClearConversationsResultVO 对齐。 */
+export interface ClearConversationsResultVO {
+  /** 清除的会话数 */
+  conversationCount: number
+  /** 清除的消息数 */
+  messageCount: number
+  /** 清除的滚动摘要数 */
+  summaryCount: number
+  /** 被连带取消的进行中任务数 */
+  cancelledTaskCount: number
+}
+
+/**
+ * 一次性清除当前登录用户的全部 AI 会话与消息。
+ *
+ * 身份由服务端认证上下文（Cookie / Authorization）决定，前端不传 userId。
+ * 成功返回 `Result<ClearConversationsResultVO>`（code === 0）；
+ * 若仍有会话正在生成，服务端返回 409（响应拦截器会提示后端文案，调用方不要重复弹窗）。
+ */
+export const clearAllConversations = (signal?: AbortSignal) =>
+  http<Result<ClearConversationsResultVO>>('delete', '/ai/conversations', {
+    signal,
+    withCredentials: true,
+    baseURL: API_BASE,
+    timeout: 60000,
+  })
+
 export interface SongSearch {
   keyword?: string | null
   artistName?: string | null

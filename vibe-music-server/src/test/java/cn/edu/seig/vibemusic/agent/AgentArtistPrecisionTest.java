@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.agent;
 
 import cn.edu.seig.vibemusic.model.agent.SongRef;
 import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
+import cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService.ExclusionConstraints;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -65,7 +66,8 @@ class AgentArtistPrecisionTest extends AbstractAgentTest {
         assertTrue(songQuery.searchByArtistName("不存在的歌手", 20).isEmpty());
         // 「给了歌手名但解析不到」必须是空结果，绝不能退化成「不加条件」
         assertEquals(0, songQuery.page(null, "不存在的歌手", null, 1, 5).total());
-        assertTrue(songQuery.searchExcluding(null, "不存在的歌手", null, List.of(), 10).isEmpty());
+        assertTrue(songQuery.searchExcluding(null, "不存在的歌手", null, List.of(), ExclusionConstraints.none(), 10)
+                .isEmpty());
     }
 
     @Test
@@ -85,9 +87,11 @@ class AgentArtistPrecisionTest extends AbstractAgentTest {
     void playlistCandidatesRespectArtistOwnershipAndExclusion() {
         insertCooperationSong();
 
-        assertEquals(3, songQuery.searchExcluding(null, "测试歌手B", null, List.of(), 10).size());
+        assertEquals(3, songQuery.searchExcluding(null, "测试歌手B", null, List.of(),
+                ExclusionConstraints.none(), 10).size());
         // 排除后为空，说明排除与歌手条件在同一条 SQL 里共同生效（没有退化成「忽略歌手条件」）
-        assertTrue(songQuery.searchExcluding(null, "测试歌手B", null, List.of(13L, 14L, 20L), 10).isEmpty());
+        assertTrue(songQuery.searchExcluding(null, "测试歌手B", null, List.of(13L, 14L, 20L),
+                ExclusionConstraints.none(), 10).isEmpty());
     }
 
     @Test

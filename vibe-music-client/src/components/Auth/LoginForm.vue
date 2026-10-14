@@ -23,12 +23,9 @@ const loginRules = reactive<FormRules>({
     { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' },
   ],
   password: [
+    // 登录只校验必填：老用户密码可能不满足最新的强度规则，
+    // 在这里套用密码规则会把合法老用户挡在门外，强度判断交给服务端。
     { required: true, message: '请输入密码', trigger: 'blur' },
-    {
-      pattern: /^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\W]{8,18}$/,
-      message: '密码格式：8-18位数字、字母、符号的任意两种组合',
-      trigger: 'blur',
-    },
   ],
 })
 

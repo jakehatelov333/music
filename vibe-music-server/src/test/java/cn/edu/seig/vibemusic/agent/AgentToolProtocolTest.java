@@ -216,7 +216,8 @@ class AgentToolProtocolTest extends AbstractAgentTest {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", 1L, "c1", "m");
         AgentContext context = AgentContext.of(1L, "c1", "task-c1", sink).withMetrics(metrics);
-        MusicTools tools = new MusicTools(broken, artistMapper, playlists, selectionHistory, context);
+        MusicTools tools = new MusicTools(broken, artistMapper, playlists, selectionHistory,
+                memoryPreferenceService, context);
 
         ToolResult<?> result = parse(tools.searchSongs("夜色"));
         assertFalse(result.ok());

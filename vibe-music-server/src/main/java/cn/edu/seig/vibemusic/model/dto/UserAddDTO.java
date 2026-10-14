@@ -1,6 +1,7 @@
 package cn.edu.seig.vibemusic.model.dto;
 
 import cn.edu.seig.vibemusic.constant.MessageConstant;
+import cn.edu.seig.vibemusic.constant.PasswordRules;
 import cn.edu.seig.vibemusic.enumeration.UserStatusEnum;
 import com.baomidou.mybatisplus.annotation.TableField;
 import jakarta.validation.constraints.Email;
@@ -27,10 +28,10 @@ public class UserAddDTO implements Serializable {
 
     /**
      * 用户密码
-     * 密码格式：8-18 位数字、字母、符号的任意两种组合
+     * 管理员新建用户即「设置新密码」，强度规则与 PasswordRules 一致。
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
-    @Pattern(regexp = "^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\\W]{8,18}$", message = MessageConstant.PASSWORD + MessageConstant.FORMAT_ERROR)
+    @Pattern(regexp = PasswordRules.PATTERN, message = PasswordRules.MESSAGE)
     private String password;
 
     /**

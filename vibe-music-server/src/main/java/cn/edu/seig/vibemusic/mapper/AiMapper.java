@@ -162,4 +162,98 @@ public interface AiMapper extends BaseMapper<ChatMessage> {
             WHERE chat_id = #{chatId}
             """)
     int clearSummary(@Param("chatId") String chatId);
+
+    // ------------------------------------------------------------------ 批量清除（全部会话）
+
+    /**
+     * 该用户名下所有会话行的数量（含空会话与默认会话）。
+     *
+     * <p><b>为什么按 {@code user_id} 而不是复用 {@link #listConversations}：</b>列表查询带
+     * {@code EXISTS(chat_messages)} 过滤，会漏掉「建了行但一句话没说」的空会话。批量清除必须
+     * 覆盖这些看不见的行，否则它们会永远留在库里。过滤走 {@code idx_ai_chat_state_user_active}。
+     */
+    @Select("SELECT COUNT(*) FROM ai_chat_state WHERE user_id = #{userId}")
+    int countConversationsByUser(@Param("userId") Long userId);
+
+    /**
+     * 一次性抢占该用户全部空闲会话的租约。
+     *
+     * <p><b>为什么要批量抢而不是逐个抢：</b>逐个抢会在「第 3 个抢不到」时留下前 2 个已被本次
+     * 抢占的中间态。批量抢占让「有没有人正在生成」变成一次比较：返回的行数等于目标行数才说明
+     * 全部到手，否则说明有活动租约，调用方据此整体放弃（并把已抢到的释放掉）。
+     *
+     * <p>条件与单会话 {@link #acquireConversation} 完全一致：只有空闲（无令牌）或租约已过期的行
+     * 才可被抢占。因此清除期间并发的生成请求会因为抢不到租约而失败，不会写进来。
+     *
+     * @return 实际抢占到的行数
+     */
+    @Update("""
+            UPDATE ai_chat_state
+            SET active_run_token = #{runToken},
+                lease_expires_at = TIMESTAMPADD(SECOND, #{leaseSeconds}, CURRENT_TIMESTAMP(6))
+            WHERE user_id = #{userId}
+              AND (active_run_token IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP(6))
+            """)
+    int acquireAllConversations(@Param("userId") Long userId, @Param("runToken") String runToken,
+                                @Param("leaseSeconds") long leaseSeconds);
+
+    /**
+     * 释放本次批量抢占的租约（补偿动作）。
+     *
+     * <p><b>为什么必须带 token：</b>只有本次抢占写入的令牌才该被清掉。若不带 token，
+     * 释放会误伤「抢租约之后、释放之前」由别人成功抢占的会话，把正在进行的生成解锁。
+     *
+     * <p>注意：抢占前租约已过期的行，释放后令牌变为 NULL 而不是恢复成那个已死的旧令牌 ——
+     * 过期令牌没有任何所有者语义，清成 NULL 是更干净的状态，不构成数据损失。
+     */
+    @Update("""
+            UPDATE ai_chat_state SET active_run_token = NULL, lease_expires_at = NULL
+            WHERE user_id = #{userId} AND active_run_token = #{runToken}
+            """)
+    int releaseAllConversations(@Param("userId") Long userId, @Param("runToken") String runToken);
+
+    /**
+     * 删除该用户全部会话的消息。
+     *
+     * <p>{@code chat_messages} 没有 user_id 列，只能经由 {@code ai_chat_state} 的归属推导出
+     * 目标 chat_id 集合；子查询查的是另一张表，MySQL 与 H2 都允许这种 DELETE。单条语句即一个
+     * 原子操作，不会出现「删了一半消息」。
+     *
+     * <p><b>必须在删除会话行之前执行：</b>子查询依赖 {@code ai_chat_state.user_id}，
+     * 会话行一旦先删掉，这里就再也定位不到这些消息，它们会变成永远无法回收的孤儿。
+     *
+     * @return 实际删除的消息行数
+     */
+    @Delete("""
+            DELETE FROM chat_messages
+            WHERE chat_id IN (SELECT chat_id FROM ai_chat_state WHERE user_id = #{userId})
+            """)
+    int deleteMessagesByUser(@Param("userId") Long userId);
+
+    /**
+     * 清空该用户全部会话的滚动摘要。
+     *
+     * <p>摘要是对话内容的压缩产物，属于会话内容。这里先显式重置再删会话行，而不是直接依赖
+     * 「删行连带删摘要」：一是让 {@code summaryCount} 有准确的语义（被重置的行数），
+     * 二是即便将来改成「清空内容但保留会话行」，这一步也已经是正确的。
+     *
+     * @return 实际被重置（原本摘要非空）的行数
+     */
+    @Update("""
+            UPDATE ai_chat_state
+            SET summary_text = NULL, summary_upto_id = 0, summary_updated_at = NULL
+            WHERE user_id = #{userId} AND summary_text IS NOT NULL
+            """)
+    int clearSummariesByUser(@Param("userId") Long userId);
+
+    /**
+     * 删除该用户全部会话行（最后一步）。
+     *
+     * <p>放在最后：它会连带带走 {@code context_json}（模型上下文）与本次抢下的租约 ——
+     * 行没了，脏租约也就不存在，下一次 {@code resolve} 能干净地重建默认会话。
+     *
+     * @return 实际删除的会话行数
+     */
+    @Delete("DELETE FROM ai_chat_state WHERE user_id = #{userId}")
+    int deleteConversationsByUser(@Param("userId") Long userId);
 }

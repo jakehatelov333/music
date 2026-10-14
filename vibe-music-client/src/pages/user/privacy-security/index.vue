@@ -6,8 +6,9 @@ import { useRouter } from 'vue-router'
 import { UserStore } from '@/stores/modules/user'
 import AuthTabs from '@/components/Auth/AuthTabs.vue'
 import { changePassword, logout, deleteUser } from '@/api/system'
-import { listConversations, deleteConversation, type ConversationVO } from '@/api/ai'
+import { clearAllConversations } from '@/api/ai'
 import { maskEmail, maskPhone } from '@/utils/mask'
+import { PASSWORD_PATTERN, PASSWORD_RULE_MESSAGE } from '@/utils/password'
 
 defineOptions({ name: 'UserPrivacySecurity' })
 
@@ -17,8 +18,6 @@ const userStore = UserStore()
 const authVisible = ref(false)
 
 /* ---------------- 账号安全：修改密码 ---------------- */
-
-const PASSWORD_PATTERN = /^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\W]{8,18}$/
 
 const pwdFormRef = ref<FormInstance>()
 const pwdLoading = ref(false)
@@ -34,7 +33,7 @@ const pwdRules = reactive<FormRules>({
     { required: true, message: '请输入新密码', trigger: 'blur' },
     {
       pattern: PASSWORD_PATTERN,
-      message: '密码为 8-18 位，且必须同时包含字母和数字',
+      message: PASSWORD_RULE_MESSAGE,
       trigger: 'blur',
     },
   ],
@@ -120,7 +119,7 @@ const clearingChats = ref(false)
 const handleClearAllChats = async () => {
   try {
     await ElMessageBox.confirm(
-      '将删除你的全部 AI 会话及其消息记录，删除后不可恢复。是否继续？',
+      '将清除你的全部会话与消息记录，且不可恢复。是否继续？',
       '清除 AI 对话记录',
       { confirmButtonText: '确认清除', cancelButtonText: '取消', type: 'warning' }
     )
@@ -130,26 +129,24 @@ const handleClearAllChats = async () => {
 
   clearingChats.value = true
   try {
-    const listRes = await listConversations()
-    const conversations: ConversationVO[] = Array.isArray(listRes?.data) ? listRes.data : []
-    if (conversations.length === 0) {
-      ElMessage.info('没有可清除的 AI 对话记录')
-      return
-    }
-    let failed = 0
-    for (const conversation of conversations) {
-      try {
-        await deleteConversation(conversation.chatId)
-      } catch {
-        failed++
+    // 只调一次专用接口，由后端原子清除全部会话与消息，不再逐条循环删除。
+    const response = await clearAllConversations()
+    if (response.code === 0) {
+      const conversationCount = response.data?.conversationCount ?? 0
+      const messageCount = response.data?.messageCount ?? 0
+      if (conversationCount === 0 && messageCount === 0) {
+        ElMessage.info('没有可清除的 AI 对话记录')
+      } else {
+        ElMessage.success(`已清除 ${conversationCount} 个会话、${messageCount} 条消息`)
       }
-    }
-    if (failed === 0) {
-      ElMessage.success(`已删除 ${conversations.length} 个 AI 会话`)
     } else {
-      ElMessage.warning(`已删除 ${conversations.length - failed} 个会话，${failed} 个删除失败，请稍后重试`)
+      // 请求未抛异常不代表业务成功，必须判断 code；非 0 时绝不显示成功。
+      ElMessage.error(response.message || '清除 AI 对话记录失败')
     }
   } catch (error: any) {
+    // 409（有会话正在生成）已在 http.ts 响应拦截器里弹出后端文案，这里直接返回，
+    // 避免用户看到两条重复提示；其余错误才由页面兜底。
+    if (error?.response?.status === 409) return
     ElMessage.error(error.message || '清除 AI 对话记录失败')
   } finally {
     clearingChats.value = false
@@ -180,10 +177,17 @@ const handleDeleteAccount = async () => {
   try {
     const response = await deleteUser()
     if (response.code === 0) {
+      // 账号已经不存在了：无论外部资源是否待清理，都必须清本地登录态并回到首页。
       userStore.clearUserInfo()
-      ElMessage.success('账号已注销')
+      if (response.data?.cleanupPending) {
+        // 账号已注销成功，但部分外部数据清理待后台重试 —— 既不能说失败，也不能说毫无遗留。
+        ElMessage.warning('账号已注销，但部分外部数据清理将在后台重试')
+      } else {
+        ElMessage.success(response.message || '账号已注销')
+      }
       router.push('/')
     } else {
+      // 注销失败，账号与数据未变，保留本地登录态。
       ElMessage.error(response.message || '注销失败')
     }
   } catch (error: any) {

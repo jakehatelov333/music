@@ -8,6 +8,13 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 
+/**
+ * 管理员注册 / 登录请求体。
+ *
+ * <p><b>取舍：</b>该 DTO 同时被 {@code AdminController} 的注册与登录两个接口复用，
+ * 因此密码字段只做非空校验，不施加强度约束 —— 否则会挡住密码不合规的老管理员登录。
+ * 管理员注册的密码强度校验留待把注册/登录 DTO 拆分后补齐。
+ */
 @Data
 public class AdminDTO implements Serializable {
 
@@ -24,10 +31,9 @@ public class AdminDTO implements Serializable {
 
     /**
      * 管理员密码
-     * 密码格式：8-18 位数字、字母、符号的任意两种组合
+     * 注册与登录复用本 DTO，故不施加强度约束（见类注释）。
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
-    @Pattern(regexp = "^(?![0-9]+$)(?![a-zA-Z]+$)[0-9A-Za-z\\W]{8,18}$", message = MessageConstant.PASSWORD + MessageConstant.FORMAT_ERROR)
     private String password;
 
 }

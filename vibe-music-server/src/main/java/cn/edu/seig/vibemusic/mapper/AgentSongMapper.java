@@ -185,6 +185,18 @@ public interface AgentSongMapper {
      *
      * <p>{@code artistIds} 同样是解析后的歌手归属（{@code EXISTS} 关联表），不是展示串匹配 ——
      * 否则「排除后仍能取到新歌」的语义会被不精确的歌手筛选放大成误判。
+     *
+     * <p><b>结构化排除（用户长期偏好）与历史排除是两件事，都必须在 SQL 层、{@code LIMIT} 之前：</b>
+     * <ul>
+     *     <li>{@code excludeIds}：本会话近期歌单已用过的歌曲；</li>
+     *     <li>{@code excludedArtistIds}：用户手动排除的歌手（权威 {@code artist_id}）。
+     *         用 {@code EXISTS} 查 {@code tb_song_artist}，因此合作曲只要有一位演唱者被排除就整首排除；</li>
+     *     <li>{@code excludedStyleNames}：用户手动排除的风格。{@code tb_song.style} 是逗号分隔多值串
+     *         （如 {@code 欧美流行,电子}），必须按 token 精确比对 —— 既不能整串相等，也不能子串误命中
+     *         （例如排除「流行」不得命中「欧美流行」）。这里先把风格串规范成
+     *         {@code ,token1,token2,} 再用 {@code LIKE '%,风格,%'} 匹配，兼容 MySQL 与 H2(MODE=MySQL)，
+     *         刻意不使用只有 MySQL 才有的 {@code FIND_IN_SET}。</li>
+     * </ul>
      */
     @Select("""
             <script>
@@ -213,6 +225,18 @@ public interface AgentSongMapper {
               AND s.id NOT IN
               <foreach collection="excludeIds" item="excludedId" open="(" separator="," close=")">#{excludedId}</foreach>
             </if>
+            <if test="excludedArtistIds != null and excludedArtistIds.size() > 0">
+              AND NOT EXISTS (SELECT 1 FROM tb_song_artist sa3
+                              WHERE sa3.song_id = s.id AND sa3.artist_id IN
+                              <foreach collection="excludedArtistIds" item="eaid" open="(" separator="," close=")">#{eaid}</foreach>)
+            </if>
+            <if test="excludedStyleNames != null and excludedStyleNames.size() > 0">
+              AND (s.style IS NULL OR NOT (
+              <foreach collection="excludedStyleNames" item="exStyle" separator=" OR ">
+                  CONCAT(',', REPLACE(REPLACE(REPLACE(COALESCE(s.style, ''), '，', ','), ', ', ','), ' ,', ','), ',') LIKE CONCAT('%,', #{exStyle}, ',%')
+              </foreach>
+              ))
+            </if>
               AND NOT EXISTS (
                     SELECT 1 FROM tb_song_artist sa2
                     JOIN tb_artist a2 ON a2.id = sa2.artist_id
@@ -225,10 +249,18 @@ public interface AgentSongMapper {
                                          @Param("artistIds") List<Long> artistIds,
                                          @Param("style") String style,
                                          @Param("excludeIds") List<Long> excludeIds,
+                                         @Param("excludedArtistIds") List<Long> excludedArtistIds,
+                                         @Param("excludedStyleNames") List<String> excludedStyleNames,
                                          @Param("limit") int limit);
 
-    /** 随机推荐；仅用于“随便来点歌”这类无明确条件的请求。 */
+    /**
+     * 随机推荐；仅用于“随便来点歌”这类无明确条件的请求。
+     *
+     * <p>排除语义与 {@link #findSongsExcluding} 完全一致（同一套 {@code EXISTS} + token 精确比对），
+     * 因为随机推荐正是「无明确条件」的推荐路径，最容易把用户已排除的歌手/风格又推回来。
+     */
     @Select("""
+            <script>
             SELECT s.id AS songId,
                    s.name AS songName,
                    s.artist_names AS artistName,
@@ -242,11 +274,26 @@ public interface AgentSongMapper {
             WHERE NOT EXISTS (
                     SELECT 1 FROM tb_song_artist sa
                     JOIN tb_artist a ON a.id = sa.artist_id
-                    WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
+                    WHERE sa.song_id = s.id AND a.status &lt;&gt; 'ACTIVE')
+            <if test="excludedArtistIds != null and excludedArtistIds.size() > 0">
+              AND NOT EXISTS (SELECT 1 FROM tb_song_artist sa3
+                              WHERE sa3.song_id = s.id AND sa3.artist_id IN
+                              <foreach collection="excludedArtistIds" item="eaid" open="(" separator="," close=")">#{eaid}</foreach>)
+            </if>
+            <if test="excludedStyleNames != null and excludedStyleNames.size() > 0">
+              AND (s.style IS NULL OR NOT (
+              <foreach collection="excludedStyleNames" item="exStyle" separator=" OR ">
+                  CONCAT(',', REPLACE(REPLACE(REPLACE(COALESCE(s.style, ''), '，', ','), ', ', ','), ' ,', ','), ',') LIKE CONCAT('%,', #{exStyle}, ',%')
+              </foreach>
+              ))
+            </if>
             ORDER BY RAND()
             LIMIT #{limit}
+            </script>
             """)
-    List<AgentSongVO> findRandomSongs(@Param("limit") int limit);
+    List<AgentSongVO> findRandomSongs(@Param("limit") int limit,
+                                      @Param("excludedArtistIds") List<Long> excludedArtistIds,
+                                      @Param("excludedStyleNames") List<String> excludedStyleNames);
 
     /** 按主键批量取歌曲，用于渲染待确认预览与校验写操作的目标资源。 */
     @Select("""

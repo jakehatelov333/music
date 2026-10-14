@@ -91,29 +91,48 @@ public class AgentSongQueryService {
         return toRefs(songs.findSongsByKeyword(keyword.trim(), clamp(limit)));
     }
 
-    public List<SongRef> random(int limit) {
-        return toRefs(songs.findRandomSongs(clamp(limit)));
+    /**
+     * 随机推荐，应用用户长期偏好里的结构化排除约束。
+     *
+     * <p>「随便来点歌」是唯一没有用户显式条件的推荐路径，因此也是最需要落排除规则的地方：
+     * 排除在 SQL 层执行，保证过滤后仍能取满 {@code limit}（不会出现「排掉几首就只剩零星结果」）。
+     */
+    public List<SongRef> random(int limit, UserMemoryPreferenceService.ExclusionConstraints exclusions) {
+        UserMemoryPreferenceService.ExclusionConstraints safe = safe(exclusions);
+        return toRefs(songs.findRandomSongs(clamp(limit),
+                List.copyOf(safe.excludedArtistIds()), List.copyOf(safe.excludedStyleNames())));
     }
 
     /**
      * 歌单候选检索：语义与 {@link #searchByKeyword} 的宽泛关键词一致，
-     * 额外支持歌手/风格收窄，并在 <b>SQL 层</b>排除 {@code excludeIds} 中的歌曲。
+     * 额外支持歌手/风格收窄，并在 <b>SQL 层</b>排除 {@code excludeIds} 中的歌曲
+     * 以及用户长期偏好里的结构化排除约束。
      *
      * <p>排除必须发生在 {@code LIMIT} 之前（见 {@code AgentSongMapper#findSongsExcluding}），
      * 否则「曲库里还有大量未使用歌曲」会被误判成「没有新歌」。
      *
      * @param excludeIds 需要排除的歌曲 ID（通常是本会话近期歌单已用过的）；为空表示不排除
+     * @param exclusions 用户长期偏好里的结构化排除（歌手 id / 风格名）；为 null 表示不排除
      */
     public List<SongRef> searchExcluding(String keyword, String artistName, String style,
-                                         Collection<Long> excludeIds, int limit) {
+                                         Collection<Long> excludeIds,
+                                         UserMemoryPreferenceService.ExclusionConstraints exclusions,
+                                         int limit) {
         List<Long> excluded = excludeIds == null ? List.of()
                 : excludeIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        UserMemoryPreferenceService.ExclusionConstraints safe = safe(exclusions);
         List<Long> artistIds = resolveArtistFilter(artistName);
         if (artistIds != null && artistIds.isEmpty()) {
             return List.of();
         }
         return toRefs(songs.findSongsExcluding(blankToNull(keyword), artistIds, blankToNull(style),
-                excluded, clamp(limit)));
+                excluded, List.copyOf(safe.excludedArtistIds()), List.copyOf(safe.excludedStyleNames()),
+                clamp(limit)));
+    }
+
+    private static UserMemoryPreferenceService.ExclusionConstraints safe(
+            UserMemoryPreferenceService.ExclusionConstraints exclusions) {
+        return exclusions == null ? UserMemoryPreferenceService.ExclusionConstraints.none() : exclusions;
     }
 
     public List<SongRef> byIds(List<Long> ids) {
