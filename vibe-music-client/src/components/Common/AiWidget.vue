@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { aiRecent, aiSongPage, aiStreamChat } from '@/api/ai'
-import type { AgentSongsEvent, AgentTaskEvent, AgentToolEvent } from '@/api/ai'
+import { aiRecent, aiSongPage, aiStreamChat, listConversations } from '@/api/ai'
+import type {
+  AgentSongsEvent,
+  AgentTaskEvent,
+  AgentToolEvent,
+  ConversationVO,
+} from '@/api/ai'
 import {
   cancelPendingAction,
   confirmPendingAction,
@@ -37,6 +42,58 @@ const historyLoading = ref(false)
 const historyError = ref('')
 const historyLoaded = ref(false)
 let identityEpoch = 0
+
+// ---------------------------------------------------------------- 会话
+/**
+ * 当前会话标识。
+ *
+ * `null` 有两种含义，靠 {@link pendingNewConversation} 区分：
+ * 「还没确定」（首次打开、由服务端决定用哪段对话）与「新对话尚未落库」。
+ * 真实标识一律由服务端给出（首次请求的 start 事件或会话列表），
+ * 前端不自己拼 —— 归属判定在服务端，前端编出来的 ID 只会得到 404。
+ */
+const activeChatId = ref<string | null>(null)
+/** 已点「新对话」，等待第一条消息把它落库。 */
+const pendingNewConversation = ref(false)
+const conversations = ref<ConversationVO[]>([])
+const conversationsLoading = ref(false)
+const conversationsError = ref('')
+const drawerOpen = ref(false)
+
+/** 游客没有历史会话列表（服务端 401），入口直接隐藏而不是点了报错。 */
+const canListConversations = computed(() => !!userStore.userInfo?.token)
+
+/**
+ * 标题优先取本地首条用户消息，而不是会话列表里的值。
+ *
+ * 两者内容相同（服务端也是截断首条用户消息），但本地取值是即时的：
+ * 刚发出第一条消息时列表还没刷新，用列表值会先显示「新对话」再跳变。
+ */
+const currentTitle = computed(() => {
+  if (pendingNewConversation.value) return '新对话'
+  const first = messages.value.find((m) => m.role === 'user')?.blocks[0]
+  const local = first && first.kind === 'text' ? first.text : ''
+  const fromList = conversations.value.find(
+    (c) => c.chatId === activeChatId.value
+  )?.title
+  const title = (local || fromList || '').trim().replace(/\s+/g, ' ')
+  return title || '新对话'
+})
+
+/** 会话列表里的相对时间。服务端下发的是无时区的本地时间，直接按本地解析。 */
+const relativeTime = (value: string | null) => {
+  if (!value) return ''
+  const then = new Date(value).getTime()
+  if (!Number.isFinite(then)) return ''
+  const diff = Date.now() - then
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  const d = new Date(then)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 /** 确认卡片的本地编辑态，按 taskId 保存；提交时与服务端版本号一起校验。 */
 const edits = reactive<
@@ -131,6 +188,8 @@ onMounted(() => {
 })
 
 // 身份变化时清理上一位用户的本地消息和正在执行的请求。
+// 会话状态也必须一起清：否则上一位用户的 chatId 会被带进新身份的请求里（必然 404），
+// 或者更糟 —— 会话列表里残留别人的标题。
 watch(
   () => userStore.userInfo?.token,
   () => {
@@ -143,6 +202,11 @@ watch(
     historyLoading.value = false
     historyLoaded.value = false
     historyError.value = ''
+    activeChatId.value = null
+    pendingNewConversation.value = false
+    conversations.value = []
+    conversationsError.value = ''
+    drawerOpen.value = false
     Object.keys(edits).forEach((key) => delete edits[key])
     if (visible.value) void nextTick(() => open())
   },
@@ -343,21 +407,47 @@ const blockFor = (blocks: Block[], toolCallId: string) =>
       b.kind === 'tool' && b.toolCallId === toolCallId
   )
 
-const open = async () => {
-  visible.value = true
-  if (historyLoading.value || loading.value) return
-  if (historyLoaded.value) {
-    historyError.value = ''
-    await restorePending()
-    return
+/**
+ * 拉取当前用户的最近会话。登录用户之外不会调用（服务端 401）。
+ *
+ * <p>这里刻意不设置 `activeChatId`：它只负责「列表」这一件事，
+ * 要不要采纳列表里的第一条由调用方决定（首次打开采纳，切换时不采纳）。
+ */
+const refreshConversations = async () => {
+  if (!canListConversations.value) return
+  const epoch = identityEpoch
+  conversationsLoading.value = true
+  conversationsError.value = ''
+  try {
+    const res = await listConversations(20)
+    if (epoch !== identityEpoch) return
+    if (res.code !== 0) throw new Error(res.message || '加载失败')
+    conversations.value = res.data ?? []
+  } catch {
+    if (epoch === identityEpoch)
+      conversationsError.value = '历史对话加载失败，请重试。'
+  } finally {
+    if (epoch === identityEpoch) conversationsLoading.value = false
   }
+}
+
+/**
+ * 把指定会话的历史消息与待确认卡片加载到界面上。
+ *
+ * @param chatId 目标会话；`null` 表示交给服务端决定（登录用户是默认会话，游客是当前会话）
+ * @return 历史是否加载成功。失败时调用方负责决定是留在原地还是回退。
+ */
+const loadConversation = async (chatId: string | null): Promise<boolean> => {
   const epoch = identityEpoch
   historyLoading.value = true
   historyError.value = ''
+  historyLoaded.value = false
+  messages.value = []
+  Object.keys(edits).forEach((key) => delete edits[key])
   try {
     // 工具调用同样占历史行数，取足够窗口后按会话轮次恢复。
-    const list = await aiRecent(100)
-    if (epoch !== identityEpoch) return
+    const list = await aiRecent(100, chatId)
+    if (epoch !== identityEpoch) return false
     if (!Array.isArray(list)) throw new Error('历史格式错误')
     messages.value = restoreConversation(list)
     historyLoaded.value = true
@@ -370,16 +460,112 @@ const open = async () => {
         )
         .map((b) => changeSongPage(b, 1))
     )
-    if (epoch === identityEpoch) await restorePending()
+    if (epoch !== identityEpoch) return false
+    await restorePending()
+    return true
   } catch {
     if (epoch === identityEpoch)
       historyError.value = '聊天记录加载失败，请重试。'
+    return false
   } finally {
     if (epoch === identityEpoch) {
       historyLoading.value = false
       void scrollToLatest()
     }
   }
+}
+
+/** 重新加载当前会话。覆盖两种失败：首次打开失败、以及切换失败后的重试。 */
+const retryHistory = () => {
+  historyError.value = ''
+  if (pendingNewConversation.value) return
+  historyLoaded.value = false
+  void loadConversation(activeChatId.value)
+}
+
+const open = async () => {
+  visible.value = true
+  if (historyLoading.value || loading.value) return
+  if (historyLoaded.value) {
+    historyError.value = ''
+    await restorePending()
+    return
+  }
+  const epoch = identityEpoch
+  // 先取会话列表：登录用户的「当前会话」就是列表第一条，
+  // 而且这是拿到 chatId 的唯一途径 —— 待确认卡片必须按会话查询，不能全省。
+  if (canListConversations.value) {
+    await refreshConversations()
+    if (epoch !== identityEpoch) return
+    if (
+      !activeChatId.value &&
+      !pendingNewConversation.value &&
+      conversations.value.length
+    ) {
+      activeChatId.value = conversations.value[0].chatId
+    }
+  }
+  await loadConversation(activeChatId.value)
+}
+
+/** 切换会话。失败时保留原会话界面 —— 否则用户未发送的内容会随着界面一起消失。 */
+const switchConversation = async (chatId: string) => {
+  drawerOpen.value = false
+  if (chatId === activeChatId.value && !pendingNewConversation.value) return
+
+  // 切换必须中断当前生成：否则上一段的 token 会继续追加到新会话的界面上，
+  // 变成两段对话的文字混在一起。
+  abortController.value?.abort()
+  abortController.value = null
+  loading.value = false
+
+  const previous = {
+    chatId: activeChatId.value,
+    pending: pendingNewConversation.value,
+    messages: messages.value,
+    taskId: taskId.value,
+  }
+  activeChatId.value = chatId
+  pendingNewConversation.value = false
+  taskId.value = null
+
+  if (await loadConversation(chatId)) return
+
+  activeChatId.value = previous.chatId
+  pendingNewConversation.value = previous.pending
+  taskId.value = previous.taskId
+  messages.value = previous.messages
+  historyLoaded.value = true
+  historyError.value = '切换会话失败，已保留当前会话。请重试。'
+}
+
+/**
+ * 新对话。
+ *
+ * <p><b>只清界面、不建会话。</b>会话标识由服务端在收到第一条消息时才创建，
+ * 前端拿不到也就不可能"顺手"建出一堆点开什么都没有的空会话。
+ * 用户点开又没说话，服务端不会留下任何痕迹。
+ */
+const startNewConversation = () => {
+  abortController.value?.abort()
+  abortController.value = null
+  loading.value = false
+  taskId.value = null
+  messages.value = []
+  Object.keys(edits).forEach((key) => delete edits[key])
+  historyLoading.value = false
+  historyError.value = ''
+  // 新对话没有历史要拉，直接标成已加载，避免 open() 再走一次空请求。
+  historyLoaded.value = true
+  drawerOpen.value = false
+  activeChatId.value = null
+  pendingNewConversation.value = true
+  void scrollToLatest()
+}
+
+const toggleDrawer = () => {
+  drawerOpen.value = !drawerOpen.value
+  if (drawerOpen.value) void refreshConversations()
 }
 
 /** 页面刷新后按服务端持久化的状态重建确认卡片。 */
@@ -393,8 +579,13 @@ const restorePending = async () => {
     )
   await Promise.all(cards.map(refreshAction))
   if (epoch !== identityEpoch) return
+  // 会话还没确定（新对话尚未落库）时没有"本会话的待确认任务"可查。
+  // 这里必须带上 chatId：不传的话服务端会返回该用户**全部会话**的待确认任务，
+  // 于是会话 B 里会冒出会话 A 的确认卡片，而那张卡片点下去是真的会建歌单的。
+  const chatId = activeChatId.value
+  if (!chatId) return
   try {
-    const res = await listPendingActions()
+    const res = await listPendingActions(chatId)
     if (epoch !== identityEpoch) return
     if (res.code !== 0 || !res.data?.length) return
     const existing = new Set(
@@ -448,6 +639,10 @@ const send = () => {
   if (text.length > 2000) return
 
   abortController.value?.abort()
+  // 读一次就固定下来：onStart 里会把它清掉，而这次请求要一直用同一个目标。
+  const isNewConversation = pendingNewConversation.value
+  const targetChatId = activeChatId.value
+
   messages.value.push({ role: 'user', blocks: [{ kind: 'text', text }] })
   historyLoaded.value = true
   input.value = ''
@@ -467,6 +662,8 @@ const send = () => {
     if (blocks.length === 0)
       blocks.push({ kind: 'text', text: '（AI 未生成回复）' })
     void scrollToLatest()
+    // 标题与排序都变了，刷新一次列表让「最近对话」抽屉保持真实。
+    if (canListConversations.value) void refreshConversations()
   }
 
   aiStreamChat(
@@ -475,6 +672,13 @@ const send = () => {
       onStart: (payload) => {
         if (controller.signal.aborted) return
         taskId.value = payload.taskId
+        // 认领会话标识。新对话的 chatId 是服务端在这一刻才创建的，
+        // 前端只有从这里才能知道自己在哪段对话里 —— 后续的历史查询、
+        // 待确认卡片查询、以及下一轮消息都依赖它。
+        if (payload.chatId) {
+          activeChatId.value = payload.chatId
+          pendingNewConversation.value = false
+        }
       },
       onTool: (payload: AgentToolEvent) => {
         if (controller.signal.aborted) return
@@ -555,7 +759,11 @@ const send = () => {
         finish()
       },
     },
-    controller.signal
+    controller.signal,
+    // 新对话用 newConversation 标志（chatId 还不存在）；否则带上当前会话。
+    isNewConversation
+      ? { newConversation: true }
+      : { chatId: targetChatId }
   )
 }
 
@@ -583,28 +791,111 @@ defineExpose({ open, close })
     :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
   >
     <div
-      class="h-10 px-3 flex items-center justify-between border-b cursor-move select-none"
+      class="h-10 px-2 flex items-center justify-between gap-1 border-b cursor-move select-none"
       @mousedown="startDrag"
       @touchstart.prevent="startDrag"
     >
-      <div class="font-medium text-sm">Vibe AI 助手</div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1 min-w-0">
+        <button
+          aria-label="新对话"
+          title="新对话"
+          class="shrink-0 w-8 h-8 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          @mousedown.stop
+          @click.stop="startNewConversation"
+        >
+          <icon-tabler:plus />
+        </button>
+        <span class="truncate text-sm font-medium" :title="currentTitle">{{
+          currentTitle
+        }}</span>
+      </div>
+      <div class="flex items-center gap-1 shrink-0">
+        <button
+          v-if="canListConversations"
+          :aria-label="drawerOpen ? '关闭最近对话' : '最近对话'"
+          title="最近对话"
+          class="w-8 h-8 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          @mousedown.stop
+          @click.stop="toggleDrawer"
+        >
+          <icon-tabler:history />
+        </button>
         <button
           :aria-label="minimized ? '展开 AI 助手' : '最小化 AI 助手'"
-          class="text-sm text-muted-foreground hover:text-foreground"
-          @click="toggleMin"
+          class="w-8 h-8 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          @mousedown.stop
+          @click.stop="toggleMin"
         >
           <icon-tabler:minus v-if="!minimized" />
           <icon-tabler:plus v-else />
         </button>
         <button
           aria-label="关闭 AI 助手"
-          class="text-sm text-muted-foreground hover:text-foreground"
-          @click="close"
+          class="w-8 h-8 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          @mousedown.stop
+          @click.stop="close"
         >
           <icon-tabler:x />
         </button>
       </div>
+    </div>
+
+    <!--
+      最近对话。刻意用浮窗内的内嵌面板而不是全局抽屉：
+      浮窗本身是拖拽定位的，全局抽屉会和它的层级、定位互相打架，
+      而这里只需要盖住消息区，交互范围小得多。
+    -->
+    <div
+      v-if="drawerOpen && !minimized"
+      class="absolute inset-x-0 top-10 bottom-0 z-10 bg-white flex flex-col"
+    >
+      <div
+        class="px-3 py-2 border-b flex items-center justify-between shrink-0"
+      >
+        <span class="text-sm font-medium">最近对话</span>
+        <button
+          aria-label="关闭最近对话"
+          class="w-8 h-8 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          @click="drawerOpen = false"
+        >
+          <icon-tabler:x />
+        </button>
+      </div>
+      <p
+        v-if="conversationsLoading"
+        role="status"
+        class="p-3 text-xs text-muted-foreground"
+      >
+        正在加载…
+      </p>
+      <div v-else-if="conversationsError" role="alert" class="p-3 text-xs text-red-500">
+        {{ conversationsError }}
+        <button class="ml-1 underline" @click="refreshConversations">重试</button>
+      </div>
+      <p v-else-if="!conversations.length" class="p-3 text-xs text-muted-foreground">
+        还没有历史对话。发送第一条消息后就会出现在这里。
+      </p>
+      <ul v-else class="flex-1 min-h-0 overflow-auto divide-y">
+        <li v-for="item in conversations" :key="item.chatId">
+          <button
+            class="w-full text-left px-3 py-2 hover:bg-muted/50"
+            :class="item.chatId === activeChatId ? 'bg-muted/60' : ''"
+            @click="switchConversation(item.chatId)"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="truncate text-sm font-medium">{{
+                item.title || '未命名对话'
+              }}</span>
+              <span class="shrink-0 text-[11px] text-muted-foreground">{{
+                relativeTime(item.lastActiveAt)
+              }}</span>
+            </div>
+            <div class="truncate text-xs text-muted-foreground mt-0.5">
+              {{ item.summaryText || item.lastMessage || '暂无内容' }}
+            </div>
+          </button>
+        </li>
+      </ul>
     </div>
 
     <div
@@ -621,8 +912,14 @@ defineExpose({ open, close })
       </p>
       <div v-if="historyError" role="alert" class="text-xs text-red-500">
         {{ historyError }}
-        <button class="ml-2 underline min-h-11" @click="open">重新加载</button>
+        <button class="ml-2 underline min-h-11" @click="retryHistory">重新加载</button>
       </div>
+      <p
+        v-if="!historyLoading && !historyError && !messages.length"
+        class="text-xs text-muted-foreground"
+      >
+        想听点什么？告诉我喜欢的歌手、音乐风格或当前的心情吧。
+      </p>
       <div v-for="(m, mi) in messages" :key="mi" class="text-sm space-y-2">
         <div :class="m.role === 'user' ? 'text-right' : 'text-left'">
           <span

@@ -131,6 +131,25 @@ public interface AgentPendingActionMapper {
             """)
     int cancel(@Param("taskId") String taskId, @Param("userId") Long userId, @Param("now") LocalDateTime now);
 
+    /**
+     * 删除会话时连带取消该会话下所有仍待确认的任务。
+     *
+     * <p><b>为什么必须做：</b>待确认任务独立于消息表存在。删掉会话却留下任务，
+     * 用户在别的会话里会看到一张指向已不存在对话的确认卡片，点确认还会真的建出歌单 ——
+     * 删了记录却留着动作，这是隐私与一致性双重问题。
+     *
+     * <p><b>为什么只取消 PENDING：</b>已成功（SUCCEEDED）的任务是「这个歌单由这次对话创建」
+     * 的追溯凭据，删会话不应该抹掉它；EXECUTING 的任务正在写库，此刻改动状态会破坏幂等判定，
+     * 交给它自己跑完。真正需要拦截的只有「用户还能再点确认」的那些。
+     */
+    @Update("""
+            UPDATE tb_agent_pending_action
+            SET status = 'CANCELLED', updated_at = #{now}
+            WHERE user_id = #{userId} AND chat_id = #{chatId} AND status = 'PENDING'
+            """)
+    int cancelPendingByChat(@Param("userId") Long userId, @Param("chatId") String chatId,
+                            @Param("now") LocalDateTime now);
+
     @Update("""
             UPDATE tb_agent_pending_action
             SET status = 'EXPIRED', updated_at = #{now}

@@ -48,6 +48,8 @@ class AiControllerSecurityTest {
     private final ChatSummaryService chatSummaries = mock(ChatSummaryService.class);
     private final MusicTasteSummaryService tasteSummaries = mock(MusicTasteSummaryService.class);
     private final UserMusicProfileService musicProfiles = mock(UserMusicProfileService.class);
+    /** 归属查询走真实 ConversationService + 打桩 mapper：越权判定本身正是这个测试要验证的东西。 */
+    private final cn.edu.seig.vibemusic.mapper.AiMapper aiMapper = mock(cn.edu.seig.vibemusic.mapper.AiMapper.class);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private MockMvc mvc;
@@ -58,30 +60,51 @@ class AiControllerSecurityTest {
         token = JwtUtil.generateToken(Map.of(JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER"));
         when(values.get(token)).thenReturn(token);
         when(factory.timeout()).thenReturn(Duration.ofSeconds(2));
+        cn.edu.seig.vibemusic.service.agent.ConversationService conversations =
+                new cn.edu.seig.vibemusic.service.agent.ConversationService(aiMapper,
+                        mock(cn.edu.seig.vibemusic.mapper.AgentPendingActionMapper.class), service);
+        ReflectionTestUtils.setField(conversations, "listLimit", 20);
         LoginInterceptor login = new LoginInterceptor();
         RolePermissionManager roles = mock(RolePermissionManager.class);
         when(roles.hasPermission(eq("ROLE_USER"), org.mockito.ArgumentMatchers.startsWith("/ai/"))).thenReturn(true);
         ReflectionTestUtils.setField(login, "stringRedisTemplate", redis);
         ReflectionTestUtils.setField(login, "rolePermissionManager", roles);
         ReflectionTestUtils.setField(login, "objectMapper", new ObjectMapper());
-        mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis), factory,
+        mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis, conversations),
+                        factory,
                         mock(cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder.class), executor, timer,
-                        chatSummaries, tasteSummaries, musicProfiles))
+                        chatSummaries, tasteSummaries, musicProfiles, conversations))
                 .addInterceptors(login, new RateLimitInterceptor(limiter, new ObjectMapper()))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 
     @AfterEach void cleanup() { executor.shutdownNow(); timer.shutdownNow(); ThreadLocalUtil.remove(); }
 
+    /**
+     * 会话归属：客户端传别人的 chatId 一律 404。
+     *
+     * <p>这条用例是本次多会话改造最核心的安全契约。改造前 chatId 由服务端按身份推导，
+     * 客户端传什么都不生效；改造后 chatId 变成客户端可以指定的资源，
+     * 「传了别人的 ID 会怎样」就必须有明确的、被测试钉死的答案：
+     * <b>404，而不是静默回退到自己的会话</b> —— 静默回退会让调用方以为操作成功了。
+     */
     @Test void userCannotReadOrDeleteAnotherConversationByPassingChatId() throws Exception {
-        when(service.getMessagesByChatId("user_chat_id_7")).thenReturn(List.of());
+        when(aiMapper.findConversationOwner("user_chat_id_8")).thenReturn(8L);
         mvc.perform(get("/ai/chat/history").header("Authorization", token).param("chatId", "user_chat_id_8"))
-                .andExpect(status().isOk()).andExpect(content().json("[]"));
+                .andExpect(status().isNotFound());
         mvc.perform(delete("/ai/chat/clear").header("Authorization", token).param("chatId", "user_chat_id_8"))
-                .andExpect(status().isOk());
-        verify(service).getMessagesByChatId("user_chat_id_7");
-        verify(service).deleteMessagesByChatId("user_chat_id_7");
+                .andExpect(status().isNotFound());
+        verify(service, never()).getMessagesByChatId("user_chat_id_8");
         verify(service, never()).deleteMessagesByChatId("user_chat_id_8");
+    }
+
+    /** 传自己的非默认会话：正常放行。 */
+    @Test void userCanReadTheirOwnNonDefaultConversation() throws Exception {
+        when(aiMapper.findConversationOwner("user_chat_id_7_abc")).thenReturn(7L);
+        when(service.getMessagesByChatId("user_chat_id_7_abc")).thenReturn(List.of());
+        mvc.perform(get("/ai/chat/history").header("Authorization", token).param("chatId", "user_chat_id_7_abc"))
+                .andExpect(status().isOk()).andExpect(content().json("[]"));
+        verify(service).getMessagesByChatId("user_chat_id_7_abc");
     }
 
     @Test void forgedGuestCookieCannotSelectAUserConversation() throws Exception {

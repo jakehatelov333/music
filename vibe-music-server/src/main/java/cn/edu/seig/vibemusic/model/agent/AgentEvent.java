@@ -9,7 +9,7 @@ package cn.edu.seig.vibemusic.model.agent;
  * <p>字段全部可空，按 {@code type} 取值：
  * <table>
  *     <tr><th>type</th><th>含义</th><th>使用字段</th></tr>
- *     <tr><td>start</td><td>Agent 开始处理</td><td>taskId, message</td></tr>
+ *     <tr><td>start</td><td>Agent 开始处理</td><td>taskId, message, data(model, chatId)</td></tr>
  *     <tr><td>tool</td><td>工具调用开始/结束</td><td>toolCallId, tool, phase, ok, code, message, total, durationMs</td></tr>
  *     <tr><td>songs</td><td>结构化歌曲数据</td><td>toolCallId, kind, total, data</td></tr>
  *     <tr><td>confirm</td><td>等待用户确认</td><td>toolCallId, data（待确认任务预览）</td></tr>
@@ -47,9 +47,19 @@ public record AgentEvent(
     public static final String PHASE_START = "start";
     public static final String PHASE_END = "end";
 
-    public static AgentEvent start(String taskId, String model) {
+    /**
+     * 任务开始事件。
+     *
+     * <p><b>为什么 {@code start} 必须带上 {@code chatId}：</b>「新对话」的会话标识是服务端在
+     * 收到第一条消息时才创建的（这样不会留下空会话）。客户端此时还不知道自己在新会话里，
+     * 需要从第一个事件里认领它 —— 否则它接下来的历史查询、待确认卡片查询都会落在旧会话上。
+     */
+    public static AgentEvent start(String taskId, String model, String chatId) {
+        java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("model", model == null ? "" : model);
+        data.put("chatId", chatId == null ? "" : chatId);
         return new AgentEvent(START, taskId, null, null, null, null, null,
-                "Agent 开始处理", null, null, java.util.Map.of("model", model == null ? "" : model), null);
+                "Agent 开始处理", null, null, data, null);
     }
 
     public static AgentEvent toolStart(String taskId, String toolCallId, String tool, String label) {

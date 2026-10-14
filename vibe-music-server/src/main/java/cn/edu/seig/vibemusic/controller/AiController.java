@@ -12,6 +12,7 @@ import cn.edu.seig.vibemusic.service.agent.AgentFailureCategory;
 import cn.edu.seig.vibemusic.service.agent.AgentMetrics;
 import cn.edu.seig.vibemusic.service.agent.AgentMetricsRecorder;
 import cn.edu.seig.vibemusic.service.agent.ChatSummaryService;
+import cn.edu.seig.vibemusic.service.agent.ConversationService;
 import cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService;
 import cn.edu.seig.vibemusic.service.agent.UserMusicProfileService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
@@ -96,11 +97,13 @@ public class AiController {
     private final ChatSummaryService chatSummaries;
     private final MusicTasteSummaryService tasteSummaries;
     private final UserMusicProfileService musicProfiles;
+    private final ConversationService conversations;
 
     @PostMapping("/chat")
     public String chat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
                        HttpServletResponse response) {
-        String chatId = sessions.resolve(request, response);
+        String chatId = sessions.resolve(request, response, body.chatId(),
+                Boolean.TRUE.equals(body.newConversation()));
         AiAssistantFactory.Run run = assistants.create(chatId, PlaylistAccessService.optionalUserId(),
                 AgentEventSink.NOOP);
         AgentMetrics metrics = run.metrics();
@@ -133,7 +136,8 @@ public class AiController {
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter streamChat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
                                  HttpServletResponse response) {
-        String chatId = sessions.resolve(request, response);
+        String chatId = sessions.resolve(request, response, body.chatId(),
+                Boolean.TRUE.equals(body.newConversation()));
         Long userId = PlaylistAccessService.optionalUserId();
         long timeout = assistants.timeout().toMillis();
         SseEmitter emitter = new SseEmitter(timeout + 1000);
@@ -221,32 +225,50 @@ public class AiController {
     }
 
     @GetMapping("/chat/history")
-    public List<ChatMessage> history(HttpServletRequest request, HttpServletResponse response) {
-        return aiService.getMessagesByChatId(sessions.resolve(request, response));
+    public List<ChatMessage> history(@RequestParam(required = false) String chatId,
+                                     HttpServletRequest request, HttpServletResponse response) {
+        return aiService.getMessagesByChatId(sessions.resolve(request, response, chatId, false));
     }
 
     @GetMapping("/chat/history/page")
     public List<ChatMessage> historyPage(@RequestParam(defaultValue = "1") @Min(1) @Max(100000) int page,
                                        @RequestParam(defaultValue = "10") @Min(1) @Max(100) int size,
+                                       @RequestParam(required = false) String chatId,
                                        HttpServletRequest request, HttpServletResponse response) {
-        return aiService.getMessagesByChatId(sessions.resolve(request, response), page, size).getRecords();
+        return aiService.getMessagesByChatId(sessions.resolve(request, response, chatId, false), page, size)
+                .getRecords();
     }
 
     @GetMapping("/chat/recent")
     public List<ChatMessage> recent(@RequestParam(defaultValue = "10") @Min(1) @Max(100) int limit,
+                                   @RequestParam(required = false) String chatId,
                                    HttpServletRequest request, HttpServletResponse response) {
-        return aiService.getRecentMessages(sessions.resolve(request, response), limit);
+        return aiService.getRecentMessages(sessions.resolve(request, response, chatId, false), limit);
     }
 
+    /**
+     * 清空当前会话的消息。
+     *
+     * <p>登录用户走 {@link ConversationService#clear}：除了消息与摘要，
+     * 还会取消该会话下仍待确认的任务 —— 清空了记录却留下一张「点击即可建歌单」的卡片，
+     * 是用户看不见但仍然可执行的残留动作。游客没有待确认任务（创建歌单要求登录），
+     * 因此直接清消息即可。
+     */
     @DeleteMapping("/chat/clear")
-    public String clear(HttpServletRequest request, HttpServletResponse response) {
-        aiService.deleteMessagesByChatId(sessions.resolve(request, response));
+    public String clear(@RequestParam(required = false) String chatId,
+                        HttpServletRequest request, HttpServletResponse response) {
+        String resolved = sessions.resolve(request, response, chatId, false);
+        Long userId = PlaylistAccessService.optionalUserId();
+        if (userId != null) conversations.clear(userId, resolved);
+        else aiService.deleteMessagesByChatId(resolved);
         return "聊天记录已清空";
     }
 
     @GetMapping("/chat/stats")
-    public String stats(HttpServletRequest request, HttpServletResponse response) {
-        return "消息总数: " + aiService.countMessagesByChatId(sessions.resolve(request, response));
+    public String stats(@RequestParam(required = false) String chatId,
+                        HttpServletRequest request, HttpServletResponse response) {
+        return "消息总数: "
+                + aiService.countMessagesByChatId(sessions.resolve(request, response, chatId, false));
     }
 
     /** 当前登录用户自己的 Agent 指标，便于演示时直接查看真实耗时与 Token 用量。 */

@@ -1,5 +1,6 @@
 import { http } from '@/utils/http'
 import { UserStore } from '@/stores/modules/user'
+import type { Result } from '@/api/system'
 import type { AgentSongRef, PendingAction } from '@/api/agent'
 
 export type AiChatResponse = string
@@ -15,27 +16,72 @@ export type AiChatResponse = string
  */
 const API_BASE: string = import.meta.env.VITE_AI_BASE ?? ''
 
-export const aiSimpleChat = (query: string) =>
+/**
+ * 会话列表中的一行。字段与后端 ConversationVO 对齐。
+ *
+ * `summaryText` 是滚动摘要（描述整段对话在聊什么，可能为空）；
+ * `lastMessage` 是最近一条消息的截断。展示时优先摘要、回退到最后一条消息 ——
+ * 只看任意一个都会在某种情况下出现空白行。
+ */
+export interface ConversationVO {
+  chatId: string
+  title: string | null
+  summaryText: string | null
+  lastMessage: string | null
+  createdAt: string | null
+  lastActiveAt: string | null
+}
+
+export const aiSimpleChat = (query: string, chatId?: string | null) =>
   http<AiChatResponse>('post', '/ai/chat', {
-    data: { query },
+    data: chatId ? { query, chatId } : { query },
     withCredentials: true,
     baseURL: API_BASE,
     timeout: 65000,
   })
 
-export const aiHistory = () =>
+export const aiHistory = (chatId?: string | null) =>
   http<any>('get', '/ai/chat/history', {
+    params: chatId ? { chatId } : {},
     withCredentials: true,
     baseURL: API_BASE,
     timeout: 30000,
   })
 
-export const aiRecent = (limit = 10) =>
+export const aiRecent = (limit = 10, chatId?: string | null) =>
   http<any>('get', '/ai/chat/recent', {
-    params: { limit },
+    params: chatId ? { limit, chatId } : { limit },
     withCredentials: true,
     baseURL: API_BASE,
     timeout: 30000,
+  })
+
+/** 清空一段对话的消息。服务端会连带取消该会话下仍待确认的任务。 */
+export const aiClear = (chatId?: string | null) =>
+  http<string>('delete', '/ai/chat/clear', {
+    params: chatId ? { chatId } : {},
+    withCredentials: true,
+    baseURL: API_BASE,
+    timeout: 20000,
+  })
+
+/** 当前登录用户的最近对话，按最近活跃时间倒序。游客调用返回 401。 */
+export const listConversations = (limit?: number, signal?: AbortSignal) =>
+  http<Result<ConversationVO[]>>('get', '/ai/conversations', {
+    params: limit ? { limit } : {},
+    signal,
+    withCredentials: true,
+    baseURL: API_BASE,
+    timeout: 20000,
+  })
+
+/** 彻底删除一段对话。传别人的 chatId 会得到 404（服务端校验归属）。 */
+export const deleteConversation = (chatId: string, signal?: AbortSignal) =>
+  http<Result<string>>('delete', `/ai/conversations/${encodeURIComponent(chatId)}`, {
+    signal,
+    withCredentials: true,
+    baseURL: API_BASE,
+    timeout: 20000,
   })
 
 export interface SongSearch {
@@ -134,8 +180,14 @@ export interface SSECallbacks {
   onToken: (token: string) => void
   onDone: (fullText: string) => void
   onError: (error: Error) => void
-  /** Agent 开始处理，携带本次任务的 taskId。 */
-  onStart?: (payload: { taskId: string; model: string }) => void
+  /**
+   * Agent 开始处理，携带本次任务的 taskId 与**实际使用的 chatId**。
+   *
+   * chatId 必须在回调里被采纳：点「新对话」时前端还不知道新会话的标识
+   * （会话是服务端在收到第一条消息时才创建的，这样不会留下空会话），
+   * 只能从第一个事件里认领它。
+   */
+  onStart?: (payload: { taskId: string; model: string; chatId?: string }) => void
   /** 工具开始/结束。 */
   onTool?: (payload: AgentToolEvent) => void
   /** 结构化歌曲数据，用于渲染歌曲卡片。 */
@@ -144,6 +196,14 @@ export interface SSECallbacks {
   onConfirm?: (payload: PendingAction) => void
   /** 任务结束汇总（成功/失败/取消），用于展示真实耗时与用量。 */
   onTask?: (payload: AgentTaskEvent) => void
+}
+
+/** 本次请求要写进哪段对话。两者都不传 = 沿用服务端默认会话。 */
+export interface ConversationTarget {
+  /** 目标会话；服务端会校验它是否属于当前身份，不属于则 404。 */
+  chatId?: string | null
+  /** 开一段全新对话。为 true 时 chatId 被忽略，新标识从 onStart 事件里取回。 */
+  newConversation?: boolean
 }
 
 /**
@@ -159,7 +219,8 @@ export interface SSECallbacks {
 export const aiStreamChat = (
   query: string,
   callbacks: SSECallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  target?: ConversationTarget
 ): void => {
   const token = UserStore().userInfo?.token
   const headers: Record<string, string> = {
@@ -168,10 +229,14 @@ export const aiStreamChat = (
   }
   if (token) headers.Authorization = token
 
+  const body: Record<string, unknown> = { query }
+  if (target?.newConversation) body.newConversation = true
+  else if (target?.chatId) body.chatId = target.chatId
+
   fetch(`${API_BASE}/ai/chat/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(body),
     credentials: 'include',
     signal,
   })

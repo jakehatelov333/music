@@ -108,7 +108,8 @@ public class AiAssistantFactory {
 
         /** 任务开始事件；由传输层在流开始处调用，保证事件顺序为 start → tool/token → task → done。 */
         public void announce() {
-            if (metrics != null) events.emit(AgentEvent.start(taskId, metrics.model()));
+            // chatId 一并下发：新建会话时客户端正是靠它认领刚被创建的那段对话。
+            if (metrics != null) events.emit(AgentEvent.start(taskId, metrics.model(), metrics.chatId()));
         }
 
         @Override public void close() {

@@ -82,12 +82,23 @@ class AgentSseProtocolTest extends AbstractAgentTest {
      * 本测试聚焦 SSE 协议，摘要与画像由 ChatSummaryServiceTest 等专项覆盖。
      */
     private AiController controller(AiAssistantFactory factory) {
+        // 本测试全程以用户 1 登录，会话标识由 ConversationService 决定 ——
+        // 这里用替身固定返回默认会话，让 SSE 协议本身成为唯一的被测对象；
+        // 归属判定由 AiControllerSecurityTest 与 ConversationServiceTest 专项覆盖。
+        cn.edu.seig.vibemusic.service.agent.ConversationService conversations =
+                mock(cn.edu.seig.vibemusic.service.agent.ConversationService.class);
+        org.mockito.Mockito.when(conversations.resolve(
+                        org.mockito.ArgumentMatchers.anyLong(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn("user_chat_id_1");
         return new AiController(mock(cn.edu.seig.vibemusic.service.IAiService.class),
-                new AiSessionService(mock(org.springframework.data.redis.core.StringRedisTemplate.class)),
+                new AiSessionService(mock(org.springframework.data.redis.core.StringRedisTemplate.class), conversations),
                 factory, recorder, executor, timer,
                 mock(cn.edu.seig.vibemusic.service.agent.ChatSummaryService.class),
                 mock(cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService.class),
-                mock(cn.edu.seig.vibemusic.service.agent.UserMusicProfileService.class));
+                mock(cn.edu.seig.vibemusic.service.agent.UserMusicProfileService.class),
+                conversations);
     }
 
     private AiAssistantFactory factory() {

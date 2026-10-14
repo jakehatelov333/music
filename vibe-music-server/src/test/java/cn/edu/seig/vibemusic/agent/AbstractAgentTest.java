@@ -177,11 +177,13 @@ public abstract class AbstractAgentTest {
                 + "own_playlist_song_count INT NOT NULL DEFAULT 0, pref_summary VARCHAR(500), "
                 + "summary_source_hash CHAR(64), version BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMP NOT NULL, "
                 + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
-        // 模型窗口 + 租约 + 滚动摘要（与 sql/phase2_chat_migration.sql、phase5_personalization.sql 对齐）。
+        // 模型窗口 + 租约 + 滚动摘要 + 会话归属
+        // （与 sql/phase2_chat_migration.sql、phase5_personalization.sql、phase7_conversations.sql 对齐）。
         jdbc.execute("CREATE TABLE IF NOT EXISTS ai_chat_state(chat_id VARCHAR(255) PRIMARY KEY, "
                 + "context_json CLOB, context_version BIGINT NOT NULL DEFAULT 0, active_run_token VARCHAR(36), "
                 + "lease_expires_at TIMESTAMP, summary_text CLOB, summary_upto_id BIGINT NOT NULL DEFAULT 0, "
-                + "summary_updated_at TIMESTAMP)");
+                + "summary_updated_at TIMESTAMP, user_id BIGINT, title VARCHAR(64), created_at TIMESTAMP, "
+                + "last_active_at TIMESTAMP)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS chat_messages(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
                 + "chat_id VARCHAR(255) NOT NULL, message_type VARCHAR(32) NOT NULL, content CLOB NOT NULL, "
                 + "created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)");
@@ -243,6 +245,8 @@ public abstract class AbstractAgentTest {
     @Autowired protected ArtistMapper artistMapper;
     @Autowired protected AlbumMapper albumMapper;
     @Autowired protected SongMapper songMapper;
+    /** 会话元信息（归属、标题、最近活跃时间）与消息窗口都走它。 */
+    @Autowired protected AiMapper aiMapper;
 
     private ArtistMapper artistMapperBean() {
         return artistMapper;

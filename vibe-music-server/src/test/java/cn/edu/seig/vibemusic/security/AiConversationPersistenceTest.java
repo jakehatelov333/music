@@ -69,7 +69,9 @@ class AiConversationPersistenceTest {
                   context_version BIGINT NOT NULL DEFAULT 0,
                   active_run_token VARCHAR(36) NULL, lease_expires_at TIMESTAMP(6) NULL,
                   summary_text LONGTEXT NULL, summary_upto_id BIGINT NOT NULL DEFAULT 0,
-                  summary_updated_at TIMESTAMP(6) NULL)
+                  summary_updated_at TIMESTAMP(6) NULL,
+                  user_id BIGINT NULL, title VARCHAR(64) NULL,
+                  created_at TIMESTAMP(6) NULL, last_active_at TIMESTAMP(6) NULL)
                 """);
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS chat_messages(

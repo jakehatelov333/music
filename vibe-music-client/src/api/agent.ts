@@ -60,10 +60,16 @@ export interface AgentDraftInput {
   version: number
 }
 
-/** 当前会话下仍待确认的任务，用于页面刷新后重建确认卡片。 */
-export const listPendingActions = (chatId?: string, signal?: AbortSignal) =>
+/**
+ * 指定会话下仍待确认的任务，用于页面刷新后重建确认卡片。
+ *
+ * `chatId` 是**必填**的。后端在不传时会返回「该用户全部会话的待确认任务」，
+ * 那在多会话下就是串台：会话 B 里会冒出会话 A 的确认卡片，
+ * 而卡片上的「确认创建」是真的会建出歌单的。类型上要求必传，避免再退回去。
+ */
+export const listPendingActions = (chatId: string, signal?: AbortSignal) =>
   http<Result<PendingAction[]>>('get', '/ai/actions/pending', {
-    params: chatId ? { chatId } : {},
+    params: { chatId },
     signal,
     baseURL: API_BASE,
     timeout: 20000,
