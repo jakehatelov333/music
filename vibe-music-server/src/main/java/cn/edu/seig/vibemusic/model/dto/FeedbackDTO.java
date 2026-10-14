@@ -37,4 +37,17 @@ public class FeedbackDTO implements Serializable {
     @Size(max = 200)
     private String keyword;
 
+    /**
+     * 排序字段（白名单校验在 Service 层）：
+     * feedbackId / userId / createTime；null 时按默认排序（反馈时间倒序）。
+     */
+    @Size(max = 32)
+    private String sortField;
+
+    /**
+     * 排序方向：asc / desc；null 时按默认排序。
+     */
+    @Size(max = 8)
+    private String order;
+
 }

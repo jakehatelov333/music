@@ -49,11 +49,12 @@ public class ArtistDTO implements Serializable {
     private String area;
 
     /**
-     * 是否包含已停用（软删除）的歌手。
-     * 仅管理端列表使用；用户端、选择器、搜索一律只看启用记录。
-     * 为 null / false 时只返回启用记录。
+     * 状态筛选（仅管理端列表使用）：
+     * ACTIVE=只看启用中，DISABLED=只看已停用（软删除），null/空=全部。
+     * 用户端、选择器、搜索一律只看启用记录，与这里无关。
      */
-    private Boolean includeDisabled;
+    @Size(max = 16)
+    private String status;
 
     /**
      * 排序字段（白名单校验在 Service 层）：

@@ -11,7 +11,10 @@ export function useFeedback(tableRef: Ref) {
   const form = reactive({
     pageNum: 1,
     pageSize: 20,
-    keyword: null
+    keyword: null,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null,
+    order: null
   });
   const dataList = ref([]);
   const loading = ref(true);
@@ -32,12 +35,14 @@ export function useFeedback(tableRef: Ref) {
     {
       label: "反馈编号",
       prop: "feedbackId",
-      minWidth: 100
+      minWidth: 100,
+      sortable: "custom"
     },
     {
       label: "用户编号",
       prop: "userId",
-      minWidth: 100
+      minWidth: 100,
+      sortable: "custom"
     },
     {
       label: "反馈内容",
@@ -66,6 +71,7 @@ export function useFeedback(tableRef: Ref) {
       label: "反馈时间",
       minWidth: 200,
       prop: "createTime",
+      sortable: "custom",
       formatter: ({ createTime }) =>
         dayjs(createTime).format("YYYY-MM-DD HH:mm:ss")
     },
@@ -104,6 +110,23 @@ export function useFeedback(tableRef: Ref) {
   function handleCurrentChange(val: number) {
     pagination.currentPage = val;
     form.pageNum = val;
+    onSearch();
+  }
+
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
     onSearch();
   }
 
@@ -186,6 +209,9 @@ export function useFeedback(tableRef: Ref) {
     if (!formEl) return;
     formEl.resetFields();
     form.keyword = null;
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     onSearch();
   };
 
@@ -205,6 +231,7 @@ export function useFeedback(tableRef: Ref) {
     onbatchDel,
     handleDelete,
     handleSizeChange,
+    handleSortChange,
     handleCurrentChange,
     handleSelectionChange,
     onSelectionCancel,

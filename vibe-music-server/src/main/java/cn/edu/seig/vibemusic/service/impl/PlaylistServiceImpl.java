@@ -23,6 +23,7 @@ import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -38,6 +39,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -75,9 +77,15 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
         if (query == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询条件不能为空");
         String status = normalizeStatus(query.getStatus());
         Boolean platform = parseSource(query.getSource());
+        // 排序：仅接受白名单字段，未命中/缺省时按编号倒序（历史行为）。
+        // songCount 是 SELECT 里的子查询别名，MySQL 允许直接按别名排序。
+        String orderBy = SortWhitelistUtil.toOrderBy(
+                query.getSortField(), query.getOrder(),
+                Map.of("playlistId", "p.id", "songCount", "songCount"),
+                "p.id DESC");
         var page = playlistMapper.getAdminPlaylists(
                 new Page<>(query.getPageNum(), query.getPageSize()),
-                query.getTitle(), query.getStyle(), status, platform);
+                query.getTitle(), query.getStyle(), status, platform, orderBy);
         return Result.success(new PageResult<>(page.getTotal(), page.getRecords()));
     }
 

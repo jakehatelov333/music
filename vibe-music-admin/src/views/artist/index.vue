@@ -81,13 +81,16 @@ const {
             <el-option label="组合/乐队" value="2" />
           </el-select>
         </el-form-item>
-        <el-form-item label="包含停用：">
-          <el-switch
-            v-model="form.includeDisabled"
-            inline-prompt
-            active-text="是"
-            inactive-text="否"
-          />
+        <el-form-item label="状态：" prop="status">
+          <el-select
+            v-model="form.status"
+            placeholder="全部"
+            class="!w-[180px]"
+          >
+            <el-option label="全部" value="" />
+            <el-option label="启用中" value="ACTIVE" />
+            <el-option label="已停用" value="DISABLED" />
+          </el-select>
         </el-form-item>
         <el-form-item>
           <el-button

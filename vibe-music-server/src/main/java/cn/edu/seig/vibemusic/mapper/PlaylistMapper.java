@@ -40,11 +40,13 @@ public interface PlaylistMapper extends BaseMapper<Playlist> {
                                      @Param("title") String title, @Param("style") String style);
 
     // 管理员歌单列表：包含平台歌单与用户歌单，按来源与发布状态筛选
+    // orderBy 由 Service 层白名单解析后传入（不含 ORDER BY 关键字），禁止直接透传前端原值
     IPage<AdminPlaylistVO> getAdminPlaylists(Page<AdminPlaylistVO> page,
                                              @Param("title") String title,
                                              @Param("style") String style,
                                              @Param("status") String status,
-                                             @Param("platform") Boolean platform);
+                                             @Param("platform") Boolean platform,
+                                             @Param("orderBy") String orderBy);
 
     /**
      * 公开歌单列表。viewerId 为空时按 id 倒序；否则自己创建的歌单排到最后，

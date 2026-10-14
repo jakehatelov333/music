@@ -44,6 +44,8 @@ export function useBanner(formData: any, tableRef: Ref) {
   const bannerLocalUrl = ref("");
   const bannerCropperKey = ref(0);
   const { switchStyle } = usePublicHooks();
+  // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+  const sort = reactive({ sortField: null as string | null, order: null as string | null });
   const pagination = reactive<PaginationProps>({
     total: 0,
     pageSize: 5,
@@ -60,7 +62,8 @@ export function useBanner(formData: any, tableRef: Ref) {
     {
       label: "轮播图编号",
       prop: "bannerId",
-      minWidth: 100
+      minWidth: 100,
+      sortable: "custom"
     },
     {
       label: "轮播图",
@@ -178,6 +181,28 @@ export function useBanner(formData: any, tableRef: Ref) {
     onSearch();
   }
 
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      sort.sortField = prop;
+      sort.order = "asc";
+    } else if (order === "descending") {
+      sort.sortField = prop;
+      sort.order = "desc";
+    } else {
+      sort.sortField = null;
+      sort.order = null;
+    }
+    pagination.currentPage = 1;
+    onSearch();
+  }
+
+  /** 清空排序（重置表单时调用） */
+  function resetSort() {
+    sort.sortField = null;
+    sort.order = null;
+  }
+
   function handleSelectionChange(val) {
     selectionList.value = val;
   }
@@ -231,7 +256,7 @@ export function useBanner(formData: any, tableRef: Ref) {
 
   async function onSearch() {
     loading.value = true;
-    const params = { ...formData, ...pagination };
+    const params = { ...formData, ...pagination, ...sort };
     params.pageNum = params.currentPage;
     delete params.currentPage;
     delete params.total;
@@ -484,6 +509,8 @@ export function useBanner(formData: any, tableRef: Ref) {
     selectedNum: computed(() => selectionList.value.length),
     onSearch,
     handleSizeChange,
+    handleSortChange,
+    resetSort,
     handleCurrentChange,
     handleSelectionChange,
     handleDelete,

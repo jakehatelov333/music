@@ -28,6 +28,8 @@ const {
   selectedNum,
   onSearch,
   handleSizeChange,
+  handleSortChange,
+  resetSort,
   handleCurrentChange,
   handleSelectionChange,
   handleDelete,
@@ -39,6 +41,7 @@ const {
 const resetForm = (formEl: FormInstance | undefined) => {
   if (!formEl) return;
   formEl.resetFields();
+  resetSort(); // 排序不属于表单项，手动重置为默认排序
   onSearch(); // 重置后重新搜索
 };
 </script>
@@ -131,6 +134,7 @@ const resetForm = (formEl: FormInstance | undefined) => {
             }"
             @page-size-change="handleSizeChange"
             @page-current-change="handleCurrentChange"
+            @sort-change="handleSortChange"
             @selection-change="handleSelectionChange"
           >
             <template #operation="{ row }">

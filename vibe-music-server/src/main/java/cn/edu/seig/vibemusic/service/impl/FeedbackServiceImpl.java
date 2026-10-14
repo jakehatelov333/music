@@ -8,6 +8,7 @@ import cn.edu.seig.vibemusic.model.entity.Feedback;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IFeedbackService;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -46,7 +47,9 @@ public class FeedbackServiceImpl extends ServiceImpl<FeedbackMapper, Feedback> i
      * @return 反馈信息分页结果
      */
     @Override
-    @Cacheable(key = "'getFeedbackList' + #feedbackDTO.pageNum + #feedbackDTO.pageSize + #feedbackDTO.keyword")
+    // 排序参数必须并入缓存 key，否则同一筛选条件的不同排序会命中同一条缓存，表现为「排序不生效」。
+    // v1 → v2：新增排序能力，升版本号让旧缓存自然失效。
+    @Cacheable(key = "'getFeedbackList-v2' + #feedbackDTO.pageNum + #feedbackDTO.pageSize + #feedbackDTO.keyword + #feedbackDTO.sortField + #feedbackDTO.order")
     public Result<PageResult<Feedback>> getAllFeedbacks(FeedbackDTO feedbackDTO) {
         // 分页查询
         Page<Feedback> page = new Page<>(feedbackDTO.getPageNum(), feedbackDTO.getPageSize());
@@ -54,8 +57,21 @@ public class FeedbackServiceImpl extends ServiceImpl<FeedbackMapper, Feedback> i
         if (feedbackDTO.getKeyword() != null) {
             queryWrapper.like("feedback", feedbackDTO.getKeyword());
         }
-        // 倒序排序
-        queryWrapper.orderByDesc("create_time");
+        // 排序：仅接受白名单字段，未命中/缺省时按反馈时间倒序（历史行为）
+        Map<String, String> sortWhitelist = Map.of(
+                "feedbackId", "id",
+                "userId", "user_id",
+                "createTime", "create_time"
+        );
+        Map.Entry<String, Boolean> sort = SortWhitelistUtil.toColumnAndDirection(
+                feedbackDTO.getSortField(), feedbackDTO.getOrder(), sortWhitelist);
+        if (sort == null) {
+            queryWrapper.orderByDesc("create_time");
+        } else if (sort.getValue()) {
+            queryWrapper.orderByAsc(sort.getKey());
+        } else {
+            queryWrapper.orderByDesc(sort.getKey());
+        }
 
         IPage<Feedback> feedbackPage = feedbackMapper.selectPage(page, queryWrapper);
         if (feedbackPage.getRecords().size() == 0) {

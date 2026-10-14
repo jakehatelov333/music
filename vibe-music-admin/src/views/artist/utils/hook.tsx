@@ -26,10 +26,10 @@ export function useArtist(tableRef: Ref) {
     area: null,
     gender: null,
     /**
-     * 是否包含已停用（软删除）的歌手。
-     * 默认 false：停用记录对业务不可见，只在追溯「合并掉的组合歌手」时才需要打开。
+     * 状态筛选：ACTIVE-只看启用中（默认），DISABLED-只看已停用，""-全部。
+     * 停用记录对业务不可见，只在追溯「合并掉的组合歌手」时才需要查看。
      */
-    includeDisabled: false,
+    status: "ACTIVE",
     // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
     sortField: null,
     order: null

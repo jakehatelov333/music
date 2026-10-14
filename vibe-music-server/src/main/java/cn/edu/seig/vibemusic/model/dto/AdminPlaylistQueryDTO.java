@@ -47,4 +47,17 @@ public class AdminPlaylistQueryDTO implements Serializable {
     @Size(max = 16)
     private String source;
 
+    /**
+     * 排序字段（白名单校验在 Service 层）：
+     * playlistId / songCount；null 时按默认排序（编号倒序）。
+     */
+    @Size(max = 32)
+    private String sortField;
+
+    /**
+     * 排序方向：asc / desc；null 时按默认排序。
+     */
+    @Size(max = 8)
+    private String order;
+
 }

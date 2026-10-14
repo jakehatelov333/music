@@ -168,7 +168,8 @@
             <if test="platform != null and platform">AND p.owner_user_id IS NULL</if>
             <if test="platform != null and !platform">AND p.owner_user_id IS NOT NULL</if>
         </where>
-        ORDER BY p.id DESC
+        <!-- orderBy 来自 Service 层白名单解析（如 p.id DESC / songCount ASC），不含 ORDER BY 关键字 -->
+        ORDER BY ${orderBy}
     </select>
 
     <!-- 公开歌单列表：自己创建的歌单排到最后，并标记「我创建的 / 已收藏」 -->

@@ -129,15 +129,16 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      */
     @Override
     // 排序参数必须并入缓存 key：同一筛选条件不同排序会命中同一 key，导致排序"不生效"。
-    @Cacheable(key = "#artistDTO.pageNum + '-' + #artistDTO.pageSize + '-' + #artistDTO.artistName + '-' + #artistDTO.gender + '-' + #artistDTO.area + '-' + #artistDTO.includeDisabled + '-' + #artistDTO.sortField + '-' + #artistDTO.order + '-admin-v3'")
+    @Cacheable(key = "#artistDTO.pageNum + '-' + #artistDTO.pageSize + '-' + #artistDTO.artistName + '-' + #artistDTO.gender + '-' + #artistDTO.area + '-' + #artistDTO.status + '-' + #artistDTO.sortField + '-' + #artistDTO.order + '-admin-v4'")
     public Result<PageResult<Artist>> getAllArtistsAndDetail(ArtistDTO artistDTO) {
         // 分页查询
         Page<Artist> page = new Page<>(artistDTO.getPageNum(), artistDTO.getPageSize());
         QueryWrapper<Artist> queryWrapper = new QueryWrapper<>();
-        // 管理端默认只看启用记录；显式传 includeDisabled=true 时才把停用记录一并带出，
-        // 用于追溯「合并掉的组合歌手」这类历史数据。
-        if (!Boolean.TRUE.equals(artistDTO.getIncludeDisabled())) {
-            queryWrapper.eq("status", ArtistStatusEnum.ACTIVE.getStatus());
+        // 状态筛选：ACTIVE=只看启用中（默认），DISABLED=只看已停用（用于追溯
+        // 「合并掉的组合歌手」这类历史数据），null/空/无法识别=全部（不加过滤）。
+        ArtistStatusEnum statusEnum = ArtistStatusEnum.parse(artistDTO.getStatus());
+        if (statusEnum != null) {
+            queryWrapper.eq("status", statusEnum.getStatus());
         }
         // 根据 artistDTO 的条件构建查询条件
         if (artistDTO.getArtistName() != null) {

@@ -10,6 +10,7 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IBannerService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -22,6 +23,7 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * <p>
@@ -46,7 +48,9 @@ public class BannerServiceImpl extends ServiceImpl<BannerMapper, Banner> impleme
      * @return 轮播图列表
      */
     @Override
-    @Cacheable(key = "'bannerList' + #bannerDTO.pageNum + #bannerDTO.pageSize + #bannerDTO.bannerStatus")
+    // 排序参数必须并入缓存 key，否则同一筛选条件的不同排序会命中同一条缓存，表现为「排序不生效」。
+    // v1 → v2：新增排序能力，升版本号让旧缓存自然失效。
+    @Cacheable(key = "'bannerList-v2' + #bannerDTO.pageNum + #bannerDTO.pageSize + #bannerDTO.bannerStatus + #bannerDTO.sortField + #bannerDTO.order")
     public Result<PageResult<Banner>> getAllBanners(BannerDTO bannerDTO) {
         // 分页查询
         Page<Banner> page = new Page<>(bannerDTO.getPageNum(), bannerDTO.getPageSize());
@@ -54,8 +58,16 @@ public class BannerServiceImpl extends ServiceImpl<BannerMapper, Banner> impleme
         if (bannerDTO.getBannerStatus() != null) {
             queryWrapper.eq("status", bannerDTO.getBannerStatus().getId());
         }
-        // 倒序排序
-        queryWrapper.orderByDesc("id");
+        // 排序：仅接受白名单字段，未命中/缺省时按编号倒序（历史行为）
+        Map.Entry<String, Boolean> sort = SortWhitelistUtil.toColumnAndDirection(
+                bannerDTO.getSortField(), bannerDTO.getOrder(), Map.of("bannerId", "id"));
+        if (sort == null) {
+            queryWrapper.orderByDesc("id");
+        } else if (sort.getValue()) {
+            queryWrapper.orderByAsc(sort.getKey());
+        } else {
+            queryWrapper.orderByDesc(sort.getKey());
+        }
 
         IPage<Banner> bannerPage = bannerMapper.selectPage(page, queryWrapper);
         if (bannerPage.getRecords().size() == 0) {

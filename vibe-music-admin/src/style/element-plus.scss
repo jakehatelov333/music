@@ -20,6 +20,22 @@
   margin-left: 2px !important;
 }
 
+/* 表头排序图标：与标题保持同一行、紧贴标题右侧。
+   Element Plus 表头 .cell 默认允许换行（white-space: normal），列宽偏窄时
+   ▲▼ 会被折到标题下方、看起来像「竖排按钮」。这里改成不换行的 flex 行，
+   整组水平居中，与 QQ 音乐等主流后台一致（所有带排序的列统一生效）。 */
+.el-table th.el-table__cell.is-sortable > .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.el-table th.el-table__cell.is-sortable > .cell > .caret-wrapper {
+  flex: none;
+  margin-left: 2px;
+}
+
 /* 自定义 popover 的类名 */
 .pure-popper {
   padding: 0 !important;

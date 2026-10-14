@@ -29,7 +29,10 @@ export function usePlaylist(tableRef: Ref) {
     style: null,
     // 发布状态与来源是两个独立维度，分别筛选
     status: null,
-    source: null
+    source: null,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null,
+    order: null
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -53,7 +56,8 @@ export function usePlaylist(tableRef: Ref) {
     {
       label: "歌单编号",
       prop: "playlistId",
-      width: 90
+      width: 90,
+      sortable: "custom"
     },
     {
       label: "封面",
@@ -115,7 +119,8 @@ export function usePlaylist(tableRef: Ref) {
       label: "歌曲数",
       prop: "songCount",
       width: 90,
-      align: "center"
+      align: "center",
+      sortable: "custom"
     },
     {
       label: "简介",
@@ -176,6 +181,23 @@ export function usePlaylist(tableRef: Ref) {
     pagination.currentPage = val; // 更新当前页码
     form.pageNum = val; // 更新页码参数
     onSearch(); // 重新获取数据
+  }
+
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
+    onSearch();
   }
 
   /** 当CheckBox选择项发生变化时会触发该事件 */
@@ -257,6 +279,9 @@ export function usePlaylist(tableRef: Ref) {
     formEl.resetFields();
     form.pageNum = 1;
     pagination.currentPage = 1;
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     onSearch();
   };
 
@@ -451,6 +476,7 @@ export function usePlaylist(tableRef: Ref) {
     handleUnpublish,
     handleUpload,
     handleSizeChange,
+    handleSortChange,
     onSelectionCancel,
     handleCurrentChange,
     handleSelectionChange
