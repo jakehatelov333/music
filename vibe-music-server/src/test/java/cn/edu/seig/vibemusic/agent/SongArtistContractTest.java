@@ -298,7 +298,7 @@ class SongArtistContractTest extends AbstractAgentTest {
         jdbc.update("INSERT INTO tb_song_artist(song_id, artist_id, display_order) VALUES (10,2,2)");
 
         // 按「非主艺人」测试歌手B（id=2）筛选：歌曲 10 必须出现
-        var page = songMapper.getSongsWithArtistName(new Page<>(1, 10), 2L, null, null, null, false);
+        var page = songMapper.getSongsWithArtistName(new Page<>(1, 10), 2L, null, null, null, false, "s.release_time DESC");
 
         assertThat(page.getTotal()).isEqualTo(3); // 10（合作）+ 13、14（独唱）
         assertThat(page.getRecords()).filteredOn(song -> song.getSongId().equals(10L))
@@ -306,7 +306,7 @@ class SongArtistContractTest extends AbstractAgentTest {
                 .satisfies(song -> assertThat(song.getArtistName()).isEqualTo("测试歌手A / 测试歌手B"));
 
         // 按主艺人（id=1）筛选：同样要包含这首合作歌曲
-        var byPrimary = songMapper.getSongsWithArtistName(new Page<>(1, 10), 1L, null, null, null, false);
+        var byPrimary = songMapper.getSongsWithArtistName(new Page<>(1, 10), 1L, null, null, null, false, "s.release_time DESC");
         assertThat(byPrimary.getRecords()).extracting("songId")
                 .containsExactlyInAnyOrder(10L, 11L, 12L);
     }

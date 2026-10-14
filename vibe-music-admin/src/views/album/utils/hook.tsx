@@ -26,7 +26,10 @@ export function useAlbum(tableRef: Ref) {
     pageSize: 10,
     albumName: null as string | null,
     artistId: null as number | null,
-    status: null as "DRAFT" | "PUBLISHED" | null
+    status: null as "DRAFT" | "PUBLISHED" | null,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null as string | null,
+    order: null as string | null
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -55,7 +58,8 @@ export function useAlbum(tableRef: Ref) {
     {
       label: "专辑编号",
       prop: "albumId",
-      width: 100
+      width: 100,
+      sortable: "custom"
     },
     {
       label: "封面",
@@ -74,7 +78,8 @@ export function useAlbum(tableRef: Ref) {
     {
       label: "专辑名",
       prop: "albumName",
-      minWidth: 180
+      minWidth: 180,
+      sortable: "custom" // 按拼音排序（后端 CONVERT(name USING gbk)）
     },
     {
       label: "歌手",
@@ -86,13 +91,15 @@ export function useAlbum(tableRef: Ref) {
       prop: "releaseDate",
       minWidth: 150,
       width: 150,
+      sortable: "custom", // 空值始终排在最后
       formatter: ({ releaseDate }) =>
         releaseDate ? dayjs(releaseDate).format("YYYY-MM-DD") : "-"
     },
     {
       label: "歌曲数量",
       prop: "songCount",
-      width: 110
+      width: 110,
+      sortable: "custom"
     },
     {
       label: "状态",
@@ -108,6 +115,7 @@ export function useAlbum(tableRef: Ref) {
       label: "创建时间",
       prop: "createdAt",
       minWidth: 170,
+      sortable: "custom",
       formatter: ({ createdAt }) =>
         createdAt ? dayjs(createdAt).format("YYYY-MM-DD HH:mm") : "-"
     },
@@ -184,6 +192,23 @@ export function useAlbum(tableRef: Ref) {
     onSearch();
   }
 
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
+    onSearch();
+  }
+
   function handleSelectionChange(val) {
     selectedNum.value = val.length;
     tableRef.value.setAdaptive();
@@ -198,6 +223,9 @@ export function useAlbum(tableRef: Ref) {
     if (!formEl) return;
     formEl.resetFields();
     form.pageNum = 1;
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     onSearch();
   }
 
@@ -431,6 +459,7 @@ export function useAlbum(tableRef: Ref) {
     handleDelete,
     handleUpload,
     handleSizeChange,
+    handleSortChange,
     onSelectionCancel,
     handleCurrentChange,
     handleSelectionChange

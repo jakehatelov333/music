@@ -25,6 +25,7 @@ import cn.edu.seig.vibemusic.service.IAlbumService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -84,12 +85,26 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
     @Override
     public Result<PageResult<AlbumVO>> getAlbumList(AlbumQueryDTO queryDTO) {
         Page<AlbumVO> page = new Page<>(queryDTO.getPageNum(), queryDTO.getPageSize());
+        // 排序：仅接受白名单字段（releaseDate/songCount/createdAt 为 SELECT 别名，GROUP BY 查询可按别名排序），
+        // 未命中/缺省时按「发行日期倒序、空值靠后」的历史行为
+        String orderBy = SortWhitelistUtil.toOrderBy(
+                queryDTO.getSortField(), queryDTO.getOrder(),
+                Map.of(
+                        "albumId", "a.id",
+                        "albumName", "CONVERT(a.name USING gbk)", // 拼音排序：中文按拼音、英文按字母
+                        "releaseDate", "releaseDate",
+                        "songCount", "songCount",
+                        "createdAt", "createdAt"
+                ),
+                "releaseDate IS NULL, releaseDate DESC, a.id DESC");
         IPage<AlbumVO> albumPage = albumMapper.getAlbumList(
                 page,
                 queryDTO.getAlbumName(),
                 queryDTO.getArtistId(),
                 queryDTO.getKeyword(),
-                queryDTO.getStatus()
+                queryDTO.getStatus(),
+                queryDTO.getExcludeDisabledArtist(),
+                orderBy
         );
 
         return Result.success(new PageResult<>(albumPage.getTotal(), albumPage.getRecords()));

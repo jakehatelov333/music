@@ -31,6 +31,8 @@ public class AlbumController {
     @GetMapping("/list")
     public Result<PageResult<AlbumVO>> getAlbumList(@Valid AlbumQueryDTO queryDTO) {
         queryDTO.setStatus("PUBLISHED");
+        // 用户端不展示主艺人已停用（软删除）的专辑；管理端 /admin/getAllAlbums 不设置该开关，保持全量可见
+        queryDTO.setExcludeDisabledArtist(true);
         return albumService.getAlbumList(queryDTO);
     }
 

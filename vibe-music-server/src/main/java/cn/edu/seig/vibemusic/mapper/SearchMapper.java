@@ -31,10 +31,14 @@ public interface SearchMapper {
                 s.artist_names AS artistName
             FROM tb_song s
             LEFT JOIN tb_album al ON s.album_id = al.id
-            WHERE s.name LIKE CONCAT('%', #{keyword}, '%')
+            WHERE (s.name LIKE CONCAT('%', #{keyword}, '%')
                OR s.artist_names LIKE CONCAT('%', #{keyword}, '%')
                OR COALESCE(al.name, s.album) LIKE CONCAT('%', #{keyword}, '%')
-               OR s.style LIKE CONCAT('%', #{keyword}, '%')
+               OR s.style LIKE CONCAT('%', #{keyword}, '%'))
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa
+                    JOIN tb_artist a ON a.id = sa.artist_id
+                    WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
             ORDER BY
                 CASE
                     WHEN s.name = #{keyword} THEN 0
@@ -85,8 +89,9 @@ public interface SearchMapper {
             FROM tb_album al
             LEFT JOIN tb_artist ar ON al.artist_id = ar.id
             LEFT JOIN tb_song s ON s.album_id = al.id
-            WHERE al.name LIKE CONCAT('%', #{keyword}, '%')
-               OR ar.name LIKE CONCAT('%', #{keyword}, '%')
+            WHERE (al.name LIKE CONCAT('%', #{keyword}, '%')
+               OR ar.name LIKE CONCAT('%', #{keyword}, '%'))
+              AND ar.status = 'ACTIVE'
             GROUP BY al.id, al.artist_id, al.name, ar.name, al.cover_url, al.release_date, al.description
             ORDER BY
                 CASE

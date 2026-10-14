@@ -60,6 +60,7 @@ const {
   handleDelete,
   handleUpload,
   handleSizeChange,
+  handleSortChange,
   onSelectionCancel,
   handleCurrentChange,
   handleSelectionChange
@@ -303,6 +304,7 @@ onBeforeUnmount(stopAlbumPolling);
               color: 'var(--el-text-color-primary)'
             }"
             @selection-change="handleSelectionChange"
+            @sort-change="handleSortChange"
             @page-size-change="handleSizeChange"
             @page-current-change="handleCurrentChange"
           >

@@ -27,6 +27,7 @@ public interface SongMapper extends BaseMapper<Song> {
     // 获取歌曲列表
     // 歌手展示名读主表冗余列 artist_names（多歌手已按 display_order 拼好），因此无需 JOIN tb_artist：
     // 少一个 JOIN 意味着分页 COUNT 不可能被关联行放大。
+    // NOT EXISTS 排除涉及停用歌手的歌（含合作歌）：NOT EXISTS 不放大行数，分页 COUNT 安全。
     @Select("""
                 SELECT 
                     s.id AS songId, 
@@ -46,6 +47,10 @@ public interface SongMapper extends BaseMapper<Song> {
                     (#{songName} IS NULL OR TRIM(#{songName}) = '' OR s.name LIKE CONCAT('%', TRIM(#{songName}), '%'))
                     AND (#{artistName} IS NULL OR TRIM(#{artistName}) = '' OR s.artist_names LIKE CONCAT('%', TRIM(#{artistName}), '%'))
                     AND (#{album} IS NULL OR TRIM(#{album}) = '' OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{album}), '%'))
+                    AND NOT EXISTS (
+                        SELECT 1 FROM tb_song_artist sa
+                        JOIN tb_artist a ON a.id = sa.artist_id
+                        WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
             """)
     IPage<SongVO> getSongsWithArtist(Page<SongVO> page,
                                      @Param("songName") String songName,
@@ -85,14 +90,17 @@ public interface SongMapper extends BaseMapper<Song> {
                     AND (#{album} IS NULL OR TRIM(#{album}) = '' OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{album}), '%'))
                     AND (COALESCE(#{onlyMissingLyric}, FALSE) = FALSE
                          OR ((s.lyric IS NULL OR TRIM(s.lyric) = '') AND COALESCE(s.lyric_status, 0) <> 4))
-                ORDER BY s.release_time DESC
+                ORDER BY ${orderBy}
             """)
+    // ⚠️ ${orderBy} 为字符串替换：只允许传入 Service 层白名单映射后的固定子句，
+    //    严禁把前端原始输入拼进来，否则存在 SQL 注入风险。
     IPage<SongAdminVO> getSongsWithArtistName(Page<SongAdminVO> page,
                                               @Param("artistId") Long artistId,
                                               @Param("songName") String songName,
                                               @Param("artistName") String artistName,
                                               @Param("album") String album,
-                                              @Param("onlyMissingLyric") Boolean onlyMissingLyric);
+                                              @Param("onlyMissingLyric") Boolean onlyMissingLyric,
+                                              @Param("orderBy") String orderBy);
 
     /**
      * 获取随机歌曲列表
@@ -116,6 +124,10 @@ public interface SongMapper extends BaseMapper<Song> {
                     s.artist_names AS artistName
                 FROM tb_song s
                 LEFT JOIN tb_album al ON s.album_id = al.id
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM tb_song_artist sa
+                        JOIN tb_artist a ON a.id = sa.artist_id
+                        WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
                 ORDER BY RAND() LIMIT 20
             """)
     List<SongVO> getRandomSongsWithArtist();

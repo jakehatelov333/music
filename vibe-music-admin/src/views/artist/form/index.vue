@@ -12,7 +12,8 @@ const props = withDefaults(defineProps<FormProps>(), {
     gender: 0,
     birth: null,
     area: "",
-    introduction: ""
+    introduction: "",
+    status: "ACTIVE"
   })
 });
 
@@ -28,6 +29,17 @@ const genderOptions = [
   {
     value: 2,
     label: "组合/乐队"
+  }
+];
+
+const statusOptions = [
+  {
+    value: "ACTIVE",
+    label: "启用"
+  },
+  {
+    value: "DISABLED",
+    label: "停用（软删除，用户端不可见）"
   }
 ];
 
@@ -111,6 +123,28 @@ defineExpose({ getRef });
             clearable
             placeholder="请输入国籍"
           />
+        </el-form-item>
+      </re-col>
+
+      <re-col
+        v-if="newFormInline.title === '修改'"
+        :value="12"
+        :xs="24"
+        :sm="24"
+      >
+        <el-form-item label="状态" prop="status">
+          <el-select
+            v-model="newFormInline.status"
+            placeholder="请选择状态"
+            class="w-full"
+          >
+            <el-option
+              v-for="item in statusOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
         </el-form-item>
       </re-col>
 

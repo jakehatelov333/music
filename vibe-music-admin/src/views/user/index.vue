@@ -37,6 +37,7 @@ const {
   handleUpload,
   handleReset,
   handleSizeChange,
+  handleSortChange,
   onSelectionCancel,
   handleCurrentChange,
   handleSelectionChange
@@ -148,6 +149,7 @@ const {
               color: 'var(--el-text-color-primary)'
             }"
             @selection-change="handleSelectionChange"
+            @sort-change="handleSortChange"
             @page-size-change="handleSizeChange"
             @page-current-change="handleCurrentChange"
           >

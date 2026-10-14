@@ -47,7 +47,10 @@ export function useUser(tableRef: Ref) {
     pageSize: 15,
     username: null,
     phone: null,
-    userStatus: null
+    userStatus: null,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null,
+    order: null
   });
   const formRef = ref();
   const ruleFormRef = ref();
@@ -76,7 +79,8 @@ export function useUser(tableRef: Ref) {
     {
       label: "用户编号",
       prop: "userId",
-      width: 90
+      width: 90,
+      sortable: "custom"
     },
     {
       label: "用户头像",
@@ -104,7 +108,8 @@ export function useUser(tableRef: Ref) {
     {
       label: "用户名",
       prop: "username",
-      minWidth: 130
+      minWidth: 130,
+      sortable: "custom" // 按拼音排序（后端 CONVERT(username USING gbk)）
     },
     {
       label: "手机号码",
@@ -140,6 +145,7 @@ export function useUser(tableRef: Ref) {
       label: "创建时间",
       minWidth: 90,
       prop: "createTime",
+      sortable: "custom",
       formatter: ({ createTime }) =>
         dayjs(createTime).format("YYYY-MM-DD HH:mm:ss")
     },
@@ -147,6 +153,7 @@ export function useUser(tableRef: Ref) {
       label: "修改时间",
       minWidth: 90,
       prop: "updateTime",
+      sortable: "custom",
       formatter: ({ updateTime }) =>
         dayjs(updateTime).format("YYYY-MM-DD HH:mm:ss")
     },
@@ -264,6 +271,23 @@ export function useUser(tableRef: Ref) {
     onSearch(); // 重新获取数据
   }
 
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
+    onSearch();
+  }
+
   /** 当CheckBox选择项发生变化时会触发该事件 */
   function handleSelectionChange(val) {
     selectedNum.value = val.length;
@@ -339,6 +363,9 @@ export function useUser(tableRef: Ref) {
   const resetForm = formEl => {
     if (!formEl) return;
     formEl.resetFields();
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     onSearch();
   };
 
@@ -528,6 +555,7 @@ export function useUser(tableRef: Ref) {
     handleUpload,
     handleReset,
     handleSizeChange,
+    handleSortChange,
     onSelectionCancel,
     handleCurrentChange,
     handleSelectionChange

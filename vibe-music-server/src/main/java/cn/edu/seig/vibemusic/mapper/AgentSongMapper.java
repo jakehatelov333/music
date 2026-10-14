@@ -49,6 +49,10 @@ public interface AgentSongMapper {
                           WHERE sa.song_id = s.id AND sa.artist_id IN
                           <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
             </if>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa2
+                    JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                    WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
             ORDER BY s.id
             </script>
             """)
@@ -83,6 +87,10 @@ public interface AgentSongMapper {
                           WHERE sa.song_id = s.id AND sa.artist_id IN
                           <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
             </if>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa2
+                    JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                    WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
             ORDER BY s.id
             LIMIT #{limit}
             </script>
@@ -124,6 +132,10 @@ public interface AgentSongMapper {
               <if test="style != null and style.trim() != ''">
               AND s.style LIKE CONCAT('%', TRIM(#{style}), '%')
               </if>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa2
+                    JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                    WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
             ORDER BY s.id
             LIMIT #{limit}
             </script>
@@ -147,10 +159,14 @@ public interface AgentSongMapper {
                    s.audio_url AS audioUrl
             FROM tb_song s
                      LEFT JOIN tb_album al ON s.album_id = al.id
-            WHERE s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+            WHERE (s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
                OR s.artist_names LIKE CONCAT('%', TRIM(#{keyword}), '%')
                OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{keyword}), '%')
-               OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%')
+               OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%'))
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa
+                    JOIN tb_artist a ON a.id = sa.artist_id
+                    WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
             ORDER BY s.id
             LIMIT #{limit}
             """)
@@ -197,6 +213,10 @@ public interface AgentSongMapper {
               AND s.id NOT IN
               <foreach collection="excludeIds" item="excludedId" open="(" separator="," close=")">#{excludedId}</foreach>
             </if>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa2
+                    JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                    WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
             ORDER BY s.id
             LIMIT #{limit}
             </script>
@@ -219,6 +239,10 @@ public interface AgentSongMapper {
                    s.audio_url AS audioUrl
             FROM tb_song s
                      LEFT JOIN tb_album al ON s.album_id = al.id
+            WHERE NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa
+                    JOIN tb_artist a ON a.id = sa.artist_id
+                    WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
             ORDER BY RAND()
             LIMIT #{limit}
             """)
@@ -239,6 +263,10 @@ public interface AgentSongMapper {
                      LEFT JOIN tb_album al ON s.album_id = al.id
             WHERE s.id IN
             <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa
+                    JOIN tb_artist a ON a.id = sa.artist_id
+                    WHERE sa.song_id = s.id AND a.status &lt;&gt; 'ACTIVE')
             ORDER BY s.id
             </script>
             """)

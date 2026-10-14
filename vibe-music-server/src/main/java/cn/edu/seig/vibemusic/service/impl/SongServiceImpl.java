@@ -28,6 +28,7 @@ import cn.edu.seig.vibemusic.service.ISongService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -153,11 +154,21 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     // ⚠️ 版本号变更历史：album-v4 → album-v5。多歌手改造把 artistName 的来源从
     //    「JOIN tb_artist」换成了「主表 artist_names」，结果集变了但 key 没变，
     //    Redis 里的旧条目会继续返回老歌手名 —— 所以必须升版本号让旧缓存自然失效。
-    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.artistName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-' + #songDTO.onlyMissingLyric + '-album-v5'")
+    //    v5 → v6：新增排序参数，排序条件并入 key。
+    @Cacheable(key = "#songDTO.pageNum + '-' + #songDTO.pageSize + '-' + #songDTO.songName + '-' + #songDTO.artistName + '-' + #songDTO.album + '-' + #songDTO.artistId + '-' + #songDTO.onlyMissingLyric + '-' + #songDTO.sortField + '-' + #songDTO.order + '-album-v6'")
     public Result<PageResult<SongAdminVO>> getAllSongsByArtist(SongAndArtistDTO songDTO) {
         // 分页查询
         Page<SongAdminVO> page = new Page<>(songDTO.getPageNum(), songDTO.getPageSize());
-        IPage<SongAdminVO> songPage = songMapper.getSongsWithArtistName(page, songDTO.getArtistId(), songDTO.getSongName(), songDTO.getArtistName(), songDTO.getAlbum(), songDTO.getOnlyMissingLyric());
+        // 排序：仅接受白名单字段，未命中/缺省时按发行日期倒序（历史行为）
+        String orderBy = SortWhitelistUtil.toOrderBy(
+                songDTO.getSortField(), songDTO.getOrder(),
+                Map.of(
+                        "songId", "s.id",
+                        "songName", "CONVERT(s.name USING gbk)", // 拼音排序：中文按拼音、英文按字母
+                        "releaseTime", "s.release_time"
+                ),
+                "s.release_time DESC");
+        IPage<SongAdminVO> songPage = songMapper.getSongsWithArtistName(page, songDTO.getArtistId(), songDTO.getSongName(), songDTO.getArtistName(), songDTO.getAlbum(), songDTO.getOnlyMissingLyric(), orderBy);
 
         if (songPage.getRecords().isEmpty()) {
             return Result.success(MessageConstant.DATA_NOT_FOUND, new PageResult<>(0L, null));

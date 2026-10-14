@@ -46,4 +46,23 @@ public class AlbumQueryDTO implements Serializable {
     /** 管理端状态筛选；用户端固定只查询 PUBLISHED。 */
     @Size(max = 200)
     private String status;
+
+    /**
+     * 排序字段（白名单校验在 Service 层）：
+     * albumId / albumName / releaseDate / createdAt / songCount；null 时按默认排序（发行日期倒序）。
+     */
+    @Size(max = 32)
+    private String sortField;
+
+    /**
+     * 排序方向：asc / desc；null 时按默认排序。
+     */
+    @Size(max = 8)
+    private String order;
+
+    /**
+     * 是否在结果中排除主艺人已停用（软删除）的专辑。
+     * 客户端列表置 true；管理端列表不设置（保持可见全部专辑）。
+     */
+    private Boolean excludeDisabledArtist;
 }

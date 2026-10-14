@@ -23,6 +23,7 @@ import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -35,6 +36,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -65,6 +67,18 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     private MinioService minioService;
     @Autowired
     private SongArtistService songArtistService;
+    @Autowired
+    private RedisTemplate redisTemplate;
+
+    /**
+     * 停用（软删除）歌手会改变用户端歌曲/专辑的可见性，推荐缓存必须一并清理。
+     */
+    private void evictRecommendedSongsCache() {
+        java.util.Set<Object> keys = redisTemplate.keys("recommended_songs:*");
+        if (keys != null && !keys.isEmpty()) {
+            redisTemplate.delete(keys);
+        }
+    }
 
     /**
      * 获取所有歌手列表
@@ -114,7 +128,8 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * @return 歌手列表
      */
     @Override
-    @Cacheable(key = "#artistDTO.pageNum + '-' + #artistDTO.pageSize + '-' + #artistDTO.artistName + '-' + #artistDTO.gender + '-' + #artistDTO.area + '-' + #artistDTO.includeDisabled + '-admin-v2'")
+    // 排序参数必须并入缓存 key：同一筛选条件不同排序会命中同一 key，导致排序"不生效"。
+    @Cacheable(key = "#artistDTO.pageNum + '-' + #artistDTO.pageSize + '-' + #artistDTO.artistName + '-' + #artistDTO.gender + '-' + #artistDTO.area + '-' + #artistDTO.includeDisabled + '-' + #artistDTO.sortField + '-' + #artistDTO.order + '-admin-v3'")
     public Result<PageResult<Artist>> getAllArtistsAndDetail(ArtistDTO artistDTO) {
         // 分页查询
         Page<Artist> page = new Page<>(artistDTO.getPageNum(), artistDTO.getPageSize());
@@ -135,8 +150,21 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             queryWrapper.like("area", artistDTO.getArea());
         }
 
-        // 倒序排序
-        queryWrapper.orderByDesc("id");
+        // 排序：仅接受白名单字段，未命中/缺省时按编号倒序（历史行为）
+        Map<String, String> sortWhitelist = Map.of(
+                "artistId", "id",
+                "artistName", "CONVERT(name USING gbk)", // 拼音排序：中文按拼音、英文按字母
+                "birth", "birth"
+        );
+        Map.Entry<String, Boolean> sort = SortWhitelistUtil.toColumnAndDirection(
+                artistDTO.getSortField(), artistDTO.getOrder(), sortWhitelist);
+        if (sort == null) {
+            queryWrapper.orderByDesc("id");
+        } else if (sort.getValue()) {
+            queryWrapper.orderByAsc(sort.getKey());
+        } else {
+            queryWrapper.orderByDesc(sort.getKey());
+        }
 
         IPage<Artist> artistPage = artistMapper.selectPage(page, queryWrapper);
         if (artistPage.getRecords().size() == 0) {
@@ -152,12 +180,15 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * @return 歌手名称列表
      */
     @Override
-    @Cacheable(key = "'allArtistNames-v2'")
+    // v2 → v3：歌手树/歌手下拉改为按拼音（A→Z）排序，结果顺序变了必须升版本号，
+    // 否则 Redis 里的旧条目会继续返回按 id 倒序的老数据。
+    @Cacheable(key = "'allArtistNames-v3'")
     public Result<List<ArtistNameVO>> getAllArtistNames() {
         // 歌手选择器 / 歌手树 / 上传匹配都走这里，必须排除停用记录
+        // CONVERT(name USING gbk)：GBK 码表对常用汉字基本按拼音排列，可实现中文按拼音、英文按字母的 A→Z 排序
         List<Artist> artists = artistMapper.selectList(new QueryWrapper<Artist>()
                 .eq("status", ArtistStatusEnum.ACTIVE.getStatus())
-                .orderByDesc("id"));
+                .orderByAsc("CONVERT(name USING gbk)"));
         if (artists.isEmpty()) {
             return Result.success(MessageConstant.DATA_NOT_FOUND, null);
         }
@@ -341,7 +372,9 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * @return 更新结果
      */
     @Override
-    @CacheEvict(cacheNames = "artistCache", allEntries = true)
+    // 状态（启用/停用）改为可在编辑框直接修改：停用 = 软删除，会改变用户端歌曲/专辑可见性，
+    // 因此 songCache / userFavoriteCache 必须一并失效；推荐缓存由方法体内 evictRecommendedSongsCache() 清理。
+    @CacheEvict(cacheNames = {"artistCache", "songCache", "userFavoriteCache"}, allEntries = true)
     @Transactional(rollbackFor = Exception.class)
     public Result updateArtist(ArtistUpdateDTO artistUpdateDTO) {
         Long artistId = artistUpdateDTO.getArtistId();
@@ -349,6 +382,13 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
         // 查重同样只看启用记录，并排除自己
         if (artistNameTaken(artistUpdateDTO.getArtistName(), artistId)) {
             return Result.error(MessageConstant.ARTIST + MessageConstant.ALREADY_EXISTS);
+        }
+
+        // 状态仅允许 ACTIVE / DISABLED；null 表示本次不修改状态
+        if (artistUpdateDTO.getStatus() != null
+                && !ArtistStatusEnum.ACTIVE.getStatus().equals(artistUpdateDTO.getStatus())
+                && !ArtistStatusEnum.DISABLED.getStatus().equals(artistUpdateDTO.getStatus())) {
+            return Result.error("非法的歌手状态");
         }
 
         Artist artist = new Artist();
@@ -360,6 +400,9 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
         // tb_song.artist_names 是派生值：歌手名一变，所有引用它的歌曲展示串都必须重建，
         // 否则歌曲列表里会继续显示旧名。重建与上面的改名在同一事务内完成。
         songArtistService.rebuildArtistNamesForArtist(artistId);
+
+        // 状态变化会影响推荐列表里的歌曲可见性
+        evictRecommendedSongsCache();
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
@@ -395,7 +438,8 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * @return 删除结果
      */
     @Override
-    @CacheEvict(cacheNames = {"artistCache", "songCache"}, allEntries = true)
+    // 停用歌手会隐藏其歌曲/专辑：收藏列表缓存与推荐缓存必须一并失效
+    @CacheEvict(cacheNames = {"artistCache", "songCache", "userFavoriteCache"}, allEntries = true)
     public Result deleteArtist(Long artistId) {
         Artist artist = artistMapper.selectById(artistId);
         if (artist == null) {
@@ -410,6 +454,7 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
                 .set("status", ArtistStatusEnum.DISABLED.getStatus())) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
+        evictRecommendedSongsCache();
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
@@ -422,7 +467,8 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * 选择器、搜索、随机与画像里。详见 docs/phase6-song-multiple-artists.md §7.4。
      */
     @Override
-    @CacheEvict(cacheNames = {"artistCache", "songCache"}, allEntries = true)
+    // 停用歌手会隐藏其歌曲/专辑：收藏列表缓存与推荐缓存必须一并失效
+    @CacheEvict(cacheNames = {"artistCache", "songCache", "userFavoriteCache"}, allEntries = true)
     public Result deleteArtists(List<Long> artistIds) {
         if (artistIds == null || artistIds.isEmpty()) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
@@ -432,6 +478,7 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
                 .set("status", ArtistStatusEnum.DISABLED.getStatus())) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
+        evictRecommendedSongsCache();
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }

@@ -45,4 +45,10 @@ public class ArtistUpdateDTO implements Serializable {
      */
     private String introduction;
 
+    /**
+     * 歌手状态：ACTIVE-启用，DISABLED-停用（软删除）。
+     * 管理端编辑框可直接启停；null 表示本次不修改状态。
+     */
+    private String status;
+
 }

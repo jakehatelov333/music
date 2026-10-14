@@ -53,6 +53,11 @@
                  LEFT JOIN tb_comment c ON s.id = c.song_id AND c.type = 0
                  LEFT JOIN tb_user u ON c.user_id = u.id
         WHERE s.id = #{songId}
+          <!-- 排除涉及停用歌手的歌（含合作歌） -->
+          AND NOT EXISTS (
+                SELECT 1 FROM tb_song_artist sa
+                JOIN tb_artist a ON a.id = sa.artist_id
+                WHERE sa.song_id = s.id AND a.status &lt;&gt; 'ACTIVE')
     </select>
 
     <!-- 根据歌曲id列表查询歌曲列表 -->
@@ -90,6 +95,11 @@
         <if test="album != null and album.trim() != ''">
             AND COALESCE(al.name, s.album) LIKE CONCAT('%', #{album}, '%')
         </if>
+        <!-- 排除涉及停用歌手的歌（含合作歌）；收藏列表同样不可见 -->
+        AND NOT EXISTS (
+              SELECT 1 FROM tb_song_artist sa
+              JOIN tb_artist a ON a.id = sa.artist_id
+              WHERE sa.song_id = s.id AND a.status &lt;&gt; 'ACTIVE')
         ORDER BY u.create_time DESC
     </select>
 
@@ -121,6 +131,11 @@
         <foreach item="item" collection="favoriteSongIds" open="(" separator="," close=")">
             #{item}
         </foreach>
+        <!-- 排除涉及停用歌手的歌（含合作歌） -->
+        AND NOT EXISTS (
+              SELECT 1 FROM tb_song_artist sa
+              JOIN tb_artist a ON a.id = sa.artist_id
+              WHERE sa.song_id = s.id AND a.status &lt;&gt; 'ACTIVE')
         ORDER BY s.release_time DESC
         LIMIT #{limit}
     </select>

@@ -74,6 +74,11 @@
         WHERE p.id = #{playlistId}
           AND (p.owner_user_id = #{viewerId}
                OR (p.is_public = 1 AND (p.status IS NULL OR p.status = 'PUBLISHED')))
+          <!-- 用户端不可见涉及停用歌手的歌（含合作歌）；管理端 getAdminPlaylistDetailById 不做此过滤 -->
+          AND NOT EXISTS (
+                SELECT 1 FROM tb_song_artist sa
+                JOIN tb_artist ar ON ar.id = sa.artist_id
+                WHERE sa.song_id = pb.song_id AND ar.status &lt;&gt; 'ACTIVE')
         ORDER BY pb.song_id, c.create_time DESC, c.id DESC
     </select>
 

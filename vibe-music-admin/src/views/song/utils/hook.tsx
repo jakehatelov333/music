@@ -38,7 +38,10 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     artistId: null,
     songName: null,
     album: null,
-    onlyMissingLyric: false
+    onlyMissingLyric: false,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null,
+    order: null
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -64,7 +67,8 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     {
       label: "歌曲编号",
       prop: "songId",
-      width: 90
+      width: 90,
+      sortable: "custom"
     },
     {
       label: "封面",
@@ -83,7 +87,8 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     {
       label: "歌名",
       prop: "songName",
-      minWidth: 130
+      minWidth: 130,
+      sortable: "custom" // 按拼音排序（后端 CONVERT(name USING gbk)）
     },
     {
       label: "歌手",
@@ -114,6 +119,7 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
       minWidth: 130,
       width: 130,
       prop: "releaseTime",
+      sortable: "custom",
       formatter: ({ releaseTime }) => dayjs(releaseTime).format("YYYY-MM-DD")
     },
     {
@@ -198,6 +204,23 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     pagination.currentPage = val; // 更新当前页码
     form.pageNum = val; // 更新页码参数
     onSearch(); // 重新获取数据
+  }
+
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
+    onSearch();
   }
 
   /** 当CheckBox选择项发生变化时会触发该事件 */
@@ -326,6 +349,9 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     if (!formEl) return;
     formEl.resetFields();
     form.artistId = "";
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     treeRef.value.onTreeReset();
     onSearch();
   };
@@ -544,6 +570,7 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
     handleDelete,
     handleUpload,
     handleSizeChange,
+    handleSortChange,
     onSelectionCancel,
     handleCurrentChange,
     handleSelectionChange

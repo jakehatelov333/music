@@ -48,4 +48,17 @@ public class UserSearchDTO implements Serializable {
      * 用户状态：0-启用，1-禁用
      */
     private UserStatusEnum userStatus;
+
+    /**
+     * 排序字段（白名单校验在 Service 层）：
+     * userId / username / createTime / updateTime；null 时按默认排序（创建时间倒序）。
+     */
+    @Size(max = 32)
+    private String sortField;
+
+    /**
+     * 排序方向：asc / desc；null 时按默认排序。
+     */
+    @Size(max = 8)
+    private String order;
 }

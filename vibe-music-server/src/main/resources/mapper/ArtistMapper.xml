@@ -51,6 +51,11 @@
                  LEFT JOIN tb_song s ON s.id = sa.song_id
         WHERE a.id = #{artistId}
           AND a.status = 'ACTIVE'
+          <!-- 合作歌曲的其他歌手若已停用，这首歌也不出现在歌手页 -->
+          AND NOT EXISTS (
+                SELECT 1 FROM tb_song_artist sa2
+                JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
     </select>
 
 </mapper>

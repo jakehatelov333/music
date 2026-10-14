@@ -16,6 +16,7 @@ import cn.edu.seig.vibemusic.service.EmailService;
 import cn.edu.seig.vibemusic.service.IUserService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -368,7 +369,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      * @return 用户分页信息
      */
     @Override
-    @Cacheable(key = "#userSearchDTO.pageNum + '-' + #userSearchDTO.pageSize + '-' + #userSearchDTO.username + '-' + #userSearchDTO.phone + '-' + #userSearchDTO.userStatus")
+    // 排序参数必须并入缓存 key：同一筛选条件不同排序会命中同一 key，导致排序"不生效"。
+    @Cacheable(key = "#userSearchDTO.pageNum + '-' + #userSearchDTO.pageSize + '-' + #userSearchDTO.username + '-' + #userSearchDTO.phone + '-' + #userSearchDTO.userStatus + '-' + #userSearchDTO.sortField + '-' + #userSearchDTO.order + '-v2'")
     public Result<PageResult<UserManagementVO>> getAllUsers(UserSearchDTO userSearchDTO) {
         // 分页查询
         Page<User> page = new Page<>(userSearchDTO.getPageNum(), userSearchDTO.getPageSize());
@@ -384,8 +386,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             queryWrapper.eq("status", userSearchDTO.getUserStatus().getId());
         }
 
-        // 倒序排序
-        queryWrapper.orderByDesc("create_time");
+        // 排序：仅接受白名单字段，未命中/缺省时按创建时间倒序（历史行为）
+        Map<String, String> sortWhitelist = Map.of(
+                "userId", "id",
+                "username", "CONVERT(username USING gbk)", // 拼音排序：中文按拼音、英文按字母
+                "createTime", "create_time",
+                "updateTime", "update_time"
+        );
+        Map.Entry<String, Boolean> sort = SortWhitelistUtil.toColumnAndDirection(
+                userSearchDTO.getSortField(), userSearchDTO.getOrder(), sortWhitelist);
+        if (sort == null) {
+            queryWrapper.orderByDesc("create_time");
+        } else if (sort.getValue()) {
+            queryWrapper.orderByAsc(sort.getKey());
+        } else {
+            queryWrapper.orderByDesc(sort.getKey());
+        }
 
         IPage<User> userPage = userMapper.selectPage(page, queryWrapper);
         if (userPage.getRecords().size() == 0) {

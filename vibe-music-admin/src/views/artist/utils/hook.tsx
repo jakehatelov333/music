@@ -29,7 +29,10 @@ export function useArtist(tableRef: Ref) {
      * 是否包含已停用（软删除）的歌手。
      * 默认 false：停用记录对业务不可见，只在追溯「合并掉的组合歌手」时才需要打开。
      */
-    includeDisabled: false
+    includeDisabled: false,
+    // 服务端排序：sortField 由列 prop 映射（白名单校验在后端），order 为 asc/desc
+    sortField: null,
+    order: null
   });
   const formRef = ref();
   const dataList = ref([]);
@@ -53,7 +56,8 @@ export function useArtist(tableRef: Ref) {
     {
       label: "歌手编号",
       prop: "artistId",
-      width: 90
+      width: 90,
+      sortable: "custom"
     },
     {
       label: "歌手头像",
@@ -82,7 +86,8 @@ export function useArtist(tableRef: Ref) {
       label: "歌手",
       prop: "artistName",
       minWidth: 130,
-      width: 200
+      width: 200,
+      sortable: "custom" // 按拼音排序（后端 CONVERT(name USING gbk)）
     },
     {
       label: "类型",
@@ -117,6 +122,7 @@ export function useArtist(tableRef: Ref) {
       minWidth: 130,
       width: 130,
       prop: "birth",
+      sortable: "custom",
       formatter: ({ birth }) => (birth ? dayjs(birth).format("YYYY-MM-DD") : "")
     },
     {
@@ -204,6 +210,23 @@ export function useArtist(tableRef: Ref) {
     onSearch(); // 重新获取数据
   }
 
+  /** 列头排序（服务端排序）：升序→降序→取消循环，取消后回默认排序 */
+  function handleSortChange({ prop, order }) {
+    if (order === "ascending") {
+      form.sortField = prop;
+      form.order = "asc";
+    } else if (order === "descending") {
+      form.sortField = prop;
+      form.order = "desc";
+    } else {
+      form.sortField = null;
+      form.order = null;
+    }
+    pagination.currentPage = 1;
+    form.pageNum = 1;
+    onSearch();
+  }
+
   /** 当CheckBox选择项发生变化时会触发该事件 */
   function handleSelectionChange(val) {
     selectedNum.value = val.length;
@@ -279,6 +302,9 @@ export function useArtist(tableRef: Ref) {
   const resetForm = formEl => {
     if (!formEl) return;
     formEl.resetFields();
+    // 排序不属于表单项，resetFields 不会清掉，手动还原为默认排序
+    form.sortField = null;
+    form.order = null;
     onSearch();
   };
 
@@ -293,7 +319,8 @@ export function useArtist(tableRef: Ref) {
           gender: row?.gender ?? "",
           birth: row?.birth ?? "",
           area: row?.area ?? "",
-          introduction: row?.introduction ?? ""
+          introduction: row?.introduction ?? "",
+          status: row?.status ?? "ACTIVE"
         }
       },
       width: "46%",
@@ -406,6 +433,7 @@ export function useArtist(tableRef: Ref) {
     handleDelete,
     handleUpload,
     handleSizeChange,
+    handleSortChange,
     onSelectionCancel,
     handleCurrentChange,
     handleSelectionChange

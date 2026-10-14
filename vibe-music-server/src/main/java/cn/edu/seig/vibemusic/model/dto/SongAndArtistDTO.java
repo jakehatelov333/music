@@ -57,4 +57,17 @@ public class SongAndArtistDTO implements Serializable {
     /** 仅查询歌词文本为空且未被标记为伴奏/无需歌词的歌曲 */
     private Boolean onlyMissingLyric;
 
+    /**
+     * 排序字段（白名单校验在 Service 层）：
+     * songId / songName / releaseTime；null 时按默认排序（发行日期倒序）。
+     */
+    @Size(max = 32)
+    private String sortField;
+
+    /**
+     * 排序方向：asc / desc；null 时按默认排序。
+     */
+    @Size(max = 8)
+    private String order;
+
 }

@@ -42,15 +42,20 @@ public interface AlbumMapper extends BaseMapper<Album> {
                    OR a.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
                    OR ar.name LIKE CONCAT('%', TRIM(#{keyword}), '%'))
               AND (#{status} IS NULL OR TRIM(#{status}) = '' OR a.status = #{status})
+              AND (COALESCE(#{excludeDisabledArtist}, FALSE) = FALSE OR ar.status = 'ACTIVE')
             GROUP BY a.id, a.artist_id, a.name, ar.name, a.cover_url, a.release_date, a.description,
                      a.status, a.created_at, a.updated_at
-            ORDER BY releaseDate IS NULL, releaseDate DESC, a.id DESC
+            ORDER BY ${orderBy}
             """)
+    // ⚠️ ${orderBy} 为字符串替换：只允许传入 Service 层白名单映射后的固定子句，
+    //    严禁把前端原始输入拼进来，否则存在 SQL 注入风险。
     IPage<AlbumVO> getAlbumList(Page<AlbumVO> page,
                                 @Param("albumName") String albumName,
                                 @Param("artistId") Long artistId,
                                 @Param("keyword") String keyword,
-                                @Param("status") String status);
+                                @Param("status") String status,
+                                @Param("excludeDisabledArtist") Boolean excludeDisabledArtist,
+                                @Param("orderBy") String orderBy);
 
     @Select("""
             SELECT
@@ -69,6 +74,7 @@ public interface AlbumMapper extends BaseMapper<Album> {
             LEFT JOIN tb_artist ar ON a.artist_id = ar.id
             LEFT JOIN tb_song s ON s.album_id = a.id
             WHERE a.id = #{albumId}
+              AND ar.status = 'ACTIVE'
             GROUP BY a.id, a.artist_id, a.name, ar.name, a.cover_url, a.release_date, a.description,
                      a.status, a.created_at, a.updated_at
             """)
@@ -99,6 +105,10 @@ public interface AlbumMapper extends BaseMapper<Album> {
             FROM tb_song s
             INNER JOIN tb_album al ON s.album_id = al.id
             WHERE s.album_id = #{albumId}
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa
+                    JOIN tb_artist a ON a.id = sa.artist_id
+                    WHERE sa.song_id = s.id AND a.status <> 'ACTIVE')
             ORDER BY s.disc_number ASC, s.track_number ASC, s.id ASC
             """)
     List<SongVO> getSongsByAlbumId(@Param("albumId") Long albumId);
@@ -119,8 +129,9 @@ public interface AlbumMapper extends BaseMapper<Album> {
             FROM tb_album a
             LEFT JOIN tb_artist ar ON a.artist_id = ar.id
             LEFT JOIN tb_song s ON s.album_id = a.id
-            WHERE a.name LIKE CONCAT('%', #{keyword}, '%')
-               OR ar.name LIKE CONCAT('%', #{keyword}, '%')
+            WHERE (a.name LIKE CONCAT('%', #{keyword}, '%')
+               OR ar.name LIKE CONCAT('%', #{keyword}, '%'))
+              AND ar.status = 'ACTIVE'
             GROUP BY a.id, a.artist_id, a.name, ar.name, a.cover_url, a.release_date, a.description,
                      a.status, a.created_at, a.updated_at
             ORDER BY
@@ -155,6 +166,7 @@ public interface AlbumMapper extends BaseMapper<Album> {
             LEFT JOIN tb_artist ar ON a.artist_id = ar.id
             LEFT JOIN tb_song s ON s.album_id = a.id
             WHERE a.artist_id = #{artistId}
+              AND ar.status = 'ACTIVE'
             GROUP BY a.id, a.artist_id, a.name, ar.name, a.cover_url, a.release_date, a.description,
                      a.status, a.created_at, a.updated_at
             ORDER BY releaseDate IS NULL, releaseDate DESC, a.id DESC
@@ -169,7 +181,10 @@ public interface AlbumMapper extends BaseMapper<Album> {
     Integer getNextTrackNumber(@Param("albumId") Long albumId);
 
     @Select("""
-            SELECT COUNT(*) FROM tb_album
+            SELECT COUNT(*)
+            FROM tb_album a
+            JOIN tb_artist ar ON ar.id = a.artist_id
+            WHERE ar.status = 'ACTIVE'
             """)
     Long getVisibleAlbumCount();
 }
