@@ -10,7 +10,7 @@ import lombok.Getter;
  * 因此「合并掉的组合歌手」（例如 {@code 银临/Aki阿杰}）只能停用，不能删除。
  *
  * <p>{@code DISABLED} 的记录对正常业务不可见（列表、选择器、搜索、随机、画像、上传匹配），
- * 但管理端可以通过 {@code includeDisabled} 显式查看，用于追溯历史。
+ * 但管理端列表可通过状态筛选（{@code status = DISABLED}）显式查看，用于追溯历史。
  */
 @Getter
 public enum ArtistStatusEnum {
