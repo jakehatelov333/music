@@ -53,7 +53,7 @@ class SystemMessageInjectionTest extends AbstractAgentTest {
         var summaries = new ChatSummaryService(aiMapper, Mockito.mock(QwenChatModel.class));
         // 纯 Java 构造拿不到 @Value 默认注入，显式给值（maxChars=0 会把摘要整段截光）。
         ReflectionTestUtils.setField(summaries, "maxChars", 300);
-        return new PersonalizedSystemPrompt(profiles, summaries);
+        return new PersonalizedSystemPrompt(profiles, summaries, memoryPreferenceService);
     }
 
     /** 用给定的提示词组装器建一个工厂，并把模型收到的消息列表收集起来。 */

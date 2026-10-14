@@ -69,6 +69,8 @@ public abstract class AbstractAgentTest {
     @Autowired protected ArtistNameParser artistNameParser;
     @Autowired protected MusicTools musicTools;
     @Autowired protected cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profileService;
+    @Autowired protected cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService memoryPreferenceService;
+    @Autowired protected AgentMemoryMapper memoryMapper;
     @Autowired protected DataSource dataSource;
 
     protected JdbcTemplate jdbc;
@@ -82,6 +84,8 @@ public abstract class AbstractAgentTest {
 
     /** 清空业务数据并写入固定夹具；评测集会在每个用例之间重复调用。 */
     protected void resetData() {
+        jdbc.update("DELETE FROM tb_user_memory_preference");
+        jdbc.update("DELETE FROM tb_user_ai_memory_setting");
         jdbc.update("DELETE FROM tb_user_music_profile");
         jdbc.update("DELETE FROM ai_chat_state");
         jdbc.update("DELETE FROM chat_messages");
@@ -187,6 +191,15 @@ public abstract class AbstractAgentTest {
         jdbc.execute("CREATE TABLE IF NOT EXISTS chat_messages(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
                 + "chat_id VARCHAR(255) NOT NULL, message_type VARCHAR(32) NOT NULL, content CLOB NOT NULL, "
                 + "created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)");
+        // 用户手动偏好 + 个性化开关（与 sql/phase8_ai_memory_preferences.sql 对齐）。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_memory_preference(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "user_id BIGINT NOT NULL, category VARCHAR(32) NOT NULL, target_id BIGINT, "
+                + "target_value VARCHAR(255) NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, "
+                + "UNIQUE(user_id, category, target_value), "
+                + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_ai_memory_setting(user_id BIGINT PRIMARY KEY, "
+                + "personalization_enabled BOOLEAN NOT NULL DEFAULT TRUE, updated_at TIMESTAMP NOT NULL, "
+                + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
     }
 
     // ------------------------------------------------------------------ helpers
@@ -284,6 +297,7 @@ public abstract class AbstractAgentTest {
             config.addMapper(SearchMapper.class);
             config.addMapper(UserMusicProfileMapper.class);
             config.addMapper(SongArtistMapper.class);
+            config.addMapper(AgentMemoryMapper.class);
             // AiMapper 是 MyBatis-Plus 的 BaseMapper：滚动摘要记忆与会话消息读写都走它。
             config.addMapper(AiMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
@@ -353,6 +367,19 @@ public abstract class AbstractAgentTest {
             // @Value 字段在纯 Java 配置里不会自动注入，这里显式给值（与 PendingActionService 同样的做法）。
             org.springframework.test.util.ReflectionTestUtils.setField(service, "refreshTtlMinutes", 10);
             org.springframework.test.util.ReflectionTestUtils.setField(service, "topN", 5);
+            return service;
+        }
+
+        @Bean AgentMemoryMapper memoryMapper(SqlSessionTemplate session) {
+            return session.getMapper(AgentMemoryMapper.class);
+        }
+
+        @Bean cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService memoryPreferenceService(
+                AgentMemoryMapper memoryMapper, ArtistMapper artists,
+                cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profiles, ObjectMapper json) {
+            var service = new cn.edu.seig.vibemusic.service.agent.UserMemoryPreferenceService(
+                    memoryMapper, artists, profiles, json);
+            org.springframework.test.util.ReflectionTestUtils.setField(service, "maxPerCategory", 50);
             return service;
         }
 

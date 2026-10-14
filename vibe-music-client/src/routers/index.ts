@@ -72,6 +72,10 @@ const router = createRouter({
       path: '/user',
       component: () => import('@/pages/user/index.vue'),
     },
+    {
+      path: '/user/ai-memory',
+      component: () => import('@/pages/user/ai-memory/index.vue'),
+    },
   ],
 })
 

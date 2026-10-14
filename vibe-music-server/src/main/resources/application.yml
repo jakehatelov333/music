@@ -163,6 +163,9 @@ ai:
   # 会话多起来之后的「加载更多」留到后续版本，第一版只保证最近若干条。
   conversation:
     list-limit: 20
+  # AI 记忆与手动偏好（tb_user_memory_preference / tb_user_ai_memory_setting）。
+  memory:
+    max-preferences-per-category: 50 # 单个用户单个分类的手动偏好上限
 
 # 跨域凭据只允许明确列出的前端来源；部署时填写实际域名。
 app:

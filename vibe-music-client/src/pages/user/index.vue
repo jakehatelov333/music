@@ -198,7 +198,12 @@ const handleDelete = async () => {
 
 <template>
   <div class="user-container">
-    <h2 class="username">个人中心</h2>
+    <div class="page-header">
+      <h2 class="username">个人中心</h2>
+      <el-button link type="primary" @click="router.push('/user/ai-memory')">
+        <icon-ri:brain-line />&ensp;AI 记忆与偏好
+      </el-button>
+    </div>
 
     <div class="section">
       <div class="section-title">头像</div>

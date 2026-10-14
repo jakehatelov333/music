@@ -32,7 +32,7 @@ class PersonalizedSystemPromptTest extends AbstractAgentTest {
     }
 
     private PersonalizedSystemPrompt prompt() {
-        return new PersonalizedSystemPrompt(profiles, summaries());
+        return new PersonalizedSystemPrompt(profiles, summaries(), memoryPreferenceService);
     }
 
     @Test
@@ -79,7 +79,7 @@ class PersonalizedSystemPromptTest extends AbstractAgentTest {
         UserMusicProfileService broken = Mockito.mock(UserMusicProfileService.class);
         Mockito.when(broken.renderPreferenceBlock(1L)).thenThrow(new RuntimeException("db down"));
 
-        assertThat(new PersonalizedSystemPrompt(broken, summaries()).build(1L, "c1"))
+        assertThat(new PersonalizedSystemPrompt(broken, summaries(), memoryPreferenceService).build(1L, "c1"))
                 .isEqualTo(MusicAssistant.SYSTEM_PROMPT);
     }
 
@@ -114,9 +114,50 @@ class PersonalizedSystemPromptTest extends AbstractAgentTest {
         jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) "
                 + "VALUES (1,1,0,10,CURRENT_TIMESTAMP)");
 
-        String message = new PersonalizedSystemPrompt(profiles, brokenSummaries).build(1L, "c1");
+        String message = new PersonalizedSystemPrompt(profiles, brokenSummaries, memoryPreferenceService).build(1L, "c1");
 
         assertThat(message).startsWith(MusicAssistant.SYSTEM_PROMPT);
         assertThat(message).contains("【当前用户的音乐偏好").doesNotContain("更早对话的摘要");
+    }
+
+    /** 关闭个性化开关：画像块与手动偏好块都不注入；摘要是对话级记忆，照常注入。 */
+    @Test
+    void personalizationOffSkipsProfileAndManualBlocksButKeepsSummary() {
+        jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) "
+                + "VALUES (1,1,0,10,CURRENT_TIMESTAMP)");
+        memoryPreferenceService.create(1L, request("PREFERENCE_NOTE", null, "更喜欢旋律优美的华语歌曲"));
+        memoryPreferenceService.setPersonalizationEnabled(1L, false);
+        jdbc.update("INSERT INTO ai_chat_state(chat_id, summary_text) "
+                + "VALUES ('c1', '用户之前说过喜欢粤语歌。')");
+
+        String message = prompt().build(1L, "c1");
+
+        assertThat(message).contains("用户之前说过喜欢粤语歌");
+        assertThat(message).doesNotContain("当前用户的音乐偏好");
+        assertThat(message).doesNotContain("用户手动设置的偏好");
+        assertThat(message).doesNotContain("更喜欢旋律优美的华语歌曲");
+    }
+
+    /** 手动偏好块注入在画像块之后：手动层优先级更高，且「硬性排除」声明必须存在。 */
+    @Test
+    void manualBlockIsInjectedAfterProfileBlock() {
+        jdbc.update("INSERT INTO tb_user_favorite(id,user_id,type,song_id,create_time) "
+                + "VALUES (1,1,0,10,CURRENT_TIMESTAMP)");
+        memoryPreferenceService.create(1L, request("EXCLUDE_STYLE", null, "摇滚"));
+
+        String message = prompt().build(1L, "c1");
+
+        assertThat(message).contains("【用户手动设置的偏好").contains("硬性排除").contains("摇滚");
+        assertThat(message.indexOf("【当前用户的音乐偏好"))
+                .isLessThan(message.indexOf("【用户手动设置的偏好"));
+    }
+
+    private static cn.edu.seig.vibemusic.model.dto.MemoryPreferenceRequest request(
+            String category, Long targetId, String targetValue) {
+        var request = new cn.edu.seig.vibemusic.model.dto.MemoryPreferenceRequest();
+        request.setCategory(category);
+        request.setTargetId(targetId);
+        request.setTargetValue(targetValue);
+        return request;
     }
 }

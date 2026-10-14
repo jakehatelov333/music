@@ -60,6 +60,9 @@ const openFeedbackDialog = () => {
         <el-dropdown-item @click="router.push('/user')">
           <icon-mi:user />&ensp;个人中心
         </el-dropdown-item>
+        <el-dropdown-item @click="router.push('/user/ai-memory')">
+          <icon-ri:brain-line />&ensp;AI 记忆
+        </el-dropdown-item>
         <el-dropdown-item @click="router.push('/my-playlists')">
           <icon-ri:play-list-add-line />&ensp;我的歌单
         </el-dropdown-item>

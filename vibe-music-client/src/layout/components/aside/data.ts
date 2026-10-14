@@ -38,6 +38,11 @@ export const MenuData = [
         icon: 'mi:user',
         router: '/user',
       },
+      {
+        title: 'AI 记忆',
+        icon: 'ri:brain-line',
+        router: '/user/ai-memory',
+      },
     ],
   },
 ]
