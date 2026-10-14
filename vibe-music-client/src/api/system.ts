@@ -44,9 +44,18 @@ export const register = (data: object) => {
   return http<Result>('post', '/user/register', { data })
 }
 
-/** 重置密码 */
+/** 重置密码（忘记密码流程） */
 export const resetPassword = (data: object) => {
   return http<Result>('patch', '/user/resetUserPassword', { data })
+}
+
+/** 修改密码（已登录，需旧密码验证） */
+export const changePassword = (data: {
+  oldPassword: string
+  newPassword: string
+  repeatPassword: string
+}) => {
+  return http<Result>('patch', '/user/updateUserPassword', { data })
 }
 
 /** 获取用户信息 */

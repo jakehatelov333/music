@@ -35,7 +35,9 @@ const navigateTo = (path: string) => {
 
 const isActiveRoute = (path: string) =>
   route.path === path ||
-  (path === '/my-playlists' && route.path.startsWith('/my-playlists/'))
+  (path === '/my-playlists' && route.path.startsWith('/my-playlists/')) ||
+  // 个人中心的子页面（AI 记忆与偏好、隐私与安全）也高亮「个人中心」
+  (path === '/user' && route.path.startsWith('/user/'))
 
 // 同步清理账号相关数据，已登录状态不变的换号也会触发。
 watch(

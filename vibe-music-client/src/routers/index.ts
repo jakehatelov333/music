@@ -71,10 +71,23 @@ const router = createRouter({
     {
       path: '/user',
       component: () => import('@/pages/user/index.vue'),
-    },
-    {
-      path: '/user/ai-memory',
-      component: () => import('@/pages/user/ai-memory/index.vue'),
+      children: [
+        {
+          path: '',
+          name: 'UserProfile',
+          component: () => import('@/pages/user/ProfilePanel.vue'),
+        },
+        {
+          path: 'ai-memory',
+          name: 'UserAiMemory',
+          component: () => import('@/pages/user/ai-memory/index.vue'),
+        },
+        {
+          path: 'privacy-security',
+          name: 'UserPrivacySecurity',
+          component: () => import('@/pages/user/privacy-security/index.vue'),
+        },
+      ],
     },
   ],
 })

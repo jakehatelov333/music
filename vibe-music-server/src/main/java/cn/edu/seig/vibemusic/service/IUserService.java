@@ -51,7 +51,7 @@ public interface IUserService extends IService<User> {
     Result logout(String token);
 
     // 注销账号
-    Result deleteAccount();
+    Result deleteAccount(String token);
 
     // 获取所有用户数量
     Result<Long> getAllUsersCount();

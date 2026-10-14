@@ -184,8 +184,8 @@ public class UserController {
      * @return 结果
      */
     @DeleteMapping("/deleteAccount")
-    public Result deleteAccount() {
-        return userService.deleteAccount();
+    public Result deleteAccount(@RequestHeader("Authorization") String token) {
+        return userService.deleteAccount(token);
     }
 
 }

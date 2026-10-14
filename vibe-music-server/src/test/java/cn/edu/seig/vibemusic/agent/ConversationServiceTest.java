@@ -205,6 +205,26 @@ class ConversationServiceTest extends AbstractAgentTest {
     // ------------------------------------------------------------------ 删除
 
     @Test
+    @DisplayName("清空会话：消息与摘要一起消失，但会话本身保留可继续对话")
+    void clearConversationRemovesMessagesAndSummaryButKeepsRow() {
+        login(1L);
+        String chat = conversations.resolve(1L, null, true);
+        append(chat, "帮我建个歌单");
+        pendingActions.prepare(1L, chat, new PlaylistDraft("夜间驾驶", "简介", "流行", false, ids(10, 11)));
+        jdbc.update("UPDATE ai_chat_state SET summary_text = '摘要' WHERE chat_id = ?", chat);
+
+        conversations.clear(1L, chat);
+
+        assertEquals(0, messageCount(chat));
+        assertEquals(1L, aiMapper.findConversationOwner(chat), "清空不是删除：会话行应保留，用户还能继续说");
+        assertNull(aiMapper.getSummaryText(chat), "摘要是对话内容的压缩产物，清空消息后必须一起消失");
+        assertEquals(0L, jdbc.queryForObject(
+                "SELECT summary_upto_id FROM ai_chat_state WHERE chat_id = ?", Long.class, chat),
+                "摘要游标必须归零，否则残留的 upto_id 会让下次摘要跳过新消息");
+        assertEquals(0, pendingActions.pending(chat).size(), "待确认卡片随清空一起取消");
+    }
+
+    @Test
     @DisplayName("删除会话：消息、摘要、待确认任务、会话行一起收拾干净")
     void deleteConversationClearsEverythingItOwns() {
         login(1L);

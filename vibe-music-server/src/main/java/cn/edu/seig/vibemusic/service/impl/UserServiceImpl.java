@@ -5,8 +5,10 @@ import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.enumeration.UserStatusEnum;
+import cn.edu.seig.vibemusic.mapper.FeedbackMapper;
 import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.dto.*;
+import cn.edu.seig.vibemusic.model.entity.Feedback;
 import cn.edu.seig.vibemusic.model.entity.User;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
@@ -58,6 +60,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     private EmailService emailService;
     @Autowired
     private MinioService minioService;
+    @Autowired
+    private FeedbackMapper feedbackMapper;
 
     /**
      * 发送验证码
@@ -324,11 +328,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     /**
      * 注销账户
      *
+     * @param token 认证token
      * @return 结果
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
-    public Result deleteAccount() {
+    public Result deleteAccount(String token) {
         Map<String, Object> map = ThreadLocalUtil.get();
         Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
         Long userId = TypeConversionUtil.toLong(userIdObj);
@@ -345,10 +350,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             minioService.deleteFile(userAvatar);
         }
 
+        // 删除用户提交的反馈：tb_feedback 外键为 ON DELETE RESTRICT，不先删会在删用户时 FK 报错
+        feedbackMapper.delete(new QueryWrapper<Feedback>().eq("user_id", userId));
+
         // 删除用户
         if (userMapper.deleteById(userId) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
+
+        // 注销token：token 留在 Redis 里等于注销后登录态仍然有效，必须随账号一起作废
+        stringRedisTemplate.delete(token);
+
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
 
