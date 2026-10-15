@@ -19,6 +19,10 @@ out/
 node_modules/
 dist/
 
+# ===== Python tooling =====
+__pycache__/
+*.pyc
+
 # ===== AI tool local data =====
 .workbuddy-ai/
 .claude/settings.local.json

@@ -137,6 +137,14 @@ public class MinioServiceImpl implements MinioService {
         deleteObject(resolveObjectName(fileUrl));
     }
 
+    @Override
+    public String toObjectName(String fileUrl) {
+        if (!StringUtils.hasText(fileUrl)) {
+            return "";
+        }
+        return resolveObjectName(fileUrl);
+    }
+
     /**
      * 从公开访问 URL 中解析出 MinIO 对象名。
      *

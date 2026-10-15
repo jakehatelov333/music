@@ -62,6 +62,17 @@ public interface MinioService {
     /** 由对象名拼出可公开访问的 URL（浏览器直传的文件只有对象名，没有 URL）。 */
     String publicUrl(String objectName);
 
+    /**
+     * 由公开访问 URL 反解出 MinIO 对象名，是 {@link #deleteFile} 内部解析逻辑的公开形态。
+     *
+     * <p>媒体清理任务只登记<b>对象名</b>（身份 = {@code (bucket, objectKey)}），绝不登记完整 URL：
+     * 历史数据里同一对象的主机名既有 {@code localhost} 也有 {@code 127.0.0.1}，用 URL 做身份会
+     * 把同一个对象当成两个。刻意不做百分号解码，因此文件名里的字面 {@code +}、空格保持原样。
+     *
+     * @param fileUrl 公开访问 URL 或纯对象名；空白输入返回空串
+     */
+    String toObjectName(String fileUrl);
+
     /** 列出指定前缀下的所有对象名，用于回收孤儿暂存文件。 */
     List<String> listObjectNames(String prefix);
 }

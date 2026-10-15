@@ -1,6 +1,7 @@
 package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
@@ -22,7 +23,7 @@ import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IAlbumService;
-import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
@@ -66,7 +67,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
     private ArtistMapper artistMapper;
 
     @Autowired
-    private MinioService minioService;
+    private MediaCleanupService mediaCleanupService;
     @Autowired
     private SongArtistService songArtistService;
 
@@ -254,9 +255,8 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         if (albumMapper.updateById(album) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
-        if (oldCoverUrl != null && !oldCoverUrl.isEmpty()) {
-            minioService.deleteFile(oldCoverUrl);
-        }
+        // 旧封面只登记、不就地删：它很可能同时是专辑内歌曲的封面，删之前必须核对引用
+        mediaCleanupService.enqueueForId(oldCoverUrl, MediaCleanupSourceType.ALBUM_COVER_REPLACE, albumId, "替换专辑封面");
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
 
@@ -279,17 +279,9 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         List<Song> songs = songMapper.selectList(new QueryWrapper<Song>().eq("album_id", albumId));
 
         if (deleteSongs) {
-            // 连同专辑内的所有歌曲一起删除：先清理 MinIO 中的音频与歌曲封面，再删除歌曲记录。
+            // 连同专辑内的所有歌曲一起删除：只删记录，音频与封面的清理登记到任务表。
             // tb_comment / tb_genre / tb_playlist_binding / tb_user_favorite 均对 tb_song 设置了 ON DELETE CASCADE，
             // 删除歌曲记录时相关评论、收藏、歌单关联会自动清理。
-            for (Song song : songs) {
-                if (song.getCoverUrl() != null && !song.getCoverUrl().isEmpty()) {
-                    minioService.deleteFile(song.getCoverUrl());
-                }
-                if (song.getAudioUrl() != null && !song.getAudioUrl().isEmpty()) {
-                    minioService.deleteFile(song.getAudioUrl());
-                }
-            }
             if (!songs.isEmpty()) {
                 songMapper.deleteByIds(songs.stream().map(Song::getSongId).collect(Collectors.toList()));
             }
@@ -303,9 +295,19 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         if (albumMapper.deleteById(albumId) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
-        if (album.getCoverUrl() != null && !album.getCoverUrl().isEmpty()) {
-            minioService.deleteFile(album.getCoverUrl());
+
+        // 记录删完才登记清理：worker 核对引用时这些行已经消失，
+        // 因此仍被别处引用的对象（例如保留歌曲共用的专辑封面）会被判定 RETAINED 而不删。
+        if (deleteSongs) {
+            for (Song song : songs) {
+                mediaCleanupService.enqueueForId(song.getCoverUrl(), MediaCleanupSourceType.ALBUM_DELETE,
+                        song.getSongId(), "删除专辑时连带删除歌曲封面");
+                mediaCleanupService.enqueueForId(song.getAudioUrl(), MediaCleanupSourceType.ALBUM_DELETE,
+                        song.getSongId(), "删除专辑时连带删除歌曲音频");
+            }
         }
+        mediaCleanupService.enqueueForId(album.getCoverUrl(), MediaCleanupSourceType.ALBUM_DELETE,
+                albumId, "删除专辑封面");
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
 
@@ -327,9 +329,8 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
         for (Album album : albums) {
-            if (album.getCoverUrl() != null && !album.getCoverUrl().isEmpty()) {
-                minioService.deleteFile(album.getCoverUrl());
-            }
+            mediaCleanupService.enqueueForId(album.getCoverUrl(), MediaCleanupSourceType.ALBUM_DELETE,
+                    album.getAlbumId(), "批量删除专辑封面");
         }
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }

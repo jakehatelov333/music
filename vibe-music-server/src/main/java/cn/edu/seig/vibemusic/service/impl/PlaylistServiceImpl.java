@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum;
 import cn.edu.seig.vibemusic.mapper.PlaylistBindingMapper;
@@ -21,7 +22,7 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
-import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -33,8 +34,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -56,7 +55,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
     @Autowired private PlaylistBindingMapper playlistBindingMapper;
     @Autowired private SongMapper songMapper;
     @Autowired private UserFavoriteMapper userFavoriteMapper;
-    @Autowired private MinioService minioService;
+    @Autowired private MediaCleanupService mediaCleanupService;
     @Autowired private PlaylistAccessService playlistAccessService;
     @Autowired private SongArtistService songArtistService;
 
@@ -286,7 +285,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
         // Platform covers are always curated by an administrator, never derived from a song.
         playlist.setCoverUrl(coverUrl).setCoverIsCustom(true);
         playlistMapper.updateById(playlist);
-        if (!Objects.equals(oldCover, coverUrl)) deleteCoverAfterCommit(oldCover, oldWasUploaded);
+        if (!Objects.equals(oldCover, coverUrl)) enqueueCoverCleanup(playlistId, oldCover, oldWasUploaded);
         return Result.success();
     }
 
@@ -295,7 +294,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
     public Result deletePlaylist(Long playlistId) {
         Playlist playlist = adminLock(playlistId);
         playlistMapper.deleteById(playlistId);
-        deleteCoverAfterCommit(playlist.getCoverUrl(), Boolean.TRUE.equals(playlist.getCoverIsCustom()));
+        enqueueCoverCleanup(playlistId, playlist.getCoverUrl(), Boolean.TRUE.equals(playlist.getCoverIsCustom()));
         return Result.success();
     }
 
@@ -309,7 +308,7 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
         List<Playlist> targets = playlistIds.stream().distinct().sorted().map(this::adminLock).toList();
         for (Playlist target : targets) {
             playlistMapper.deleteById(target.getPlaylistId());
-            deleteCoverAfterCommit(target.getCoverUrl(), Boolean.TRUE.equals(target.getCoverIsCustom()));
+            enqueueCoverCleanup(target.getPlaylistId(), target.getCoverUrl(), Boolean.TRUE.equals(target.getCoverIsCustom()));
         }
         return Result.success();
     }
@@ -331,14 +330,13 @@ public class PlaylistServiceImpl extends ServiceImpl<PlaylistMapper, Playlist> i
         return playlist;
     }
 
-    private void deleteCoverAfterCommit(String cover, boolean uploaded) {
-        // A default cover is a shared song image; removing it would break the song itself.
+    /**
+     * Queues an uploaded cover for cleanup. A default cover is a shared song image, so it is never queued.
+     * Registration happens inside the business transaction: a rollback must leave no task behind, and a
+     * shared object is kept by the worker's reference check rather than by a flag.
+     */
+    private void enqueueCoverCleanup(Long playlistId, String cover, boolean uploaded) {
         if (!uploaded || cover == null || cover.isBlank()) return;
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() {
-                try { minioService.deleteFile(cover); }
-                catch (RuntimeException e) { log.warn("Playlist cover cleanup failed after commit"); }
-            }
-        });
+        mediaCleanupService.enqueueForId(cover, MediaCleanupSourceType.PLAYLIST_COVER, playlistId, "歌单封面清理");
     }
 }

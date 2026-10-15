@@ -1,6 +1,7 @@
 package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
@@ -25,7 +26,7 @@ import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ISongService;
-import cn.edu.seig.vibemusic.service.MinioService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
@@ -73,11 +74,11 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     @Autowired
     private GenreMapper genreMapper;
     @Autowired
-    private MinioService minioService;
-    @Autowired
     private RedisTemplate redisTemplate;
     @Autowired
     private SongArtistService songArtistService;
+    @Autowired
+    private MediaCleanupService mediaCleanupService;
 
     /**
      * 获取所有歌曲
@@ -613,18 +614,19 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      * @return 更新结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result updateSongCover(Long songId, String coverUrl) {
         Song song = songMapper.selectById(songId);
-        String cover = song.getCoverUrl();
-        if (cover != null && !cover.isEmpty()) {
-            minioService.deleteFile(cover);
-        }
+        String oldCover = song.getCoverUrl();
 
         song.setCoverUrl(coverUrl);
         if (songMapper.updateById(song) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
+
+        // 旧封面只登记、不就地删：它可能被专辑或别的歌曲共用，删之前必须核对引用
+        mediaCleanupService.enqueueForId(oldCover, MediaCleanupSourceType.SONG_COVER_REPLACE, songId, "替换歌曲封面");
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
@@ -637,18 +639,19 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      * @return 更新结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result updateSongAudio(Long songId, String audioUrl) {
         Song song = songMapper.selectById(songId);
-        String audio = song.getAudioUrl();
-        if (audio != null && !audio.isEmpty()) {
-            minioService.deleteFile(audio);
-        }
+        String oldAudio = song.getAudioUrl();
 
         song.setAudioUrl(audioUrl);
         if (songMapper.updateById(song) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
+
+        // 旧音频只登记、不就地删：事务回滚时不能已经把文件删掉
+        mediaCleanupService.enqueueForId(oldAudio, MediaCleanupSourceType.SONG_AUDIO_REPLACE, songId, "替换歌曲音频");
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
@@ -660,25 +663,21 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      * @return 删除结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result deleteSong(Long songId) {
         Song song = songMapper.selectById(songId);
         if (song == null) {
             return Result.error(MessageConstant.SONG + MessageConstant.NOT_FOUND);
         }
-        String cover = song.getCoverUrl();
-        String audio = song.getAudioUrl();
-
-        if (cover != null && !cover.isEmpty()) {
-            minioService.deleteFile(cover);
-        }
-        if (audio != null && !audio.isEmpty()) {
-            minioService.deleteFile(audio);
-        }
 
         if (songMapper.deleteById(songId) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
+
+        // 先删记录、后登记清理：worker 核对引用时本行已消失，只有真正无人引用的对象才会被删
+        mediaCleanupService.enqueueForId(song.getCoverUrl(), MediaCleanupSourceType.SONG_DELETE, songId, "删除歌曲封面");
+        mediaCleanupService.enqueueForId(song.getAudioUrl(), MediaCleanupSourceType.SONG_DELETE, songId, "删除歌曲音频");
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
@@ -690,30 +689,21 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      * @return 删除结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result deleteSongs(List<Long> songIds) {
-        // 1. 查询歌曲信息，获取歌曲封面 URL 列表
+        // 1. 查询歌曲信息，记录每首歌自己的封面与音频 URL
         List<Song> songs = songMapper.selectByIds(songIds);
-        List<String> coverUrlList = songs.stream()
-                .map(Song::getCoverUrl)
-                .filter(coverUrl -> coverUrl != null && !coverUrl.isEmpty())
-                .toList();
-        List<String> audioUrlList = songs.stream()
-                .map(Song::getAudioUrl)
-                .filter(audioUrl -> audioUrl != null && !audioUrl.isEmpty())
-                .toList();
 
-        // 2. 先删除 MinIO 里的歌曲封面和音频文件
-        for (String coverUrl : coverUrlList) {
-            minioService.deleteFile(coverUrl);
-        }
-        for (String audioUrl : audioUrlList) {
-            minioService.deleteFile(audioUrl);
-        }
-
-        // 3. 删除数据库中的歌曲信息
+        // 2. 删除数据库中的歌曲信息
         if (songMapper.deleteByIds(songIds) == 0) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+
+        // 3. 逐首登记清理（source_ref 必须是各自的 songId，才能与"同一业务操作"一一对应）
+        for (Song song : songs) {
+            mediaCleanupService.enqueueForId(song.getCoverUrl(), MediaCleanupSourceType.SONG_DELETE, song.getSongId(), "批量删除歌曲封面");
+            mediaCleanupService.enqueueForId(song.getAudioUrl(), MediaCleanupSourceType.SONG_DELETE, song.getSongId(), "批量删除歌曲音频");
         }
 
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);

@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.model.agent.AgentContext;
 import cn.edu.seig.vibemusic.model.agent.AgentEvent;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.PersonalPlaylistService;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
@@ -328,14 +329,16 @@ public abstract class AbstractAgentTest {
         @Bean IPlaylistService details() { return new PlaylistServiceImpl(); }
         @Bean UserFavoriteMapper favorites() { return mock(UserFavoriteMapper.class); }
         @Bean MinioService minio() { return mock(MinioService.class); }
+        @Bean MediaCleanupService mediaCleanup() { return mock(MediaCleanupService.class); }
         @Bean ObjectMapper json() { return new ObjectMapper(); }
         @Bean LocalValidatorFactoryBean validator() { return new LocalValidatorFactoryBean(); }
 
         @Bean PersonalPlaylistService personal(PlaylistMapper mapper, PlaylistBindingMapper bindings,
                                                PlaylistCreateRequestMapper receipts, SongMapper songs,
                                                PlaylistAccessService access, IPlaylistService details,
-                                               ObjectMapper json, Validator validator, MinioService minio) {
-            return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator, minio);
+                                               ObjectMapper json, Validator validator, MinioService minio,
+                                               MediaCleanupService mediaCleanup) {
+            return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator, minio, mediaCleanup);
         }
 
         @Bean SongArtistService songArtistService(SongArtistMapper mapper, ArtistMapper artists) {

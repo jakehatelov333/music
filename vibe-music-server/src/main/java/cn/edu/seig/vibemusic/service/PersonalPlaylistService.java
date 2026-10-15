@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service;
 
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.enumeration.PlaylistStatusEnum;
 import cn.edu.seig.vibemusic.mapper.*;
 import cn.edu.seig.vibemusic.model.dto.*;
@@ -21,8 +22,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -51,6 +50,7 @@ public class PersonalPlaylistService {
     private final ObjectMapper json;
     private final Validator validator;
     private final MinioService minioService;
+    private final MediaCleanupService mediaCleanupService;
 
     public PageResult<PlaylistVO> mine(PlaylistDTO query) {
         Long userId = PlaylistAccessService.requireUserId();
@@ -109,7 +109,7 @@ public class PersonalPlaylistService {
         // Existing schema cascades bindings, favorites and comments atomically.
         playlists.deleteById(playlistId);
         // Only an uploaded cover belongs to this playlist; a default cover is a shared song image.
-        deleteCoverAfterCommit(playlist);
+        enqueueCoverCleanup(playlist);
     }
 
     @Transactional
@@ -145,8 +145,9 @@ public class PersonalPlaylistService {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "封面上传失败，请稍后重试");
         playlist.setCoverUrl(coverUrl).setCoverIsCustom(true);
         playlists.updateById(playlist);
-        // The old object is removed only after the new cover is committed, and only when we uploaded it.
-        if (previousWasCustom && !Objects.equals(previous, coverUrl)) deleteObjectAfterCommit(previous);
+        // The old object is only queued, never deleted in place: a rollback must not lose the file.
+        if (previousWasCustom && !Objects.equals(previous, coverUrl))
+            mediaCleanupService.enqueueForId(previous, MediaCleanupSourceType.PLAYLIST_COVER, playlistId, "替换个人歌单封面");
         return detail(playlistId);
     }
 
@@ -159,7 +160,8 @@ public class PersonalPlaylistService {
         String derived = playlists.getFirstBoundSongCover(playlistId);
         playlist.setCoverUrl(derived).setCoverIsCustom(false);
         playlists.updateById(playlist);
-        if (previousWasCustom && !Objects.equals(previous, derived)) deleteObjectAfterCommit(previous);
+        if (previousWasCustom && !Objects.equals(previous, derived))
+            mediaCleanupService.enqueueForId(previous, MediaCleanupSourceType.PLAYLIST_COVER, playlistId, "恢复个人歌单默认封面");
         return detail(playlistId);
     }
 
@@ -186,28 +188,11 @@ public class PersonalPlaylistService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "封面仅支持 JPG、PNG、WebP 等图片格式");
     }
 
-    private void deleteCoverAfterCommit(Playlist playlist) {
+    private void enqueueCoverCleanup(Playlist playlist) {
+        // Only an uploaded cover belongs to this playlist; a default cover is a shared song image.
         if (!Boolean.TRUE.equals(playlist.getCoverIsCustom())) return;
-        deleteObjectAfterCommit(playlist.getCoverUrl());
-    }
-
-    private void deleteObjectAfterCommit(String coverUrl) {
-        if (coverUrl == null || coverUrl.isBlank()) return;
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            safeDelete(coverUrl);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() { safeDelete(coverUrl); }
-        });
-    }
-
-    private void safeDelete(String coverUrl) {
-        try {
-            minioService.deleteFile(coverUrl);
-        } catch (RuntimeException e) {
-            log.warn("Personal playlist cover cleanup failed after commit");
-        }
+        mediaCleanupService.enqueueForId(playlist.getCoverUrl(), MediaCleanupSourceType.PLAYLIST_COVER,
+                playlist.getPlaylistId(), "删除个人歌单封面");
     }
 
     private PlaylistDetailVO detail(Long id) {
