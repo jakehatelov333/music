@@ -48,29 +48,9 @@ public class AdminController {
     @Autowired
     private MinioService minioService;
 
-    /**
-     * 注册管理员
-     *
-     * @param adminDTO      管理员信息
-     * @param bindingResult 绑定结果
-     * @return 结果
-     *
-     * @RequestBody @Valid AdminDTO adminDTO：
-     * @RequestBody：从请求体中解析 JSON 数据并绑定到 AdminDTO 对象。
-     * @Valid：触发 Spring 的参数校验机制（基于 JSR-303/JSR-380 规范）。
-     * BindingResult bindingResult：
-     * 存储 @Valid 校验的结果（包括校验失败的字段和错误信息）。
-     */
-    @PostMapping("/register")
-    public Result register(@RequestBody @Valid AdminDTO adminDTO, BindingResult bindingResult) {
-        // 校验失败时，返回错误信息
-        String errorMessage = BindingResultUtil.handleBindingResultErrors(bindingResult);
-        if (errorMessage != null) {
-            return Result.error(errorMessage);
-        }
-
-        return adminService.register(adminDTO);
-    }
+    // 管理员注册端点（POST /admin/register）已于 2026-10-15 下线。
+    // 原因：该路径曾被 WebConfig 排除鉴权，匿名调用者可创建管理员并登录管理端。
+    // 新增管理员请走受控入口（运维 SQL 或后续设计的受保护接口），不要在此恢复公开注册。
 
     /**
      * 登录管理员

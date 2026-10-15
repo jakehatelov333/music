@@ -35,10 +35,12 @@ import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.DigestUtils;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -198,17 +200,25 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     /**
-     * 更新用户信息
+     * 更新用户信息。
      *
-     * @param userDTO 用户信息
-     * @return 结果
+     * <p>身份只能来自认证上下文。请求体里的 {@code userId} 仅为兼容旧客户端而保留：
+     * 缺省或等于本人才接受，指向他人一律 403。实体主键在 {@code copyProperties} 之后被显式覆盖，
+     * 绝不依赖 DTO 是否传值（DTO 不传时 copyProperties 会把主键置空）。
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
     public Result updateUserInfo(UserDTO userDTO) {
         Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+        Long userId = map == null ? null : TypeConversionUtil.toLong(map.get(JwtClaimsConstant.USER_ID));
+        if (userId == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, MessageConstant.NOT_LOGIN);
+        }
+
+        // 越权判断必须排在唯一性检查之前：否则会拿他人身份去查重，等于给越权请求免费提供占用探测。
+        if (userDTO.getUserId() != null && !userDTO.getUserId().equals(userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, MessageConstant.NO_PERMISSION);
+        }
 
         User userByUsername = userMapper.selectOne(new QueryWrapper<User>().eq("username", userDTO.getUsername()));
         if (userByUsername != null && !userByUsername.getUserId().equals(userId)) {
@@ -227,6 +237,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
         User user = new User();
         BeanUtils.copyProperties(userDTO, user);
+        user.setUserId(userId); // 显式覆盖：实体主键只能来自认证上下文
         user.setUpdateTime(LocalDateTime.now());
 
         if (userMapper.updateById(user) == 0) {
