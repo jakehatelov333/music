@@ -298,6 +298,9 @@ public class SongUploadServiceImpl implements ISongUploadService {
         String finalAudioObjectName = null;
         String finalCoverUrl = null;
         String finalCoverObjectName = null;
+        // 提交成功的分界线。一旦跨过它，正式封面/音频就已经被 tb_song 行引用，
+        // 后续任何异常都<b>不得</b>再删除这两个对象 —— 否则会留下「记录在、文件没了」的静默损坏。
+        boolean committed = false;
         try {
             // 歌手：artistIds 优先（顺序即展示顺序）；否则回退到旧的「按名字解析/创建单个歌手」。
             List<Long> requestedArtistIds = SongArtistService.normalizeArtistIds(
@@ -357,7 +360,8 @@ public class SongUploadServiceImpl implements ISongUploadService {
                     dto.getAlbum(),
                     dto.getAlbumId(),
                     releaseDate,
-                    finalCoverUrl
+                    finalCoverUrl,
+                    transactionTemplate()
             );
             Integer trackNumber = dto.getTrackNumber();
             if (trackNumber == null && albumId != null) {
@@ -391,16 +395,30 @@ public class SongUploadServiceImpl implements ISongUploadService {
             // 不会留下「有歌曲却没有任何歌手关系」的孤儿行。
             // 这里用 TransactionTemplate 而不是给 commit 加 @Transactional —— 后者在外层
             // catch 吞掉异常后事务已被标记 rollback-only，提交时反而抛 UnexpectedRollbackException。
-            transactionTemplate().executeWithoutResult(status -> {
+            TransactionTemplate songTx = transactionTemplate();
+            songTx.executeWithoutResult(status -> {
                 if (songMapper.insert(song) != 1) {
                     throw new IllegalStateException("歌曲信息保存失败");
                 }
                 songArtistService.replaceSongArtists(song.getSongId(), finalArtistIds);
             });
+            committed = true;
 
             cleanupSession(dto.getUploadId());
             return Result.success("歌曲上传成功", buildCommitVO(song, primaryArtistId, artistCreated));
         } catch (Exception e) {
+            if (committed) {
+                // 已提交：正式封面/音频已被歌曲行引用，绝不能回收。
+                // 组装响应失败不代表入库失败，重新读取已提交结果返回即可（幂等重放）。
+                log.error("歌曲已入库，但组装响应失败，改为重读已提交结果，uploadId={}", dto.getUploadId(), e);
+                Result<SongUploadCommitVO> recovered = recoverCommittedResult(dto);
+                if (recovered != null) {
+                    return recovered;
+                }
+                // 连重读都失败：明确告诉调用方「已保存」而不是「请重试」，
+                // 避免管理员重复上传导致重复建歌。
+                return Result.error("歌曲已保存成功，但返回结果读取失败，请稍后在曲库中确认，勿重复提交");
+            }
             safeDeleteObject(finalCoverObjectName);
             safeDeleteObject(finalAudioObjectName);
             log.error("歌曲正式保存失败，uploadId={}", dto.getUploadId(), e);
@@ -464,8 +482,16 @@ public class SongUploadServiceImpl implements ISongUploadService {
         return artists.isEmpty() ? null : artists.get(0);
     }
 
+    /**
+     * 解析或创建专辑。<b>必须在外层事务内调用</b>。
+     *
+     * <p>历史上这里是裸调用：歌曲提交失败时专辑的新建/更新已经写进去了，
+     * 回滚不了，于是库里会留下「没有歌的空专辑」。把事务对象显式传进来，
+     * 让「建专辑 + 建歌曲 + 建歌手关系」三者同生共死。
+     */
     private Long resolveAlbumId(Long artistId, String albumName, Long albumId,
-                                LocalDate releaseDate, String coverUrl) {
+                                LocalDate releaseDate, String coverUrl,
+                                TransactionTemplate transactionTemplate) {
         if (albumId != null) {
             return albumId;
         }
@@ -473,34 +499,60 @@ public class SongUploadServiceImpl implements ISongUploadService {
             return null;
         }
 
-        String normalizedName = albumName.trim();
-        Album album = albumMapper.selectOne(new QueryWrapper<Album>()
-                .eq("artist_id", artistId)
-                .eq("name", normalizedName)
-                .last("LIMIT 1"));
-        if (album == null) {
-            album = new Album()
-                    .setArtistId(artistId)
-                    .setAlbumName(normalizedName)
-                    .setReleaseDate(releaseDate)
-                    .setCoverUrl(coverUrl);
-            albumMapper.insert(album);
-            return album.getAlbumId();
-        }
+        final String normalizedName = albumName.trim();
+        return transactionTemplate.execute(status -> {
+            Album album = albumMapper.selectOne(new QueryWrapper<Album>()
+                    .eq("artist_id", artistId)
+                    .eq("name", normalizedName)
+                    .last("LIMIT 1"));
+            if (album == null) {
+                album = new Album()
+                        .setArtistId(artistId)
+                        .setAlbumName(normalizedName)
+                        .setReleaseDate(releaseDate)
+                        .setCoverUrl(coverUrl);
+                albumMapper.insert(album);
+                return album.getAlbumId();
+            }
 
-        boolean changed = false;
-        if (album.getCoverUrl() == null && coverUrl != null) {
-            album.setCoverUrl(coverUrl);
-            changed = true;
+            boolean changed = false;
+            if (album.getCoverUrl() == null && coverUrl != null) {
+                album.setCoverUrl(coverUrl);
+                changed = true;
+            }
+            if (album.getReleaseDate() == null && releaseDate != null) {
+                album.setReleaseDate(releaseDate);
+                changed = true;
+            }
+            if (changed) {
+                albumMapper.updateById(album);
+            }
+            return album.getAlbumId();
+        });
+    }
+
+    /**
+     * 提交成功、但组装响应失败后的兜底：按歌曲名 + 主歌手重读刚写入的记录。
+     *
+     * <p>只重读<b>不写</b>，读不到就返回 {@code null} 交给调用方降级处理，
+     * 绝不会为了「修好响应」而回删已经入库的媒体对象。
+     */
+    private Result<SongUploadCommitVO> recoverCommittedResult(SongUploadCommitDTO dto) {
+        try {
+            Song saved = songMapper.selectOne(new QueryWrapper<Song>()
+                    .eq("song_name", dto.getSongName() == null ? null : dto.getSongName().trim())
+                    .eq("artist_id", dto.getArtistId())
+                    .orderByDesc("song_id")
+                    .last("LIMIT 1"));
+            if (saved == null) {
+                return null;
+            }
+            return Result.success("歌曲上传成功",
+                    buildCommitVO(saved, saved.getArtistId(), false));
+        } catch (Exception e) {
+            log.error("重读已提交歌曲失败，uploadId={}", dto.getUploadId(), e);
+            return null;
         }
-        if (album.getReleaseDate() == null && releaseDate != null) {
-            album.setReleaseDate(releaseDate);
-            changed = true;
-        }
-        if (changed) {
-            albumMapper.updateById(album);
-        }
-        return album.getAlbumId();
     }
 
     private SongUploadPrepareVO buildPrepareVO(SongUploadSession session, String warning) {
