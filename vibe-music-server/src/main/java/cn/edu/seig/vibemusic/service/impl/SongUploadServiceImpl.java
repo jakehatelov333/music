@@ -59,8 +59,19 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private static final String SESSION_INDEX_KEY = "song-upload:session-index";
     private static final String COMMIT_LOCK_PREFIX = "song-upload:commit-lock:";
     private static final String STAGING_ROOT = "staging/song-upload";
-    private static final long STAGING_TTL_MILLIS = TimeUnit.HOURS.toMillis(24);
-    private static final long SESSION_TTL_HOURS = 48L;
+    /**
+     * 未提交上传的存活时长（小时）。<b>暂存文件与 Redis 会话必须用同一个值</b>。
+     *
+     * <p>历史上这里是两个常量：暂存文件 24 小时、会话 48 小时。后果是用户在第 25 小时
+     * 打开页面，界面仍然显示「上传中」（会话还在），但 staging 文件已经被定时任务删了，
+     * 点提交只会得到「临时音频文件不存在或已过期」。这种「界面说还在、实际已没了」
+     * 比两边都过期更糟：用户会以为是自己操作失误。
+     *
+     * <p>取 12 小时：一次上传从选文件到提交，正常在几分钟内完成；12 小时足够覆盖
+     * 「传完先放着、下班前再来提交」的场景，同时把孤儿文件的平均驻留时间压到原来的一半。
+     */
+    private static final long UPLOAD_TTL_HOURS = 12L;
+    private static final long UPLOAD_TTL_MILLIS = TimeUnit.HOURS.toMillis(UPLOAD_TTL_HOURS);
     private static final Set<String> AUDIO_EXTENSIONS = Set.of("mp3", "flac", "wav");
     private static final Set<String> COVER_EXTENSIONS = Set.of("jpg", "jpeg", "png");
     private static final Set<String> LYRICS_EXTENSIONS = Set.of("lrc", "txt");
@@ -141,6 +152,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         SongUploadSession session = SongUploadSession.builder()
                 .uploadId(uploadId)
                 .createdAt(now)
+                .lastActivityAt(now)
                 .audioObjectName(audioObjectName)
                 .audioUrl(audioUrl)
                 .audioOriginalName(audio.getOriginalFilename())
@@ -444,7 +456,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
 
     @Override
     public void cleanupExpired() {
-        long cutoff = System.currentTimeMillis() - STAGING_TTL_MILLIS;
+        long cutoff = System.currentTimeMillis() - UPLOAD_TTL_MILLIS;
         Set<String> expiredUploadIds = stringRedisTemplate.opsForZSet()
                 .rangeByScore(SESSION_INDEX_KEY, 0, cutoff);
         if (expiredUploadIds == null || expiredUploadIds.isEmpty()) {
@@ -656,17 +668,22 @@ public class SongUploadServiceImpl implements ISongUploadService {
 
     private void saveSession(SongUploadSession session) {
         try {
+            // 每次保存都刷新「最后活动时间」。清理判据必须用它而不是 createdAt：
+            // 否则用户在第 11 小时还在编辑，第 12 小时文件仍会被扫掉，
+            // 而 Redis 键因为每次 save 都重设 TTL 才刚续期 —— 又是「界面说还在、文件已没」。
+            long now = System.currentTimeMillis();
+            session.setLastActivityAt(now);
             String json = objectMapper.writeValueAsString(session);
             stringRedisTemplate.opsForValue().set(
                     sessionKey(session.getUploadId()),
                     json,
-                    SESSION_TTL_HOURS,
+                    UPLOAD_TTL_HOURS,
                     TimeUnit.HOURS
             );
             stringRedisTemplate.opsForZSet().add(
                     SESSION_INDEX_KEY,
                     session.getUploadId(),
-                    session.getCreatedAt()
+                    now
             );
         } catch (Exception e) {
             throw new IllegalStateException("上传状态保存失败", e);

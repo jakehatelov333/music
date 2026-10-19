@@ -22,6 +22,14 @@ public class SongUploadSession implements Serializable {
 
     private String uploadId;
     private long createdAt;
+    /**
+     * 最后一次活动时间（毫秒）。每次 {@code saveSession} 都会刷新。
+     *
+     * <p>暂存文件的清理判据用的是它，不是 {@link #createdAt}：用户可能在上传后
+     * 隔很久才回来补充封面或歌词，只要还在操作就不该被清理。
+     * 字段为 0 表示来自旧会话（该字段引入前写入），读取方按 {@code createdAt} 兜底。
+     */
+    private long lastActivityAt;
     private String audioObjectName;
     private String audioUrl;
     private String audioOriginalName;
