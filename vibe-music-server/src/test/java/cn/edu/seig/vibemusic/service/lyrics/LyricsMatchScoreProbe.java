@@ -125,6 +125,11 @@ class LyricsMatchScoreProbe {
         }
 
         @Bean
+        QqMusicCatalog qqMusicCatalog() {
+            return new QqMusicCatalog();
+        }
+
+        @Bean
         QqMusicProvider qqMusicProvider() {
             return new QqMusicProvider();
         }
