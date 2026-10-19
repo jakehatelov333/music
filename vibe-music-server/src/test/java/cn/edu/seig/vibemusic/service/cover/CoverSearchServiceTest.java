@@ -209,6 +209,36 @@ class CoverSearchServiceTest {
         assertEquals("我很忙", candidates.get(0).getAlbumName());
     }
 
+    /**
+     * 手动模式要按「用户输入的关键词」排相关度，让正确结果排在最前面。
+     *
+     * <p>真实实测：搜「我很忙」时 QQ 音乐返回 A-Lin 的同名歌、2NE1 的《난 바빠》、
+     * 《天若有情》等一堆无关专辑，而周杰伦的专辑《我很忙》原本排在第 2 位。
+     * 若不做相关度排序，用户要在 8 个候选里挨个试。
+     *
+     * <p>注意这里排序用的是<b>用户刚输入的关键词</b>（可信），而不是解析出来的
+     * 元数据（可能错）—— 前者只会让正确结果更靠前，不会把正确结果筛掉。
+     */
+    @Test
+    @DisplayName("手动模式按关键词相关度排序：专辑名完全相等的排最前")
+    void manualModeRanksByKeywordRelevance() {
+        catalog.respond("我很忙", List.of(
+                hit("我很忙", "A-Lin", "我们会更好的", "004Byln34HMGEB", 200),   // 歌名相等
+                hit("最长的电影", "周杰伦", "我很忙", "002eFUFm2XYZ7z", 244),      // 专辑名相等
+                hit("난 바빠", "2NE1", "To Anyone", "0019x7ik0eScGE", 200),      // 无关
+                hit("天若有情", "A-Lin", "天若有情", "003lH16N2uNuxx", 200)      // 无关
+        ));
+
+        CoverSearchDTO dto = new CoverSearchDTO();
+        dto.setKeyword("我很忙");
+
+        List<CoverCandidateVO> candidates = service.search(dto);
+
+        assertEquals("我很忙", candidates.get(0).getAlbumName(),
+                "专辑名与关键词完全相等的应排第一：" + describe(candidates));
+        assertEquals("002eFUFm2XYZ7z", candidates.get(0).getAlbumMid());
+    }
+
     /** 手动模式默认上限 8（比自动模式宽），因为召回里混着同名不同版本。 */
     @Test
     @DisplayName("手动模式默认上限 8")

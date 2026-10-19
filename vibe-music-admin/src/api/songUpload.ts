@@ -12,7 +12,7 @@ export type SongUploadMetadata = {
   metadataAvailable: boolean;
   hasEmbeddedCover: boolean;
   coverUrl?: string | null;
-  coverSource?: "EMBEDDED" | "UPLOADED" | null;
+  coverSource?: "EMBEDDED" | "UPLOADED" | "SEARCHED" | null;
   audioFormat?: string | null;
   sampleRate?: number | null;
   bitRate?: number | null;

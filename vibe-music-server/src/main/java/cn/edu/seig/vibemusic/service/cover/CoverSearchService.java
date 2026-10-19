@@ -94,7 +94,7 @@ public class CoverSearchService {
                 : searchAuto(dto);
 
         List<CoverCandidateVO> candidates = manual
-                ? collectAll(hits, limit)
+                ? collectAll(hits, dto.getKeyword().trim(), limit)
                 : collectFiltered(hits, dto, limit);
 
         log.debug("封面搜索完成：manual={}，命中 {} 条，候选 {} 个", manual, hits.size(), candidates.size());
@@ -172,19 +172,66 @@ public class CoverSearchService {
         return toCandidates(scored, limit);
     }
 
-    /** 手动模式：不做任何过滤，按专辑聚拢后按得分排序。 */
-    private List<CoverCandidateVO> collectAll(List<QqSongHit> hits, int limit) {
+    /**
+     * 手动模式：不做歌名/歌手过滤，但按<b>用户自己输入的关键词</b>排相关度。
+     *
+     * <p>为什么不干脆不过滤也不排序：实测搜「我很忙」会返回 A-Lin 的同名歌、2NE1 的
+     * 《난 바빠》、《天若有情》等一堆无关专辑，而真正想要的周杰伦专辑《我很忙》
+     * 排在第 2 位。8 个候选里只有 1 个是对的，排序又是随机的，等于让用户挨个试。
+     *
+     * <p>关键区别在于：这里用的是<b>用户刚输入的关键词</b>（可信）做相关度排序，
+     * 而不是用<b>解析出来的元数据</b>（可能错）做过滤。前者只会让正确结果更靠前，
+     * 不会把正确结果筛掉；后者才是要避免的。
+     */
+    private List<CoverCandidateVO> collectAll(List<QqSongHit> hits, String keyword, int limit) {
+        String normalizedKeyword = normalizer.normalizeAlbum(keyword);
+        String normalizedTitleKeyword = normalizer.normalizeTitle(keyword);
         List<Scored> scored = new ArrayList<>();
         for (QqSongHit hit : hits) {
             if (!hit.hasAlbumCover()) {
                 continue;
             }
-            // 手动模式没有可信的比对目标，得分只用于稳定排序：有专辑名的排前面
-            double score = StringUtils.hasText(hit.albumName()) ? 1.0 : 0.5;
-            scored.add(new Scored(hit, score));
+            scored.add(new Scored(hit, keywordRelevance(hit, normalizedKeyword, normalizedTitleKeyword)));
         }
         scored.sort(Comparator.comparingDouble(Scored::score).reversed());
         return toCandidates(scored, limit);
+    }
+
+    /**
+     * 关键词相关度：关键词与专辑名/歌名/歌手的吻合程度。
+     *
+     * <p>专辑名完全相等权重最高 —— 用户输「我很忙」时最可能就是想找那张专辑；
+     * 其次是歌名完全相等；再次是包含关系。
+     */
+    private double keywordRelevance(QqSongHit hit, String keyword, String titleKeyword) {
+        double score = 0d;
+        String album = normalizer.normalizeAlbum(hit.albumName());
+        String title = normalizer.normalizeTitle(hit.name());
+        String artist = normalizer.normalizeArtist(hit.artist());
+
+        if (!keyword.isEmpty() && !album.isEmpty()) {
+            if (album.equals(keyword)) {
+                score += 0.5;
+            } else if (album.contains(keyword) || keyword.contains(album)) {
+                score += 0.25;
+            }
+        }
+        if (!titleKeyword.isEmpty() && !title.isEmpty()) {
+            if (title.equals(titleKeyword)) {
+                score += 0.35;
+            } else if (title.contains(titleKeyword) || titleKeyword.contains(title)) {
+                score += 0.15;
+            }
+        }
+        if (!keyword.isEmpty() && !artist.isEmpty()
+                && (artist.contains(keyword) || keyword.contains(artist))) {
+            score += 0.2;
+        }
+        // 有专辑名的略优于没有的（没有专辑名通常意味着是翻唱或自制上传）
+        if (StringUtils.hasText(hit.albumName())) {
+            score += 0.05;
+        }
+        return score;
     }
 
     /**

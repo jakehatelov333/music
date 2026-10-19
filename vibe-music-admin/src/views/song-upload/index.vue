@@ -18,6 +18,11 @@ import { message } from "@/utils/message";
 import { getArtistList } from "@/api/system";
 import { searchLyricsByMeta, type LyricsSearchResult } from "@/api/lyrics";
 import {
+  applyCoverFromAlbum,
+  searchSongCovers,
+  type CoverCandidate
+} from "@/api/songCover";
+import {
   clearSongUpload,
   commitSongUpload,
   prepareSongUpload,
@@ -64,6 +69,18 @@ const committing = ref(false);
 // 歌词搜索：上传阶段歌曲尚未入库、没有 songId，改按表单元数据走 /admin/song/lyrics/search。
 const lyricsSearching = ref(false);
 const lyricsSearchResult = ref<LyricsSearchResult | null>(null);
+// 封面搜索：自动模式用表单里的歌名/歌手；手动模式用管理员自己输入的关键词。
+const coverSearching = ref(false);
+const coverApplying = ref(false);
+const coverCandidates = ref<CoverCandidate[]>([]);
+const coverDialogVisible = ref(false);
+const coverKeyword = ref("");
+const coverSize = ref(500);
+const coverSearched = ref(false);
+/** 手动模式标记：true 表示本次结果来自用户输入的关键词而非自动推断 */
+const coverManualMode = ref(false);
+/** 当前已选中的专辑 mid，用于在候选网格里高亮 */
+const selectedAlbumMid = ref("");
 const prepared = ref(false);
 const uploadId = ref("");
 const metadata = ref<SongUploadMetadata | null>(null);
@@ -249,6 +266,143 @@ function applySearchedLyrics() {
   lyricsSearchResult.value = null;
   message("歌词已填入，可继续编辑后保存", { type: "success" });
 }
+
+// ------------------------------------------------------------------ 封面搜索
+
+/**
+ * 打开封面搜索面板。
+ *
+ * 默认走自动模式：拿表单里的歌名/歌手/专辑与音频时长去搜。
+ * 但元数据可能是错的（标签乱码、歌手填成文件名），所以面板里始终保留
+ * 一个手动关键词输入框 —— 自动搜错了，管理员可以自己改词重搜。
+ */
+function openCoverSearch() {
+  if (!prepared.value) {
+    message("请先上传音频文件", { type: "warning" });
+    return;
+  }
+  coverDialogVisible.value = true;
+  // 已搜过就不自动重搜，避免每次打开都打一次外部接口
+  if (!coverSearched.value) {
+    searchCoversAuto();
+  }
+}
+
+/** 自动模式：按表单元数据搜索。 */
+async function searchCoversAuto() {
+  if (!form.songName.trim()) {
+    message("请先填写歌曲名，或在下方手动输入关键词", { type: "warning" });
+    return;
+  }
+  coverKeyword.value = "";
+  coverManualMode.value = false;
+  await runCoverSearch({
+    songName: form.songName.trim(),
+    artistName: selectedArtistNames.value || form.artistName || null,
+    album: form.album || null,
+    durationSeconds: metadata.value?.duration ?? null
+  });
+}
+
+/**
+ * 手动模式：用管理员输入的关键词原样搜索。
+ *
+ * 后端在手动模式下不做任何歌名/歌手过滤 —— 因为元数据此时不可信，
+ * 拿它过滤只会把正确结果筛掉。可以只填歌名，也可以只填专辑名。
+ */
+async function searchCoversManual() {
+  const keyword = coverKeyword.value.trim();
+  if (!keyword) {
+    message("请输入歌名或专辑名", { type: "warning" });
+    return;
+  }
+  coverManualMode.value = true;
+  await runCoverSearch({ keyword });
+}
+
+async function runCoverSearch(payload: {
+  keyword?: string;
+  songName?: string;
+  artistName?: string | null;
+  album?: string | null;
+  durationSeconds?: number | null;
+}) {
+  coverSearching.value = true;
+  try {
+    const res = await searchSongCovers(payload);
+    if (res.code !== 0) {
+      message(res.message || "封面搜索失败", { type: "error" });
+      return;
+    }
+    coverCandidates.value = res.data ?? [];
+    coverSearched.value = true;
+    if (!coverCandidates.value.length) {
+      message(
+        coverManualMode.value
+          ? "没有搜到带封面的专辑，换个关键词试试"
+          : "没有找到匹配的封面，可以手动输入关键词重搜",
+        { type: "info" }
+      );
+    }
+  } catch {
+    message("封面搜索失败，请稍后重试", { type: "error" });
+  } finally {
+    coverSearching.value = false;
+  }
+}
+
+/** 取指定尺寸的封面地址；缺该尺寸时退回 500，再退回任意一档。 */
+function coverUrlOf(candidate: CoverCandidate, size: number) {
+  const urls = candidate.coverUrls || {};
+  return urls[String(size)] || urls["500"] || Object.values(urls)[0] || "";
+}
+
+/**
+ * 应用选中的封面：下载到当前上传会话的 staging。
+ *
+ * 这里才真正落盘 —— 候选图由浏览器直接加载 CDN，不经过后端，
+ * 所以搜索阶段不会在 MinIO 里留下任何东西。
+ */
+async function applyCover(candidate: CoverCandidate) {
+  if (!uploadId.value) {
+    message("上传会话已失效，请重新上传音频", { type: "warning" });
+    return;
+  }
+  coverApplying.value = true;
+  selectedAlbumMid.value = candidate.albumMid;
+  try {
+    const res = await applyCoverFromAlbum(uploadId.value, {
+      albumMid: candidate.albumMid,
+      size: coverSize.value
+    });
+    if (res.code !== 0 || !res.data) {
+      throw new Error(res.message || "封面应用失败");
+    }
+    applyPreparedResult(res.data, false);
+    coverDialogVisible.value = false;
+    coverName.value = "";
+    clearLocalCover();
+    message("封面已应用，保存后生效", { type: "success" });
+  } catch (error: any) {
+    message(error?.message || "封面应用失败，请重试", { type: "error" });
+  } finally {
+    coverApplying.value = false;
+  }
+}
+
+/** 封面来源的展示文案。 */
+const coverSourceText = computed(() => {
+  switch (metadata.value?.coverSource) {
+    case "EMBEDDED":
+      return "来自 MP3 内嵌封面";
+    case "UPLOADED":
+      return "使用独立上传封面";
+    case "SEARCHED":
+      return "来自 QQ 音乐专辑封面";
+    default:
+      return "未检测到封面，将使用默认图片";
+  }
+});
 
 async function uploadAssets(cover?: File | null, lyrics?: File | null) {
   if (!uploadId.value || (!cover && !lyrics)) return;
@@ -460,6 +614,13 @@ function resetState() {
   pendingLyrics.value = null;
   artistMatched.value = false;
   artistParsing.value = null;
+  coverCandidates.value = [];
+  coverDialogVisible.value = false;
+  coverKeyword.value = "";
+  coverSearched.value = false;
+  coverManualMode.value = false;
+  selectedAlbumMid.value = "";
+  coverSize.value = 500;
   clearLocalCover();
   form.songName = "";
   form.artistName = "";
@@ -495,6 +656,15 @@ function formatSize(size?: number | null) {
   if (!size) return "-";
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 秒数转 m:ss，用于在候选卡片上显示时长（辅助判断是否同一版本）。 */
+function formatDuration(seconds?: number | null) {
+  if (!seconds || seconds <= 0) return "-";
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
 onBeforeUnmount(clearLocalCover);
@@ -626,26 +796,26 @@ onMounted(() => {
                 :preview-src-list="[coverPreview]"
                 preview-teleported
               />
-              <el-upload
-                action="#"
-                accept=".jpg,.jpeg,.png"
-                :auto-upload="false"
-                :show-file-list="false"
-                :on-change="handleCoverChange"
-              >
-                <el-button :loading="assetsUploading" plain>
-                  更换封面
+              <div class="cover-actions">
+                <el-button
+                  :loading="coverSearching"
+                  plain
+                  @click="openCoverSearch"
+                >
+                  <el-icon class="mr-1"><Search /></el-icon>
+                  搜索封面
                 </el-button>
-              </el-upload>
-              <div class="cover-source">
-                {{
-                  metadata?.coverSource === "EMBEDDED"
-                    ? "来自 MP3 内嵌封面"
-                    : metadata?.coverSource === "UPLOADED"
-                      ? "使用独立上传封面"
-                      : "未检测到封面，将使用默认图片"
-                }}
+                <el-upload
+                  action="#"
+                  accept=".jpg,.jpeg,.png"
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  :on-change="handleCoverChange"
+                >
+                  <el-button :loading="assetsUploading" plain>上传封面</el-button>
+                </el-upload>
               </div>
+              <div class="cover-source">{{ coverSourceText }}</div>
             </div>
 
             <el-form :model="form" label-position="top" class="info-form">
@@ -937,6 +1107,124 @@ onMounted(() => {
             上传并保存
           </el-button>
         </div>
+
+        <!-- 封面搜索：自动按表单元数据搜，也可手动输入关键词重搜 -->
+        <el-dialog
+          v-model="coverDialogVisible"
+          title="搜索封面"
+          width="720px"
+          align-center
+          destroy-on-close
+        >
+          <div class="cover-search-panel">
+            <div class="cover-search-mode">
+              <el-radio-group v-model="coverManualMode" size="small">
+                <el-radio-button :value="false">按歌曲信息搜索</el-radio-button>
+                <el-radio-button :value="true">手动搜索</el-radio-button>
+              </el-radio-group>
+              <span class="cover-search-hint">
+                {{
+                  coverManualMode
+                    ? "直接输入歌名或专辑名，不再用表单信息过滤"
+                    : "使用表单里的歌名、歌手、专辑与音频时长"
+                }}
+              </span>
+            </div>
+
+            <!-- 手动模式：元数据解析错时的逃生通道 -->
+            <div v-if="coverManualMode" class="cover-search-manual">
+              <el-input
+                v-model="coverKeyword"
+                clearable
+                placeholder="输入歌名或专辑名，例如「青花瓷」或「我很忙」"
+                @keyup.enter="searchCoversManual"
+              />
+              <el-button
+                type="primary"
+                :loading="coverSearching"
+                @click="searchCoversManual"
+              >
+                搜索
+              </el-button>
+            </div>
+            <div v-else class="cover-search-manual">
+              <el-button
+                :loading="coverSearching"
+                plain
+                @click="searchCoversAuto"
+              >
+                重新按歌曲信息搜索
+              </el-button>
+              <span class="cover-search-hint">
+                解析错了？切到「手动搜索」自己输入关键词
+              </span>
+            </div>
+
+            <div class="cover-size-bar">
+              <span>尺寸</span>
+              <el-radio-group v-model="coverSize" size="small">
+                <el-radio-button :value="300">300</el-radio-button>
+                <el-radio-button :value="500">500</el-radio-button>
+                <el-radio-button :value="800">800</el-radio-button>
+              </el-radio-group>
+            </div>
+
+            <div v-if="coverSearching" class="cover-search-loading">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              正在搜索封面...
+            </div>
+            <div v-else-if="coverCandidates.length" class="cover-grid">
+              <button
+                v-for="candidate in coverCandidates"
+                :key="candidate.albumMid"
+                type="button"
+                class="cover-card"
+                :class="{ selected: selectedAlbumMid === candidate.albumMid }"
+                :disabled="coverApplying"
+                @click="applyCover(candidate)"
+              >
+                <img
+                  :src="coverUrlOf(candidate, coverSize)"
+                  :alt="candidate.albumName || candidate.trackName || '封面'"
+                  loading="lazy"
+                />
+                <div class="cover-card__meta">
+                  <strong>{{ candidate.albumName || "未命名专辑" }}</strong>
+                  <span>{{ candidate.artistName || "-" }}</span>
+                  <div class="cover-card__tags">
+                    <el-tag
+                      v-if="candidate.versionLabel"
+                      size="small"
+                      :type="
+                        candidate.versionLabel === '录音室' ? 'success' : 'warning'
+                      "
+                      effect="light"
+                    >
+                      {{ candidate.versionLabel }}
+                    </el-tag>
+                    <el-tag
+                      v-if="candidate.durationSeconds"
+                      size="small"
+                      type="info"
+                      effect="plain"
+                    >
+                      {{ formatDuration(candidate.durationSeconds) }}
+                    </el-tag>
+                  </div>
+                </div>
+              </button>
+            </div>
+            <el-empty
+              v-else-if="coverSearched"
+              description="没有找到带封面的专辑，换个关键词试试"
+              :image-size="72"
+            />
+          </div>
+
+          <template #footer>
+            <el-button @click="coverDialogVisible = false">取消</el-button>
+          </template>
+        </el-dialog>
       </main>
 
       <aside class="side-column">
@@ -1271,6 +1559,134 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   text-align: center;
+}
+
+.cover-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+
+  :deep(.el-button) {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  :deep(.el-upload) {
+    display: block;
+    width: 100%;
+  }
+}
+
+/* 封面搜索面板 */
+.cover-search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cover-search-mode,
+.cover-size-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.cover-size-bar > span {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.cover-search-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.cover-search-manual {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.cover-search-loading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+  color: var(--el-text-color-secondary);
+}
+
+.cover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 14px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.cover-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+  background: var(--el-fill-color-blank);
+  border: 2px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  transition: 0.18s ease;
+
+  &:hover:not(:disabled) {
+    border-color: #3b82f6;
+    box-shadow: 0 8px 20px rgb(59 130 246 / 14%);
+  }
+
+  &.selected {
+    border-color: #22c55e;
+    box-shadow: 0 0 0 3px rgb(34 197 94 / 16%);
+  }
+
+  &:disabled {
+    cursor: progress;
+    opacity: 0.65;
+  }
+
+  img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: var(--el-fill-color);
+    border-radius: 8px;
+  }
+}
+
+.cover-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+
+  strong,
+  span {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: var(--el-text-color-secondary);
+  }
+}
+
+.cover-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
 }
 
 .info-form {
