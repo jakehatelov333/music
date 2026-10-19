@@ -119,6 +119,8 @@ const artistParsing = ref<ArtistParsing | null>(null);
 /** 歌手下拉的候选（远程搜索填充；已选中的歌手也会被并入，保证标签能显示名字） */
 const artistOptions = ref<{ artistId: number; artistName: string }[]>([]);
 const artistSearching = ref(false);
+/** el-select 实例引用，用于选中后清空筛选关键词 */
+const artistSelectRef = ref();
 
 const form = reactive({
   songName: "",
@@ -452,17 +454,37 @@ async function uploadAssets(cover?: File | null, lyrics?: File | null) {
   }
 }
 
-/** 把解析出的已匹配歌手并入下拉候选，保证多选标签能显示名字。 */
-function mergeArtistOptions(items: { artistId: number; artistName: string }[]) {
-  const merged = new Map(artistOptions.value.map(item => [item.artistId, item]));
-  items.forEach(item => {
-    if (item?.artistId) merged.set(item.artistId, item);
+/**
+ * 把「已选中的歌手」并入候选，保证多选标签始终能显示名字。
+ *
+ * <p>为什么只并已选中的、而不是并全部历史结果：历史上这里合并的是
+ * {@code artistOptions}（上一轮的候选）。于是搜索「周」时后端只返回 2 条，
+ * 却被并进初始加载的 50 条里，下拉仍然显示 50 条、周杰伦排第 6 ——
+ * 用户输入的关键词等于没生效。现在只保留「当前已选中」的那些，
+ * 搜索结果本身原样替换。
+ */
+function keepSelectedArtists(items: { artistId: number; artistName: string }[]) {
+  const byId = new Map(items.map(item => [item.artistId, item]));
+  // 已选中但不在本次结果里的，补回去（否则标签会退化成只显示 id）
+  form.artistIds.forEach(id => {
+    if (byId.has(id)) return;
+    const known = artistOptions.value.find(item => item.artistId === id);
+    if (known) byId.set(id, known);
   });
-  artistOptions.value = [...merged.values()];
+  return [...byId.values()];
 }
+
+/**
+ * 加载歌手候选。
+ *
+ * <p>用自增序号丢弃过期响应：远程搜索是逐字触发的，先发的请求可能后到，
+ * 若无条件写入就会把「周」的结果覆盖成「z」的结果。
+ */
+let artistRequestSeq = 0;
 
 async function loadArtistOptions(keyword?: string) {
   const trimmed = keyword?.trim();
+  const seq = ++artistRequestSeq;
   artistSearching.value = true;
   try {
     const res = await getArtistList({
@@ -470,19 +492,24 @@ async function loadArtistOptions(keyword?: string) {
       pageSize: 50,
       ...(trimmed ? { artistName: trimmed } : {})
     });
+    if (seq !== artistRequestSeq) {
+      // 已有更新的请求发出，本次结果作废
+      return;
+    }
     const items = (res.data?.items || []).map((item: any) => ({
       artistId: item.artistId as number,
       artistName: item.artistName as string
     }));
-    if (trimmed) {
-      mergeArtistOptions(items);
-    } else {
-      artistOptions.value = items;
-    }
+    // 无论是否有关键词，都只保留「本次结果 + 已选中」，不再并入上一轮候选
+    artistOptions.value = keepSelectedArtists(items);
   } catch {
-    if (!trimmed) artistOptions.value = [];
+    if (seq === artistRequestSeq && !trimmed) {
+      artistOptions.value = [];
+    }
   } finally {
-    artistSearching.value = false;
+    if (seq === artistRequestSeq) {
+      artistSearching.value = false;
+    }
   }
 }
 
@@ -520,7 +547,8 @@ function applyPreparedResult(data: SongUploadPrepareResult, fillForm: boolean) {
         : [];
 
     if (autoFilled.length) {
-      mergeArtistOptions(autoFilled);
+      // 先把解析出的歌手并入候选，再赋 id —— 否则多选标签会因找不到 name 而显示成 id
+      artistOptions.value = keepSelectedArtists([...autoFilled, ...artistOptions.value]);
       form.artistIds = autoFilled.map(item => item.artistId);
       form.artistName = "";
       form.artistId = autoFilled[0].artistId;
@@ -555,6 +583,9 @@ function handleArtistIdsChange(ids: number[]) {
   // 换歌手后原来的专辑归属可能不再成立（同名专辑属于不同歌手），
   // 必须清掉 albumId 与已确认选中态，让用户重新确认。
   clearAlbumSelection();
+  // 选中后清空 el-select 的筛选词：否则搜索框里会残留上一个关键词，
+  // 下次打开下拉时用户以为还在搜旧词，实际候选已经变了。
+  artistSelectRef.value?.clearFilter?.();
   // 候选排序依赖 artistId（该歌手的专辑优先），换了歌手就重新查一次
   if (form.album.trim()) {
     scheduleAlbumSuggest(form.album);
@@ -1000,11 +1031,11 @@ onMounted(() => {
                   <el-form-item label="歌手" required>
                     <div class="artist-field">
                       <el-select
+                        ref="artistSelectRef"
                         v-model="form.artistIds"
                         multiple
                         filterable
                         remote
-                        reserve-keyword
                         :remote-method="searchArtists"
                         :loading="artistSearching"
                         placeholder="搜索并选择歌手，可多选；顺序即展示顺序"
@@ -1024,9 +1055,13 @@ onMounted(() => {
                         </el-option>
                       </el-select>
 
-                      <!-- 未选系统歌手时保留旧的「按名字自动创建」路径（仅单歌手） -->
+                      <!--
+                        未选系统歌手时保留「按名字自动创建」路径（仅单歌手）。
+                        用 v-show 而不是 v-if：v-if 会在选中歌手那一刻把整个输入框
+                        连同用户已输入的文字一起销毁，用户看到的就是「我打的字没了」。
+                      -->
                       <el-input
-                        v-if="!form.artistIds.length"
+                        v-show="!form.artistIds.length"
                         v-model="form.artistName"
                         clearable
                         placeholder="或直接输入歌手名，保存时自动创建（仅单歌手）"
