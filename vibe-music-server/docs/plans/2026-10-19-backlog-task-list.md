@@ -98,7 +98,8 @@
 
 #### E-3　会话窗口与持久化（问题 12、13，P2）
 
-- [ ] 统一 `STAGING_TTL_MILLIS = 24h`（:62）与 `SESSION_TTL_HOURS = 48h`（:63）为 48h，响应返回准确 `expiresAt`
+- [x] 统一 `STAGING_TTL_MILLIS = 24h`（:62）与 `SESSION_TTL_HOURS = 48h`（:63）为 12h，响应返回准确 `expiresAt`
+      （**已随 P1-4 完成**：单一常量 `UPLOAD_TTL_HOURS = 12`，清理改按最后活动时间）
 - [ ] 处理 `AlbumUploadServiceImpl` :48 静态 `ConcurrentHashMap SESSIONS` 与 :498 Redis 过期后的内存回退（永不过期）
 - [ ] 评估建 `tb_media_upload_session`（计划书本意）或单删内存回退
 - [ ] 问题 13：先做授权/存在性校验再上传，或补持久补偿
@@ -107,14 +108,123 @@
 
 ---
 
+## P1-4　歌曲上传页：封面搜索（复用 QQ 音乐专辑封面）
+
+**目标**：管理员上传歌曲时，除了「内嵌封面 / 手动上传」，还能按歌名+歌手搜出候选封面并选用。
+
+### 关键实测结论（2026-10-19 已验证）
+
+| 验证项 | 结果 |
+| --- | --- |
+| QQ 搜索接口返回 `albummid` | 有（如 `0041WVfh2vtlJE`） |
+| 封面 URL 可下载 | `https://y.gtimg.cn/music/photo_new/T002R{size}M000{albumMid}.jpg` |
+| 尺寸 | 300 / 500 / 800 均可用（500px 约 107 KB） |
+| **防盗链** | **无**。不带 Referer 也返回 200 → 浏览器可直接加载，无需后端代理 |
+| LRCLIB 是否有封面 | **无**，只有歌词 |
+
+**⚠️ 不能直接把搜索结果当候选列表**：实测搜「淘金小镇 周杰伦」返回 8 条，只有 1 条是目标歌曲，
+其余是《稻香》《夜曲》《兰亭序》等。必须**先按歌名+歌手过滤**，再**按专辑去重**聚拢成候选。
+参考实测：「青花瓷」→ 录音室版（我很忙）/ Live 版（魔天伦）/ 翻唱版（中国好声音）；
+「孤勇者」→ 录音室版 / Live 版 / DJ 版 / 童声版。所以候选天然存在多版本，需要标注版本名。
+
+### 已确认的产品决策
+
+| 项 | 决定 |
+| --- | --- |
+| 封面来源 | 仅 QQ 音乐 |
+| 存储方式 | **下载成文件**存 MinIO staging（不存外链）；候选图不预下载，浏览器直连 CDN |
+| 候选数量 | 自动模式最多 4 个，手动模式最多 8 个，按专辑聚拢并标注版本 |
+| 尺寸 | 允许切换 300 / 500 / 800，默认 500；一次响应带回三档地址 |
+| 自定义封面 | 保留原有功能，与搜索封面并列 |
+| **手动搜索** | **支持**。元数据解析错时自动搜索必然也错，需由管理员输入关键词重搜 |
+| 暂存过期 | **12 小时**（与上传会话统一，见下方 TTL 章节） |
+| 换选封面时旧图 | 直接 `safeDeleteObject`（**偏离原计划**，见下） |
+| 是否显示剩余有效期 | **不显示**（用户明确不要） |
+
+#### 实施时对原计划的两处偏离
+
+1. **换选旧图不登记 `tb_media_cleanup_task`**：staging 对象不可能被任何业务表引用，
+   引用核对恒为 0，登记等于绕圈；且 `updateAssets` 无事务，每次换选都会打
+   「事务外登记」警告日志；12h TTL 已兜底。改用 `safeDeleteObject`。
+2. **`cover-from-album` 只接受 `albumMid + size`，不接受 URL**：接受 URL 等于给管理端
+   开一个任意地址抓取入口（SSRF）。改为服务端按固定模板拼地址 + mid 白名单校验。
+
+### 任务拆解
+
+**后端**
+
+- [x] `QqMusicProvider` 的 `QqSong` record 保留 `albummid`（当前解析后丢弃）
+- [x] 抽取 `QqMusicCatalog` / `QqSongHit`，歌词与封面共用同一份检索结果
+- [x] 新增封面候选模型 `CoverCandidateVO`：`{ albumMid, albumName, artistName, trackName, versionLabel, score, durationSeconds, coverUrls }`
+- [x] `QqCoverUrl` 按尺寸拼装地址 + `albumMid` 白名单校验（`^[A-Za-z0-9]{10,20}$`）
+- [x] `CoverNameNormalizer` 归一化歌名（剥离版本后缀）与歌手集合求交集
+- [x] `POST /admin/song-cover/search`：自动模式（过滤+去重，≤4）/ 手动模式（关键词原样检索，≤8）
+- [x] `POST /admin/song-upload/{uploadId}/cover-from-album`：下载到该 uploadId 的 staging
+- [x] `CoverDownloader`：流式 5 MB 截断、Content-Type 必须是 image/*、404 与超限给出不同提示
+- [x] 下载成功后写入会话 `coverObjectName` / `coverUrl`，来源标记 `SEARCHED`
+
+**TTL 统一（与封面强相关，同批做）**
+
+- [x] 统一 `STAGING_TTL_MILLIS = 24h` 与 `SESSION_TTL_HOURS = 48h` 为 **12 小时**（单一常量 `UPLOAD_TTL_HOURS = 12`）
+- [x] 清理判据从「创建时间」改为「最后活动时间」：`saveSession` 时更新 zset 分数为 `now`
+- [x] 同步更新上传页提示文案（当前硬编码「24 小时后自动清理」）
+
+**前端（`vibe-music-admin/src/views/song-upload/index.vue`）**
+
+- [x] 封面区增加「搜索封面」按钮（与「上传封面」并列）
+- [x] 候选卡片网格：缩略图 + 专辑名 + 版本标注 + 时长；点击选中
+- [x] 尺寸切换（300/500/800），切换只改 img src，不重新请求
+- [x] 选中后显示预览，并保留「上传自定义封面」入口
+- [x] **手动搜索模式**：单选切换，输入关键词原样检索
+
+**测试**
+
+- [x] 候选过滤与去重：只保留同名+同歌手，按 albummid 去重
+- [x] `albummid` 为空 / 封面下载 404 时该候选被跳过而非整体失败
+- [x] 下载体积超限被拒绝（本地 HttpServer 验证流式截断）
+- [x] 非法 `albumMid` 一律拒绝且不发起下载（SSRF 边界）
+- [x] 换选封面时旧对象被回收
+- [x] TTL 统一后：12 小时内可提交、超过 12 小时会话与文件同时失效
+
+**验收**
+
+- [x] 真实歌曲搜索能返回带封面的候选；选中后封面出现在 staging 且可预览；
+      提交后落到 `songCovers/`；超过 12 小时未提交则会话与文件一起被清理。
+
+**完成记录（2026-10-19）**：新增 47 例测试，全量 **396 通过 / 0 失败 / 0 错误**。
+真实端到端（临时管理员 + 真实 mp3，验证后已清理）：自动模式「青花瓷」→ 3 个候选且
+《稻香》《七里香》《兰亭序》全部被过滤；手动模式「淘金小镇 周杰伦」→ 目标专辑
+《太阳之子》排第一；下载 500px 得到真实 JPEG（107 KB）；尺寸切换 300/800 正常
+（60 KB / 203 KB）；SSRF 防护全部拦截；提交后封面转存 `songCovers/`、staging 清理；
+删除歌曲后封面与音频各入一条清理任务且均 `SUCCEEDED`；`tb_song` 540 行、`tb_admin` 81 行
+与验证前一致。
+
+**未做**：浏览器 UI 实操（bsk 扩展未连接，无法驱动文件选择与点击）。接口层已完整验证。
+
+**估时**：半天到一天。
+
+---
+
 ## P2　工程债
-
 ### P2-1　C2：媒体登记表 + 锁协议（暂不推荐）
-
 - [ ] 新建 `tb_media_object`（DDL 以注释形式存于 `sql/phaseC_media_cleanup.sql` 末尾）
 - [ ] 全部媒体写入口与 worker 锁定同一登记行，worker 锁内复核引用后才标记 `DELETING`
 
 说明：消除「核对无引用」与「执行删除」之间的窄竞态窗口。单实例本地项目触发概率极低，**建议排在 P1 之后或不做**。
+
+### P2-3　登录 token 的 Redis 生命周期治理
+
+现状（2026-10-19 实测 db1）：共 16 个键，其中 7 个是登录 token。**代码本身已有 6 小时 TTL**
+（`UserServiceImpl:184`、`AdminServiceImpl:88` 均为 `set(token, token, 6, TimeUnit.HOURS)`），
+但实测发现 3 个 token 的 `TTL = -1`（永不过期），且解码 JWT 的 `exp` 后确认
+**它们早在 2026-10-14 就已过期，属「加 TTL 之前」写入的历史残留**。
+
+- [ ] 清理历史残留 token：3 个 `adminId=58(admin_172)` 的过期键 + 1 个测试遗留的 `adminId=190(e2e_lyrics_tmp)`
+- [ ] 清掉 2 个已失效的上传会话（`song-upload:session:*` 与索引中对应成员，staging 文件早已被 24h 任务删除）
+- [ ] （可选，单独 commit）`LoginInterceptor` 增加 JWT `exp` 兜底校验：JWT 已过期时即使 Redis 有键也拒绝，并顺手删掉脏键
+
+**边界说明**：第 3 项是防御性加固，**不改令牌形态、不引入 auth_version、不碰已放弃的鉴权改造**。
+「禁用/改密后旧 token 仍可用最多 6 小时」是既有决策下已接受的已知风险，不在本项范围。
 
 ### P2-2　文档与环境
 
@@ -128,21 +238,28 @@
 
 ## 待用户拍板的决策
 
-1. D 阶段自定义封面：写入 `tb_account_cleanup_task`（加 `resource_name`）还是复用 `tb_media_cleanup_task`？倾向后者。
-2. 管理员删除有反馈的用户：反馈物理删除（与自助注销一致）还是保留反馈、`user_id` 置空？
-3. 上传会话：单删静态 `SESSIONS` 回退（约 1 小时）还是建 `tb_media_upload_session`（约半天）？
-4. C2 是否实施：建议暂不做。
+1. 管理员删除有反馈的用户：反馈物理删除（与自助注销一致）还是保留反馈、`user_id` 置空？
+2. 上传会话：单删静态 `SESSIONS` 回退（约 1 小时）还是建 `tb_media_upload_session`（约半天）？
+3. C2 是否实施：建议暂不做。
+4. P2-3 第 3 项（`LoginInterceptor` 加 JWT `exp` 兜底）是否做？建议做，但需单独 commit。
+
+**已决策（2026-10-19）**
+
+- D 阶段封面清理：**复用 `tb_media_cleanup_task`**（`source_type = ACCOUNT_DELETE`），已实现。
+- 封面搜索：见 P1-4 的「已确认的产品决策」表。
 
 ---
 
 ## 推荐执行顺序
 
-1. P0-1 类型错误 + CI（约 30 分钟，零风险）
-2. P1-1 统一账号删除服务 + phaseD 迁移（半天，含测试）
-3. P1-2 头像/Banner 接入媒体清理（2–3 小时）
-4. P1-3 上传链路：E-1 → E-2/E-3（1–2 天）
-5. P2-2 文档与环境债（随手）
-6. P2-1 C2（可长期不做）
+1. ~~P0-1 类型错误 + CI~~ ✅ 已完成
+2. ~~P1-1 统一账号删除服务 + phaseD 迁移~~ ✅ 已完成
+3. ~~P1-4 封面搜索 + TTL 统一~~ ✅ 已完成
+4. P2-3 token 历史残留清理（10 分钟，零风险）
+5. P1-2 头像/Banner 接入媒体清理（2–3 小时）
+6. P1-3 上传链路：E-2 / E-3 剩余部分（1–2 天）
+7. P2-2 文档与环境债（随手）
+8. P2-1 C2（可长期不做）
 
 每步独立 commit，可单独验收与回滚。
 
@@ -157,3 +274,5 @@
 | 2026-10-19 | E-1 提交后失败不得删已入库媒体 | `SongUploadServiceImpl.commit` 引入 `committed` 分界线；提交后异常走 `recoverCommittedResult` 重读，绝不 `safeDeleteObject`；`resolveAlbumId` 改为接收 `TransactionTemplate`，与歌曲行同事务。新增 `SongUploadCommitBoundaryTest`（2 例）。全量回归 **325 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 323）。 |
 | 2026-10-19 | P0-1 前端类型错误 + CI | `hexToRgb` 返回契约改为 `number[] \| null`，`getDarkColor`/`getLightColor` 显式判空（去掉 `!` 断言）；`plugins.ts` 参数改 `_viteEnv`；`ResetPasswordForm.vue` 参数改 `_rule`；删除专辑页未使用的 `matchesKeyword`。`pnpm type-check` 退出码 0、`pnpm build` 通过，CI 用户端 job 增加「类型检查」步骤。浏览器实测：落地页、曲库、专辑页（265 条）、专辑内搜索（筛到 1 条）、播放条均正常，控制台无报错。 |
 | 2026-10-19 | P1-1 统一账号删除服务 | 新增 `AccountDeletionService`（单删/批删/自助注销唯一实现）、`MediaCleanupSourceType.ACCOUNT_DELETE`、`sql/phaseD_account_cleanup.sql`（唯一键改 `(user_id, resource_type, resource_ref)`）。修复：有反馈账号可删、管理员路径补齐无外键表与封面清理、批删整批回滚、封面走媒体清理管线保留共享对象。新增 `AccountDeletionServiceTest`（12 例），改造 `UserDeleteAccountTest` 装配与头像语义断言。全量回归 **337 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 325）。浏览器实测：落地页、曲库、播放（红玫瑰 00:20 正常推进）无回归，控制台无报错。 |
+| 2026-10-19 | 歌词搜索（上传页按元数据） | 新增 `POST /admin/song/lyrics/search` 与 `LyricsSearchDTO`；复用 `fetchFromProviders`（QQ 主源 + LRCLIB 兜底 + 打分阈值），歌手展示串拆成候选链，时长参与消歧。上传页加「搜索歌词」按钮与结果预览。新增 `LyricsSearchByMetaTest`（6 例）。全量回归 **343 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 337）。真实端到端：《淘金小镇》→ 命中 QQ_MUSIC、匹配度 0.9、返回完整 LRC；临时管理员与 staging 已清理。 |
+| 2026-10-19 | P1-4 封面搜索（4 个 commit） | ①`refactor(lyrics)` 抽取 `QqMusicCatalog`/`QqSongHit`，保留 `albummid`，歌词与封面共用同一份检索结果；②`fix(upload)` 统一 TTL 为 12h 且清理改按「最后活动时间」，修掉「界面说还在、文件已没」的缺陷；③`feat(cover)` 新增 `CoverSearchService`（自动过滤+去重 ≤4 / 手动原样检索 ≤8）、`CoverNameNormalizer`（剥离版本后缀、歌手交集）、`QqCoverUrl`（拼地址+白名单防 SSRF）、`CoverDownloader`（流式 5 MB 截断、Content-Type 校验）与两个端点；④`feat(admin)` 上传页封面区拆出「搜索封面」，含手动搜索模式与尺寸切换。新增 47 例测试，全量 **396 通过 / 0 失败 / 0 错误**。真实端到端：自动模式「青花瓷」→ 3 个候选（稻香/七里香/兰亭序 被正确过滤）；手动模式「淘金小镇 周杰伦」→ 目标专辑《太阳之子》排第一；下载 500px → 真实 JPEG 107 KB；尺寸 300/800 → 60 KB/203 KB；SSRF 四种非法输入全部拦截；提交后封面转存 `songCovers/`、staging 清理；删歌后两条清理任务均 `SUCCEEDED`；`tb_song` 540 行、`tb_admin` 81 行与验证前一致。 |
