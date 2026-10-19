@@ -23,6 +23,8 @@ import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.ISongUploadService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.service.cover.CoverDownloader;
+import cn.edu.seig.vibemusic.service.cover.QqCoverUrl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -76,6 +78,13 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private static final Set<String> COVER_EXTENSIONS = Set.of("jpg", "jpeg", "png");
     private static final Set<String> LYRICS_EXTENSIONS = Set.of("lrc", "txt");
 
+    /** 封面来源：从音频文件里提取的内嵌图 */
+    private static final String COVER_SOURCE_EMBEDDED = "EMBEDDED";
+    /** 封面来源：管理员手动上传 */
+    private static final String COVER_SOURCE_UPLOADED = "UPLOADED";
+    /** 封面来源：按专辑从 QQ 音乐搜索下载 */
+    private static final String COVER_SOURCE_SEARCHED = "SEARCHED";
+
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
     @Autowired
@@ -98,6 +107,8 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private ArtistProvisioningService artistProvisioningService;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    @Autowired
+    private CoverDownloader coverDownloader;
 
     @Override
     public Result<SongUploadPrepareVO> prepare(MultipartFile audio) {
@@ -141,7 +152,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
                                 : "image/" + ("jpg".equals(coverExtension) ? "jpeg" : coverExtension)
                 );
                 coverObjectName = stagingFolder + "/" + embeddedCoverName;
-                coverSource = "EMBEDDED";
+                coverSource = COVER_SOURCE_EMBEDDED;
             } catch (RuntimeException e) {
                 coverWarning = "内嵌封面提取失败，请手动上传封面。";
                 log.warn("内嵌封面上传失败，uploadId={}", uploadId, e);
@@ -224,7 +235,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 String newCoverUrl = minioService.uploadFile(cover, stagingFolder(uploadId), objectName);
                 session.setCoverObjectName(stagingFolder(uploadId) + "/" + objectName);
                 session.setCoverUrl(newCoverUrl);
-                session.setCoverSource("UPLOADED");
+                session.setCoverSource(COVER_SOURCE_UPLOADED);
                 if (StringUtils.hasText(oldCoverObjectName) && !oldCoverObjectName.equals(session.getCoverObjectName())) {
                     obsoleteCoverObjectName = oldCoverObjectName;
                 }
@@ -438,6 +449,58 @@ public class SongUploadServiceImpl implements ISongUploadService {
         } finally {
             stringRedisTemplate.delete(lockKey);
         }
+    }
+
+    @Override
+    public Result<SongUploadPrepareVO> updateCoverFromAlbum(String uploadId, String albumMid, Integer size) {
+        if (!isValidUploadId(uploadId)) {
+            return Result.error("上传任务不存在或参数不合法");
+        }
+        SongUploadSession session = getSession(uploadId);
+        if (session == null) {
+            return Result.error("上传任务已过期，请重新上传音频");
+        }
+        // 只接受 albumMid，不接受 URL：否则这个端点就成了「让服务端抓任意地址」的入口
+        if (!QqCoverUrl.isValidAlbumMid(albumMid)) {
+            return Result.error("专辑标识不合法");
+        }
+
+        int normalizedSize = QqCoverUrl.normalizeSize(size);
+        String coverUrl = QqCoverUrl.of(albumMid, normalizedSize);
+        CoverDownloader.Result downloaded = coverDownloader.download(coverUrl);
+        if (!downloaded.success()) {
+            return Result.error(downloaded.error());
+        }
+
+        String oldCoverObjectName = session.getCoverObjectName();
+        String objectName = "cover-searched-" + UUID.randomUUID() + "." + coverExtension(downloaded.contentType());
+        String newCoverUrl;
+        try {
+            newCoverUrl = minioService.uploadBytes(
+                    downloaded.bytes(),
+                    stagingFolder(uploadId),
+                    objectName,
+                    downloaded.contentType()
+            );
+        } catch (RuntimeException e) {
+            log.error("封面写入 staging 失败，uploadId={}", uploadId, e);
+            return Result.error("封面保存失败，请重试");
+        }
+
+        session.setCoverObjectName(stagingFolder(uploadId) + "/" + objectName);
+        session.setCoverUrl(newCoverUrl);
+        session.setCoverSource(COVER_SOURCE_SEARCHED);
+
+        try {
+            saveSession(session);
+        } catch (RuntimeException e) {
+            // 会话没保存成功，刚写入的这张图就成了孤儿：立刻回收，避免留下无主文件
+            safeDeleteObject(stagingFolder(uploadId) + "/" + objectName);
+            log.error("保存上传资源状态失败，uploadId={}", uploadId, e);
+            return Result.error("保存上传状态失败，请重试");
+        }
+        safeDeleteObject(oldCoverObjectName);
+        return Result.success("封面已应用", buildPrepareVO(session, buildWarning(session)));
     }
 
     @Override
