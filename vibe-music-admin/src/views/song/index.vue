@@ -23,7 +23,6 @@ import More from "@iconify-icons/ep/more-filled";
 import Delete from "@iconify-icons/ep/delete";
 import EditPen from "@iconify-icons/ep/edit-pen";
 import Refresh from "@iconify-icons/ep/refresh";
-import AddFill from "@iconify-icons/ri/add-circle-line";
 import LyricsIcon from "@iconify-icons/ri/file-music-line";
 
 defineOptions({
@@ -304,13 +303,10 @@ onBeforeUnmount(stopPolling);
         @refresh="onSearch"
       >
         <template #buttons>
-          <el-button
-            type="primary"
-            :icon="useRenderIcon(AddFill)"
-            @click="openDialog()"
-          >
-            新增歌曲
-          </el-button>
+          <!--
+            新增歌曲入口已移除：新增走「歌曲上传」页（/song-upload/index，两段式建库，
+            会同时解析音频、封面与歌词），此处再放一个手填表单属于重复入口。
+          -->
           <el-dropdown
             split-button
             type="warning"
