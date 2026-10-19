@@ -17,6 +17,49 @@ export const previewLyrics = (songId: number) => {
   });
 };
 
+/**
+ * 歌词搜索结果（与后端 LyricsFetchVO 对应）
+ *
+ * `Result` 的 `data` 是联合类型，这里显式声明具体形状，
+ * 避免调用方拿到 `string | number | object | any[]` 而无法类型收窄。
+ */
+export type LyricsSearchResult = {
+  songId?: number | null;
+  songName?: string | null;
+  artistName?: string | null;
+  album?: string | null;
+  matched: boolean;
+  source?: string | null;
+  score?: number | null;
+  lyric?: string | null;
+  message?: string | null;
+  hasExistingLyric?: boolean | null;
+};
+
+export type LyricsSearchResponse = {
+  code: number;
+  message: string;
+  data?: LyricsSearchResult | null;
+};
+
+/**
+ * 歌词-按元数据搜索（不入库）
+ *
+ * 给「歌曲上传」页用：此时歌曲还没入库、没有 songId，只有表单里的
+ * 歌名 / 歌手 / 专辑 / 时长。后端走与 preview 相同的数据源与打分链路。
+ */
+export const searchLyricsByMeta = (data: {
+  songName: string;
+  artistName?: string | null;
+  album?: string | null;
+  durationSeconds?: number | null;
+}) => {
+  return http.request<LyricsSearchResponse>("post", "/admin/song/lyrics/search", {
+    headers: authHeaders(),
+    data
+  });
+};
+
 /** 歌词-保存（手动编辑或预览确认后提交；覆盖已有歌词需传 force） */
 export const saveLyrics = (songId: number, data: object) => {
   return http.request<Result>("put", `/admin/song/lyrics/${songId}`, {

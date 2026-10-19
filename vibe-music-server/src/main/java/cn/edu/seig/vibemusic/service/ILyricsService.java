@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.service;
 
 import cn.edu.seig.vibemusic.model.dto.LyricsBatchRequestDTO;
 import cn.edu.seig.vibemusic.model.dto.LyricsSaveDTO;
+import cn.edu.seig.vibemusic.model.dto.LyricsSearchDTO;
 import cn.edu.seig.vibemusic.model.vo.LyricsBatchTaskVO;
 import cn.edu.seig.vibemusic.model.vo.LyricsFetchVO;
 import cn.edu.seig.vibemusic.result.Result;
@@ -17,6 +18,14 @@ public interface ILyricsService {
      * 抓取歌词但不入库，供管理端预览与编辑。
      */
     Result<LyricsFetchVO> preview(Long songId);
+
+    /**
+     * 按元数据搜索歌词，<b>不依赖 songId、不入库</b>。
+     *
+     * <p>给上传流程用：歌曲还没入库时，按表单里的歌名 / 歌手 / 专辑 / 时长
+     * 走与 {@link #preview(Long)} 完全相同的数据源与打分链路。
+     */
+    Result<LyricsFetchVO> searchByMeta(LyricsSearchDTO dto);
 
     /**
      * 保存歌词（管理端手动编辑或预览确认后提交）。

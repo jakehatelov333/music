@@ -9,12 +9,14 @@ import {
   InfoFilled,
   List,
   Loading,
+  Search,
   Timer,
   UploadFilled
 } from "@element-plus/icons-vue";
 import defaultCover from "@/assets/song.jpg";
 import { message } from "@/utils/message";
 import { getArtistList } from "@/api/system";
+import { searchLyricsByMeta, type LyricsSearchResult } from "@/api/lyrics";
 import {
   clearSongUpload,
   commitSongUpload,
@@ -59,6 +61,9 @@ const lyricsUploadRef = ref();
 const preparing = ref(false);
 const assetsUploading = ref(false);
 const committing = ref(false);
+// 歌词搜索：上传阶段歌曲尚未入库、没有 songId，改按表单元数据走 /admin/song/lyrics/search。
+const lyricsSearching = ref(false);
+const lyricsSearchResult = ref<LyricsSearchResult | null>(null);
 const prepared = ref(false);
 const uploadId = ref("");
 const metadata = ref<SongUploadMetadata | null>(null);
@@ -199,6 +204,50 @@ function handleLyricsChange(uploadFile: UploadFile) {
     pendingLyrics.value = raw;
     message("歌词已选择，将在音频解析完成后上传", { type: "info" });
   }
+}
+
+/**
+ * 按当前表单的歌名 / 歌手 / 专辑 / 时长搜索歌词。
+ *
+ * 复用后端已有的歌词补全链路（QQ 音乐主源 + LRCLIB 兜底 + 匹配打分阈值），
+ * 只是把入口从「按 songId」换成「按元数据」——上传阶段歌曲还没入库，没有 songId。
+ */
+async function handleSearchLyrics() {
+  if (!form.songName.trim()) {
+    message("请先填写歌曲名", { type: "warning" });
+    return;
+  }
+  lyricsSearching.value = true;
+  lyricsSearchResult.value = null;
+  try {
+    const res = await searchLyricsByMeta({
+      songName: form.songName.trim(),
+      artistName: selectedArtistNames.value || form.artistName || null,
+      album: form.album || null,
+      durationSeconds: metadata.value?.duration ?? null
+    });
+    if (res.code !== 0) {
+      message(res.message || "歌词搜索失败", { type: "error" });
+      return;
+    }
+    lyricsSearchResult.value = res.data ?? null;
+    if (!res.data?.matched) {
+      message(res.data?.message || "未找到匹配的歌词", { type: "info" });
+    }
+  } catch (error) {
+    message("歌词搜索失败，请稍后重试", { type: "error" });
+  } finally {
+    lyricsSearching.value = false;
+  }
+}
+
+/** 把搜到的歌词填入编辑框（仍可手动修改，提交时才入库）。 */
+function applySearchedLyrics() {
+  const lyric = lyricsSearchResult.value?.lyric;
+  if (!lyric) return;
+  form.lyrics = lyric;
+  lyricsSearchResult.value = null;
+  message("歌词已填入，可继续编辑后保存", { type: "success" });
 }
 
 async function uploadAssets(cover?: File | null, lyrics?: File | null) {
@@ -811,6 +860,59 @@ onMounted(() => {
               >
             </el-upload>
           </div>
+
+          <!-- 歌词搜索：复用后端歌词补全链路，按表单的歌名/歌手/专辑/时长检索 -->
+          <div class="lyrics-search-bar">
+            <el-button
+              :loading="lyricsSearching"
+              plain
+              @click="handleSearchLyrics"
+            >
+              <el-icon class="mr-1"><Search /></el-icon>
+              搜索歌词
+            </el-button>
+            <span class="lyrics-search-hint">
+              按上方歌名、歌手、专辑与音频时长匹配，命中后填入下方编辑框
+            </span>
+          </div>
+
+          <el-alert
+            v-if="lyricsSearchResult"
+            :type="lyricsSearchResult.matched ? 'success' : 'info'"
+            :closable="true"
+            show-icon
+            class="lyrics-search-result"
+            @close="lyricsSearchResult = null"
+          >
+            <template #title>
+              <template v-if="lyricsSearchResult.matched">
+                命中歌词（来源 {{ lyricsSearchResult.source || "未知" }}<template
+                  v-if="lyricsSearchResult.score"
+                  >，匹配度
+                  {{ Math.round(lyricsSearchResult.score * 100) }}%</template
+                >）
+              </template>
+              <template v-else>
+                {{ lyricsSearchResult.message || "未找到匹配的歌词" }}
+              </template>
+            </template>
+            <template v-if="lyricsSearchResult.matched">
+              <div class="lyrics-search-preview">
+                {{ (lyricsSearchResult.lyric || "").slice(0, 200) }}<template
+                  v-if="(lyricsSearchResult.lyric || '').length > 200"
+                  >…</template
+                >
+              </div>
+              <el-button
+                type="primary"
+                size="small"
+                class="mt-2"
+                @click="applySearchedLyrics"
+              >
+                填入编辑框
+              </el-button>
+            </template>
+          </el-alert>
           <el-input
             v-model="form.lyrics"
             type="textarea"
@@ -1254,6 +1356,36 @@ onMounted(() => {
 
 .heading-action {
   margin-left: auto;
+}
+
+/* 歌词搜索：与「上传歌词文件」并列的次要入口 */
+.lyrics-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.lyrics-search-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.lyrics-search-result {
+  margin-bottom: 10px;
+}
+
+.lyrics-search-preview {
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-lighter);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
 }
 
 .bottom-actions {

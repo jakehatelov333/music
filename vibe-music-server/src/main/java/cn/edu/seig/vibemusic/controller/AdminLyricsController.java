@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.controller;
 
 import cn.edu.seig.vibemusic.model.dto.LyricsBatchRequestDTO;
 import cn.edu.seig.vibemusic.model.dto.LyricsSaveDTO;
+import cn.edu.seig.vibemusic.model.dto.LyricsSearchDTO;
 import cn.edu.seig.vibemusic.model.vo.LyricsBatchTaskVO;
 import cn.edu.seig.vibemusic.model.vo.LyricsFetchVO;
 import cn.edu.seig.vibemusic.result.Result;
@@ -36,6 +37,18 @@ public class AdminLyricsController {
     @PostMapping("/preview/{songId}")
     public Result<LyricsFetchVO> preview(@PathVariable("songId") Long songId) {
         return lyricsService.preview(songId);
+    }
+
+    /**
+     * 按元数据搜索歌词，<b>不入库</b>。
+     *
+     * <p>给「歌曲上传」页用：此时歌曲还没入库、没有 songId，只有表单里的
+     * 歌名 / 歌手 / 专辑 / 时长。走的是与 {@link #preview(Long)} 完全相同的数据源
+     * 与匹配打分链路（QQ 音乐主源 + LRCLIB 兜底，低于阈值宁可不返回）。
+     */
+    @PostMapping("/search")
+    public Result<LyricsFetchVO> search(@RequestBody LyricsSearchDTO dto) {
+        return lyricsService.searchByMeta(dto);
     }
 
     /**

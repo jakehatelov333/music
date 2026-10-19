@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
 import cn.edu.seig.vibemusic.model.dto.LyricsBatchRequestDTO;
 import cn.edu.seig.vibemusic.model.dto.LyricsSaveDTO;
+import cn.edu.seig.vibemusic.model.dto.LyricsSearchDTO;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.vo.LyricsBatchTaskVO;
@@ -129,6 +130,47 @@ public class LyricsServiceImpl implements ILyricsService {
         Fetched fetched = fetchFromProviders(song, artists, null);
 
         LyricsFetchVO vo = buildVO(song, artists.display(), fetched);
+        if (!fetched.matched()) {
+            return Result.success("未找到匹配的歌词", vo);
+        }
+        return Result.success("匹配成功", vo);
+    }
+
+    @Override
+    public Result<LyricsFetchVO> searchByMeta(LyricsSearchDTO dto) {
+        if (!properties.isEnabled()) {
+            return Result.error("歌词补全功能当前已关闭");
+        }
+        if (dto == null || !StringUtils.hasText(dto.getSongName())) {
+            return Result.error("请先填写歌曲名");
+        }
+
+        // 用表单字段拼一个「临时 Song」：只为复用 fetchFromProviders 的检索与打分链路，
+        // 不写库、不查 tb_song。songId 保持 null，任何依赖它的分支都不会走到。
+        Song probe = new Song()
+                .setSongName(dto.getSongName().trim())
+                .setAlbum(trimToNull(dto.getAlbum()));
+        if (dto.getDurationSeconds() != null && dto.getDurationSeconds() > 0) {
+            probe.setDuration(formatDuration(dto.getDurationSeconds()));
+        }
+
+        // 上传表单里的歌手是「银临 / Aki阿杰」这种展示串，而歌手关系表此刻还没有数据。
+        // 直接把展示串按分隔符拆成候选链，等价于入库后 artistContext 的结果。
+        ArtistContext artists = artistContextFromText(dto.getArtistName());
+        Fetched fetched = fetchFromProviders(probe, artists, null);
+
+        LyricsFetchVO vo = new LyricsFetchVO();
+        vo.setSongName(probe.getSongName());
+        vo.setArtistName(artists.display());
+        vo.setAlbum(probe.getAlbum());
+        vo.setMatched(fetched.matched());
+        vo.setSource(fetched.source());
+        vo.setScore(fetched.score());
+        vo.setLyric(fetched.lyric());
+        vo.setMessage(fetched.message());
+        // 上传场景下还没有既有歌词
+        vo.setHasExistingLyric(false);
+
         if (!fetched.matched()) {
             return Result.success("未找到匹配的歌词", vo);
         }
@@ -642,6 +684,48 @@ public class LyricsServiceImpl implements ILyricsService {
 
     private String resolveAlbumName(Song song) {
         return StringUtils.hasText(song.getAlbum()) ? song.getAlbum().trim() : null;
+    }
+
+    /**
+     * 由上传表单里的歌手展示串构造检索上下文。
+     *
+     * <p>表单里通常是「银临 / Aki阿杰」这种用 {@code " / "} 拼起来的展示串，
+     * 此刻 {@code tb_song_artist} 还没有任何关系行。这里按同一套分隔符拆成候选链：
+     * 先整体串（最贴合完整展示），再逐个拆段，与入库后 {@code artistContext} 的顺序一致。
+     */
+    private ArtistContext artistContextFromText(String artistText) {
+        if (!StringUtils.hasText(artistText)) {
+            return new ArtistContext(null, null, List.of());
+        }
+        String display = artistText.trim();
+        List<String> candidates = new ArrayList<>();
+        addCandidate(candidates, display);
+        // 与 SongArtistService.renderArtistNames 的分隔符保持一致
+        for (String part : display.split("\\s*/\\s*")) {
+            addCandidate(candidates, part);
+        }
+        return new ArtistContext(candidates.isEmpty() ? null : candidates.get(0), display, candidates);
+    }
+
+    /**
+     * 把秒数格式化成 {@code "m:ss"} 写进临时 Song 的 duration 字段。
+     *
+     * <p>{@code fetchFromProviders} 会再用 {@link #parseDuration} 解析回来，
+     * 因此这里必须产出它能解析的形态；解析失败只会让时长消歧失效，不影响检索。
+     */
+    private static String formatDuration(Double seconds) {
+        if (seconds == null || seconds <= 0) {
+            return null;
+        }
+        long total = Math.round(seconds);
+        return (total / 60) + ":" + String.format("%02d", total % 60);
+    }
+
+    private static String trimToNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return value.trim();
     }
 
     private Double parseDuration(String duration) {
