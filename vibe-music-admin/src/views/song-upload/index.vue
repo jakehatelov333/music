@@ -546,6 +546,10 @@ function handleArtistIdsChange(ids: number[]) {
     form.artistId = ids[0];
     artistMatched.value = true;
   } else {
+    // 清空选择时 artistId 也必须清掉。否则 currentArtistId() 会从它回退取到
+    // 上一个歌手，导致「歌手已清空、专辑归属却仍按旧歌手判定」——
+    // 界面上会显示「专辑不存在将自动创建」，而实际提交时会按旧歌手归入已有专辑。
+    form.artistId = null;
     artistMatched.value = false;
   }
   // 换歌手后原来的专辑归属可能不再成立（同名专辑属于不同歌手），
@@ -577,12 +581,15 @@ function clearAlbumSelection() {
 /**
  * 输入变化：清空归属 + 防抖查询。
  *
+ * <p>输入框走 {@code v-model="form.album"}，所以文字已经写回 model，这里
+ * <b>不再重复赋值</b> —— 二次赋值会让光标跳到末尾，中文输入法下尤其明显。
+ *
  * <p>清空 albumId 是必须的：用户可能先选中《太阳之子》，随后把文字改成
  * 《太阳之子2》。若不清空，提交时仍会带着旧 albumId，把歌塞进错误的专辑。
  */
-function handleAlbumInput(value: string) {
+function handleAlbumInput() {
   clearAlbumSelection();
-  scheduleAlbumSuggest(value);
+  scheduleAlbumSuggest(form.album);
 }
 
 /** 防抖 300ms：避免每敲一个字就打一次数据库。 */
@@ -1092,7 +1099,7 @@ onMounted(() => {
                   <el-form-item label="专辑">
                     <div class="album-field">
                       <el-autocomplete
-                        :model-value="form.album"
+                        v-model="form.album"
                         :fetch-suggestions="queryAlbumSuggestions"
                         :trigger-on-focus="false"
                         :debounce="0"
@@ -1100,7 +1107,7 @@ onMounted(() => {
                         placeholder="可选，输入专辑名会联想已有专辑"
                         class="w-full"
                         popper-class="album-suggest-popper"
-                        @update:model-value="handleAlbumInput"
+                        @input="handleAlbumInput"
                         @select="handleAlbumSelect"
                       >
                         <template #default="{ item }">
