@@ -122,27 +122,74 @@ const artistSearching = ref(false);
 /** el-select 实例引用，用于选中后清空筛选关键词 */
 const artistSelectRef = ref();
 
+/**
+ * 一个歌手位的 token。
+ *
+ * <p>为什么用字符串 token 而不是「两个并行数组」：el-select 的 multiple 模式
+ * 天然维护一个有序值数组，标签顺序就是用户选择顺序。把「已有歌手」与「待新建歌手」
+ * 塞进同一个数组，顺序（谁排第一 = 谁是主艺人）由组件自己保证，不需要额外同步。
+ *
+ * <p>前缀区分来源：
+ * <ul>
+ *   <li>{@code id:142} —— 已存在的歌手，提交时进 artistIds</li>
+ *   <li>{@code name:新歌手} —— 库里没有，提交时进 pendingArtistNames</li>
+ * </ul>
+ */
+const ARTIST_TOKEN_ID = "id:";
+const ARTIST_TOKEN_NAME = "name:";
+
 const form = reactive({
   songName: "",
-  artistName: "",
-  artistId: null as number | null,
   /**
-   * 演唱歌手 id 列表，顺序即展示顺序（第一个为主艺人）。
-   * 非空时提交走 artistIds；为空时回退到旧的「按名字自动创建单歌手」路径。
+   * 已选歌手（有序 token）。第一个即主艺人。
+   *
+   * <p>取代了原先互斥的 artistIds + artistName 两条路径：现在一个选择器
+   * 既能选已有歌手，也能输入新名字，两者可以混排。
    */
-  artistIds: [] as number[],
+  artistTokens: [] as string[],
   album: "",
   releaseDate: undefined as string | undefined,
   style: [] as string[],
   lyrics: ""
 });
 
-const selectedArtistNames = computed(() =>
-  form.artistIds
-    .map(id => artistOptions.value.find(item => item.artistId === id)?.artistName)
-    .filter(Boolean)
-    .join(" / ")
+/** 从 token 解析出歌手 id；非 id token 返回 null。 */
+function artistIdOf(token: string): number | null {
+  if (!token.startsWith(ARTIST_TOKEN_ID)) return null;
+  const id = Number(token.slice(ARTIST_TOKEN_ID.length));
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/** 从 token 解析出歌手名（id token 需从候选中反查）。 */
+function artistNameOf(token: string): string {
+  if (token.startsWith(ARTIST_TOKEN_NAME)) {
+    return token.slice(ARTIST_TOKEN_NAME.length);
+  }
+  const id = artistIdOf(token);
+  if (id == null) return token;
+  return artistOptions.value.find(item => item.artistId === id)?.artistName || `#${id}`;
+}
+
+/** 已选歌手 id 列表（有序）。 */
+const selectedArtistIds = computed(() =>
+  form.artistTokens.map(artistIdOf).filter((id): id is number => id != null)
 );
+
+/** 待新建的歌手名（有序）。 */
+const pendingArtistNames = computed(() =>
+  form.artistTokens
+    .filter(token => token.startsWith(ARTIST_TOKEN_NAME))
+    .map(token => token.slice(ARTIST_TOKEN_NAME.length).trim())
+    .filter(Boolean)
+);
+
+/** 展示用：已选歌手名，按顺序。 */
+const selectedArtistNames = computed(() =>
+  form.artistTokens.map(artistNameOf).filter(Boolean).join(" / ")
+);
+
+/** 是否存在「待新建」的歌手（用于提示文案）。 */
+const hasPendingArtists = computed(() => pendingArtistNames.value.length > 0);
 
 const hasUnmatchedCandidate = computed(() =>
   (artistParsing.value?.candidates || []).some(item => !item.matched)
@@ -261,7 +308,7 @@ async function handleSearchLyrics() {
   try {
     const res = await searchLyricsByMeta({
       songName: form.songName.trim(),
-      artistName: selectedArtistNames.value || form.artistName || null,
+      artistName: selectedArtistNames.value || null,
       album: form.album || null,
       durationSeconds: metadata.value?.duration ?? null
     });
@@ -320,7 +367,7 @@ async function searchCoversAuto() {
   coverManualMode.value = false;
   await runCoverSearch({
     songName: form.songName.trim(),
-    artistName: selectedArtistNames.value || form.artistName || null,
+    artistName: selectedArtistNames.value || null,
     album: form.album || null,
     durationSeconds: metadata.value?.duration ?? null
   });
@@ -466,7 +513,7 @@ async function uploadAssets(cover?: File | null, lyrics?: File | null) {
 function keepSelectedArtists(items: { artistId: number; artistName: string }[]) {
   const byId = new Map(items.map(item => [item.artistId, item]));
   // 已选中但不在本次结果里的，补回去（否则标签会退化成只显示 id）
-  form.artistIds.forEach(id => {
+  selectedArtistIds.value.forEach(id => {
     if (byId.has(id)) return;
     const known = artistOptions.value.find(item => item.artistId === id);
     if (known) byId.set(id, known);
@@ -547,39 +594,41 @@ function applyPreparedResult(data: SongUploadPrepareResult, fillForm: boolean) {
         : [];
 
     if (autoFilled.length) {
-      // 先把解析出的歌手并入候选，再赋 id —— 否则多选标签会因找不到 name 而显示成 id
+      // 先把解析出的歌手并入候选，再赋 token —— 否则多选标签会因找不到 name 而显示成 id
       artistOptions.value = keepSelectedArtists([...autoFilled, ...artistOptions.value]);
-      form.artistIds = autoFilled.map(item => item.artistId);
-      form.artistName = "";
-      form.artistId = autoFilled[0].artistId;
+      form.artistTokens = autoFilled.map(item => ARTIST_TOKEN_ID + item.artistId);
       artistMatched.value = true;
     } else {
-      form.artistIds = [];
-      form.artistName = data.matchedArtistName || data.metadata.artist || "";
-      form.artistId = data.matchedArtistId ?? null;
+      // 未匹配：把原始文本作为「待新建」预填进去，管理员可直接提交（走创建流程）
+      // 或删掉它去搜索已有歌手。这里不替用户决定要不要建，只把文本原样呈现。
+      const rawName = (data.matchedArtistName || data.metadata.artist || "").trim();
+      form.artistTokens = rawName ? [ARTIST_TOKEN_NAME + rawName] : [];
+      artistMatched.value = false;
     }
   }
 }
 
-function handleArtistInput(value: string) {
-  form.artistName = value;
-  form.artistId = null;
-  artistMatched.value = false;
-}
-
-/** 多选变化：一旦选了系统歌手，就清掉旧的自由文本，避免两条提交路径并存。 */
-function handleArtistIdsChange(ids: number[]) {
-  if (ids.length) {
-    form.artistName = "";
-    form.artistId = ids[0];
-    artistMatched.value = true;
-  } else {
-    // 清空选择时 artistId 也必须清掉。否则 currentArtistId() 会从它回退取到
-    // 上一个歌手，导致「歌手已清空、专辑归属却仍按旧歌手判定」——
-    // 界面上会显示「专辑不存在将自动创建」，而实际提交时会按旧歌手归入已有专辑。
-    form.artistId = null;
-    artistMatched.value = false;
+/**
+ * 歌手选择变化。
+ *
+ * <p>现在的选择器同时承载「选已有」和「输入新名字」，所以不再需要
+ * 旧的 handleArtistInput（那个函数专门服务第二个输入框）。
+ */
+function handleArtistChange(tokens: string[]) {
+  // allow-create 产生的值是「用户输入的裸字符串」，不带 name: 前缀。
+  // 这里统一补上前缀，保证后续 artistIdOf / pendingArtistNames 的判定一致。
+  const normalized = (tokens || []).map(token =>
+    token.startsWith(ARTIST_TOKEN_ID) || token.startsWith(ARTIST_TOKEN_NAME)
+      ? token
+      : ARTIST_TOKEN_NAME + token.trim()
+  );
+  if (normalized.length !== (tokens || []).length
+      || normalized.some((token, i) => token !== (tokens || [])[i])) {
+    form.artistTokens = normalized;
   }
+  artistMatched.value =
+    normalized.length > 0 &&
+    !normalized.some(token => token.startsWith(ARTIST_TOKEN_NAME));
   // 换歌手后原来的专辑归属可能不再成立（同名专辑属于不同歌手），
   // 必须清掉 albumId 与已确认选中态，让用户重新确认。
   clearAlbumSelection();
@@ -592,15 +641,29 @@ function handleArtistIdsChange(ids: number[]) {
   }
 }
 
+/** 删除某个歌手标签。 */
+function removeArtistToken(index: number) {
+  const next = [...form.artistTokens];
+  next.splice(index, 1);
+  form.artistTokens = next;
+  handleArtistChange(next);
+}
+
 function searchArtists(query: string) {
   return loadArtistOptions(query);
 }
 
 // ------------------------------------------------------------------ 专辑联想
 
-/** 当前主歌手 id：优先取多选的第一位（主艺人），回退到单歌手字段。 */
+/**
+ * 当前主歌手 id（用于专辑联想排序）。
+ *
+ * <p>只有「已有歌手」才有 id；若第一位是待新建的名字，则取第一个有 id 的歌手。
+ * 返回 null 表示无法判定（没有任何已有歌手），此时专辑联想不做歌手优先。
+ */
 function currentArtistId(): number | null {
-  return form.artistIds.length ? form.artistIds[0] : form.artistId;
+  const ids = selectedArtistIds.value;
+  return ids.length ? ids[0] : null;
 }
 
 /** 清空专辑归属：只清 id 与选中态，不动输入框文字。 */
@@ -728,8 +791,8 @@ async function handleCommit() {
     message("请填写歌曲名", { type: "warning" });
     return;
   }
-  if (!form.artistIds.length && !form.artistName.trim()) {
-    message("请选择或填写歌手", { type: "warning" });
+  if (!form.artistTokens.length) {
+    message("请选择或输入歌手", { type: "warning" });
     return;
   }
 
@@ -740,14 +803,16 @@ async function handleCommit() {
 
   committing.value = true;
   try {
-    const hasArtistIds = form.artistIds.length > 0;
     const res = await commitSongUpload({
       uploadId: uploadId.value,
       songName: form.songName.trim(),
-      // artistIds 非空时优先；否则回退到旧的「按名字自动创建单歌手」路径。
-      artistIds: hasArtistIds ? form.artistIds : null,
-      artistId: hasArtistIds ? null : form.artistId,
-      artistName: hasArtistIds ? null : form.artistName.trim(),
+      // 已有的歌手传 id，待新建的传名字；两者可能混排，用 artistOrder 给出权威顺序
+      // （新歌手完全可能是主艺人，即排在第一位）。
+      artistIds: selectedArtistIds.value.length ? selectedArtistIds.value : null,
+      pendingArtistNames: pendingArtistNames.value.length
+        ? pendingArtistNames.value
+        : null,
+      artistOrder: form.artistTokens.length ? form.artistTokens : null,
       album: form.album.trim(),
       // 选中已有专辑时带上 albumId：后端 resolveAlbumId 会直接用它，
       // 不必再按 (artistId, 专辑名) 反查，也就不怕同名专辑属于不同歌手。
@@ -820,9 +885,7 @@ function resetState() {
   }
   clearLocalCover();
   form.songName = "";
-  form.artistName = "";
-  form.artistId = null;
-  form.artistIds = [];
+  form.artistTokens = [];
   form.album = "";
   form.releaseDate = undefined;
   form.style = [];
@@ -1030,23 +1093,37 @@ onMounted(() => {
                 <el-col :xs="24" :md="12">
                   <el-form-item label="歌手" required>
                     <div class="artist-field">
+                      <!--
+                        一个选择器同时支持「选已有歌手」和「输入新名字创建」。
+
+                        为什么不再用两个输入框：那两个框是互斥的两条提交路径
+                        （artistIds / artistName），用户不知道该用哪个；而且第二个框
+                        在选中系统歌手那一刻会被销毁，已输入的文字跟着消失。
+                        现在统一成一个有序 token 列表，输入的文字立刻变成标签，
+                        不会消失，顺序即展示顺序。
+
+                        allow-create + default-first-option：让「输入的名字」可以直接回车选中。
+                      -->
                       <el-select
                         ref="artistSelectRef"
-                        v-model="form.artistIds"
+                        v-model="form.artistTokens"
                         multiple
                         filterable
                         remote
+                        allow-create
+                        default-first-option
+                        :reserve-keyword="false"
                         :remote-method="searchArtists"
                         :loading="artistSearching"
-                        placeholder="搜索并选择歌手，可多选；顺序即展示顺序"
+                        placeholder="搜索已有歌手，或直接输入新歌手名后回车"
                         class="w-full"
-                        @change="handleArtistIdsChange"
+                        @change="handleArtistChange"
                       >
                         <el-option
                           v-for="item in artistOptions"
-                          :key="item.artistId"
+                          :key="ARTIST_TOKEN_ID + item.artistId"
                           :label="item.artistName"
-                          :value="item.artistId"
+                          :value="ARTIST_TOKEN_ID + item.artistId"
                         >
                           <div class="artist-option">
                             <span>{{ item.artistName }}</span>
@@ -1055,36 +1132,46 @@ onMounted(() => {
                         </el-option>
                       </el-select>
 
-                      <!--
-                        未选系统歌手时保留「按名字自动创建」路径（仅单歌手）。
-                        用 v-show 而不是 v-if：v-if 会在选中歌手那一刻把整个输入框
-                        连同用户已输入的文字一起销毁，用户看到的就是「我打的字没了」。
-                      -->
-                      <el-input
-                        v-show="!form.artistIds.length"
-                        v-model="form.artistName"
-                        clearable
-                        placeholder="或直接输入歌手名，保存时自动创建（仅单歌手）"
-                        @input="handleArtistInput"
-                      />
-
-                      <el-tag
-                        v-if="form.artistIds.length"
-                        type="success"
-                        effect="light"
-                      >
-                        已选 {{ form.artistIds.length }} 位：{{ selectedArtistNames }}
-                      </el-tag>
-                      <el-tag
-                        v-else-if="form.artistName"
-                        type="warning"
-                        effect="light"
-                      >
-                        未匹配，保存时将自动创建歌手
-                      </el-tag>
+                      <!-- 标签区：逐个展示，区分「已有」与「待创建」 -->
+                      <div v-if="form.artistTokens.length" class="artist-tags">
+                        <el-tag
+                          v-for="(token, index) in form.artistTokens"
+                          :key="token"
+                          :type="
+                            token.startsWith(ARTIST_TOKEN_NAME)
+                              ? 'warning'
+                              : 'success'
+                          "
+                          effect="light"
+                          closable
+                          @close="removeArtistToken(index)"
+                        >
+                          {{ artistNameOf(token) }}
+                          <span v-if="index === 0" class="artist-primary">
+                            主艺人
+                          </span>
+                          <span
+                            v-else-if="token.startsWith(ARTIST_TOKEN_NAME)"
+                            class="artist-new"
+                          >
+                            待创建
+                          </span>
+                        </el-tag>
+                      </div>
                       <el-tag v-else type="info" effect="light">
                         请选择或输入歌手
                       </el-tag>
+
+                      <p v-if="hasPendingArtists" class="artist-hint">
+                        标为「待创建」的歌手在保存时会自动创建；
+                        若不希望新建，请先在「歌手管理」中创建后再回来选择。
+                      </p>
+                      <p
+                        v-else-if="form.artistTokens.length && artistMatched"
+                        class="artist-hint is-ok"
+                      >
+                        全部歌手均已存在于系统中，保存时直接关联。
+                      </p>
                     </div>
                   </el-form-item>
                 </el-col>
@@ -1535,7 +1622,7 @@ onMounted(() => {
             <img :src="coverPreview" alt="歌曲封面" />
             <div>
               <strong>{{ form.songName || "未填写歌曲名" }}</strong>
-              <span>{{ form.artistName || "未匹配歌手" }}</span>
+              <span>{{ selectedArtistNames || "未选择歌手" }}</span>
               <div class="preview-tags">
                 <el-tag v-if="form.style[0]" size="small">{{
                   form.style[0]
@@ -1961,6 +2048,42 @@ onMounted(() => {
 
   small {
     color: var(--el-text-color-placeholder);
+  }
+}
+
+/* 歌手标签区：逐个展示，区分「已有」「待创建」「主艺人」 */
+.artist-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.artist-primary,
+.artist-new {
+  padding: 0 4px;
+  margin-left: 4px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+
+.artist-primary {
+  color: #1d4ed8;
+  background: rgb(59 130 246 / 14%);
+}
+
+.artist-new {
+  color: #b45309;
+  background: rgb(245 158 11 / 16%);
+}
+
+.artist-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+
+  &.is-ok {
+    color: #15803d;
   }
 }
 

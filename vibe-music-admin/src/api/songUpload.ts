@@ -69,6 +69,16 @@ export type SongUploadCommitPayload = {
   artistName?: string | null;
   /** 演唱歌手 id 列表，顺序即展示顺序（第一个为主艺人）。优先于 artistId */
   artistIds?: number[] | null;
+  /**
+   * 待新建的歌手名（库里没有、由本次提交创建）。
+   * 与 artistIds 配合使用：选择器里既可能选已有歌手，也可能输入新名字。
+   */
+  pendingArtistNames?: string[] | null;
+  /**
+   * 完整歌手顺序，元素为 "id:142" 或 "name:新歌手"。
+   * 混排时单靠两个数组无法还原顺序（新歌手可能排第一位即主艺人），故显式给出。
+   */
+  artistOrder?: string[] | null;
   album: string;
   /** 选中的已有专辑 id；为空时后端按 (artistId, album) 反查或新建 */
   albumId?: number | null;

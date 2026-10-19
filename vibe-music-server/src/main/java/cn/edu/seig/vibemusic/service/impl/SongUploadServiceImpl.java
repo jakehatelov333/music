@@ -44,8 +44,10 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -330,8 +332,11 @@ public class SongUploadServiceImpl implements ISongUploadService {
                     dto.getArtistIds(), dto.getArtistId());
             boolean artistCreated = false;
             List<Long> finalArtistIds;
-            if (!requestedArtistIds.isEmpty()) {
-                finalArtistIds = requestedArtistIds;
+            if (!requestedArtistIds.isEmpty() || hasPendingArtistNames(dto)) {
+                // 新路径：已存在的歌手（id）+ 待新建的歌手（名字）可能混排，
+                // 由 artistOrder 给出权威顺序，缺省时退化为「id 在前、名字在后」。
+                finalArtistIds = resolveMixedArtists(dto, requestedArtistIds);
+                artistCreated = finalArtistIds.size() > requestedArtistIds.size();
             } else {
                 Artist resolved = resolveArtist(dto);
                 Long resolvedId;
@@ -534,6 +539,104 @@ public class SongUploadServiceImpl implements ISongUploadService {
             } catch (Exception e) {
                 log.warn("清理过期歌曲上传任务失败，uploadId={}", uploadId, e);
             }
+        }
+    }
+
+    /**
+     * 是否带了「待新建的歌手名」。
+     *
+     * <p>过滤空白项：前端清空输入后可能留下空字符串，不能据此认为「有名字要建」。
+     */
+    private boolean hasPendingArtistNames(SongUploadCommitDTO dto) {
+        List<String> names = dto.getPendingArtistNames();
+        if (names == null || names.isEmpty()) {
+            return false;
+        }
+        return names.stream().anyMatch(StringUtils::hasText);
+    }
+
+    /**
+     * 把「已有歌手 id」与「待新建歌手名」按 {@code artistOrder} 混排成最终 id 列表。
+     *
+     * <p><b>为什么需要混排</b>：管理端现在用一个选择器同时支持「选已有」和「输入新名字」，
+     * 用户完全可能把待创建的新歌手放在第一位（即主艺人）。若简单按「先 id 后名字」拼接，
+     * 主艺人就会变成错误的人，展示顺序全乱。
+     *
+     * <p><b>顺序来源</b>：{@code artistOrder} 的元素是 {@code "id:142"} / {@code "name:新歌手"}；
+     * 未提供时退化为「artistIds 在前、pendingArtistNames 在后」，与旧客户端兼容。
+     *
+     * <p><b>新建时机</b>：待创建的名字在这里才落库，且整个 commit 处于同一事务，
+     * 歌曲入库失败会连歌手一起回滚，不会留下孤儿歌手。
+     */
+    private List<Long> resolveMixedArtists(SongUploadCommitDTO dto, List<Long> requestedArtistIds) {
+        List<Long> knownIds = requestedArtistIds == null ? List.of() : requestedArtistIds;
+        List<String> pendingNames = dto.getPendingArtistNames() == null
+                ? List.of()
+                : dto.getPendingArtistNames().stream()
+                        .filter(StringUtils::hasText)
+                        .map(String::trim)
+                        .toList();
+
+        // 待创建的名字先落库，拿到 id 后与已有 id 一起参与排序
+        Map<String, Long> createdIds = pendingNames.isEmpty()
+                ? Map.of()
+                : artistProvisioningService.createMissing(pendingNames);
+
+        List<Long> ordered = new ArrayList<>();
+        List<String> order = dto.getArtistOrder();
+        if (order == null || order.isEmpty()) {
+            ordered.addAll(knownIds);
+            for (String name : pendingNames) {
+                Long id = createdIds.get(name);
+                if (id != null && !ordered.contains(id)) {
+                    ordered.add(id);
+                }
+            }
+            return List.copyOf(ordered);
+        }
+
+        for (String token : order) {
+            if (!StringUtils.hasText(token)) {
+                continue;
+            }
+            String value = token.trim();
+            Long id = null;
+            if (value.startsWith("id:")) {
+                id = parseLongOrNull(value.substring(3));
+            } else if (value.startsWith("name:")) {
+                id = createdIds.get(value.substring(5).trim());
+            }
+            // 解析不出 id 的条目直接跳过：宁可少一位歌手，也不要把 null 写进关系表
+            if (id != null && !ordered.contains(id)) {
+                ordered.add(id);
+            }
+        }
+        // 兜底：order 可能不完整（例如旧前端只传了一部分），把漏掉的补齐
+        for (Long id : knownIds) {
+            if (id != null && !ordered.contains(id)) {
+                ordered.add(id);
+            }
+        }
+        for (String name : pendingNames) {
+            Long id = createdIds.get(name);
+            if (id != null && !ordered.contains(id)) {
+                ordered.add(id);
+            }
+        }
+        if (ordered.isEmpty()) {
+            throw new IllegalStateException("歌手信息无效，请重新选择");
+        }
+        return List.copyOf(ordered);
+    }
+
+    private Long parseLongOrNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 
