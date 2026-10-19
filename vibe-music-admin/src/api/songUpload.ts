@@ -70,6 +70,8 @@ export type SongUploadCommitPayload = {
   /** 演唱歌手 id 列表，顺序即展示顺序（第一个为主艺人）。优先于 artistId */
   artistIds?: number[] | null;
   album: string;
+  /** 选中的已有专辑 id；为空时后端按 (artistId, album) 反查或新建 */
+  albumId?: number | null;
   releaseDate: string;
   year?: number;
   style?: string | null;

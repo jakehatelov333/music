@@ -18,6 +18,7 @@ import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.entity.UserFavorite;
 import cn.edu.seig.vibemusic.model.vo.AlbumDetailVO;
+import cn.edu.seig.vibemusic.model.vo.AlbumSuggestVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
@@ -53,6 +54,10 @@ import java.time.LocalDateTime;
 public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements IAlbumService {
 
     private static final int MAX_LIMIT = 50;
+
+    /** 联想建议的默认与最大条数。下拉框一次展示 10 条已足够，再多反而难选。 */
+    private static final int DEFAULT_SUGGEST_LIMIT = 10;
+    private static final int MAX_SUGGEST_LIMIT = 20;
 
     @Autowired
     private AlbumMapper albumMapper;
@@ -160,6 +165,30 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
                 .eq("artist_id", artistId)
                 .eq("name", albumName.trim()));
         return Result.success(count != null && count > 0);
+    }
+
+    @Override
+    public Result<List<AlbumSuggestVO>> suggestAlbums(String keyword, Long artistId, Integer limit) {
+        String normalized = keyword == null ? "" : keyword.trim();
+        if (normalized.isEmpty()) {
+            // 空关键词不查全库：上传页一打开就发一次「列出所有专辑」的请求既浪费又慢
+            return Result.success(Collections.emptyList());
+        }
+
+        int safeLimit = limit == null || limit <= 0
+                ? DEFAULT_SUGGEST_LIMIT
+                : Math.min(limit, MAX_SUGGEST_LIMIT);
+
+        List<AlbumSuggestVO> albums = albumMapper.suggestAlbumsForAdmin(normalized, artistId, safeLimit);
+        // 歌手的 status 在 SQL 里原样取出（不过滤），这里补一层兜底：
+        // 历史行可能没有状态值，ArtistStatusEnum.isActive 把 null/空白按「启用」处理，
+        // 与全项目的判定口径保持一致，避免管理端把老数据误标成「已停用」。
+        for (AlbumSuggestVO album : albums) {
+            album.setArtistStatus(ArtistStatusEnum.isActive(album.getArtistStatus())
+                    ? ArtistStatusEnum.ACTIVE.getStatus()
+                    : ArtistStatusEnum.DISABLED.getStatus());
+        }
+        return Result.success(albums);
     }
 
     @Override

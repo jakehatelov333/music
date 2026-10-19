@@ -18,6 +18,10 @@ import { message } from "@/utils/message";
 import { getArtistList } from "@/api/system";
 import { searchLyricsByMeta, type LyricsSearchResult } from "@/api/lyrics";
 import {
+  suggestAlbums,
+  type AlbumSuggestItem
+} from "@/api/albumSuggest";
+import {
   applyCoverFromAlbum,
   searchSongCovers,
   type CoverCandidate
@@ -81,6 +85,22 @@ const coverSearched = ref(false);
 const coverManualMode = ref(false);
 /** 当前已选中的专辑 mid，用于在候选网格里高亮 */
 const selectedAlbumMid = ref("");
+
+// 专辑联想：输入时防抖查询已有专辑，选中后绑定 albumId 精确归入
+/** 下拉候选 */
+const albumSuggestions = ref<AlbumSuggestItem[]>([]);
+const albumSuggestLoading = ref(false);
+/**
+ * 已选中的专辑 id。
+ *
+ * 只要用户改动输入文字就必须清空 —— 否则会把歌曲塞进一个名字已经不匹配的专辑。
+ * 这是本功能最容易出的 bug，所有改动 form.album 的路径都要清它。
+ */
+const albumId = ref<number | null>(null);
+/** 已确认选中的专辑（用于展示「将归入已有专辑」） */
+const selectedAlbum = ref<AlbumSuggestItem | null>(null);
+/** 防抖定时器 */
+let albumSuggestTimer: ReturnType<typeof setTimeout> | null = null;
 const prepared = ref(false);
 const uploadId = ref("");
 const metadata = ref<SongUploadMetadata | null>(null);
@@ -478,6 +498,8 @@ function applyPreparedResult(data: SongUploadPrepareResult, fillForm: boolean) {
   if (fillForm) {
     form.songName = data.metadata.title || "";
     form.album = data.metadata.album || "";
+    // 解析出来的专辑名只是文本，还没有对应的专辑实体，必须清空归属
+    clearAlbumSelection();
     form.releaseDate = data.metadata.year
       ? `${data.metadata.year}-01-01`
       : undefined;
@@ -526,11 +548,138 @@ function handleArtistIdsChange(ids: number[]) {
   } else {
     artistMatched.value = false;
   }
+  // 换歌手后原来的专辑归属可能不再成立（同名专辑属于不同歌手），
+  // 必须清掉 albumId 与已确认选中态，让用户重新确认。
+  clearAlbumSelection();
+  // 候选排序依赖 artistId（该歌手的专辑优先），换了歌手就重新查一次
+  if (form.album.trim()) {
+    scheduleAlbumSuggest(form.album);
+  }
 }
 
 function searchArtists(query: string) {
   return loadArtistOptions(query);
 }
+
+// ------------------------------------------------------------------ 专辑联想
+
+/** 当前主歌手 id：优先取多选的第一位（主艺人），回退到单歌手字段。 */
+function currentArtistId(): number | null {
+  return form.artistIds.length ? form.artistIds[0] : form.artistId;
+}
+
+/** 清空专辑归属：只清 id 与选中态，不动输入框文字。 */
+function clearAlbumSelection() {
+  albumId.value = null;
+  selectedAlbum.value = null;
+}
+
+/**
+ * 输入变化：清空归属 + 防抖查询。
+ *
+ * <p>清空 albumId 是必须的：用户可能先选中《太阳之子》，随后把文字改成
+ * 《太阳之子2》。若不清空，提交时仍会带着旧 albumId，把歌塞进错误的专辑。
+ */
+function handleAlbumInput(value: string) {
+  clearAlbumSelection();
+  scheduleAlbumSuggest(value);
+}
+
+/** 防抖 300ms：避免每敲一个字就打一次数据库。 */
+function scheduleAlbumSuggest(keyword: string) {
+  if (albumSuggestTimer) {
+    clearTimeout(albumSuggestTimer);
+    albumSuggestTimer = null;
+  }
+  const trimmed = keyword.trim();
+  if (!trimmed) {
+    albumSuggestions.value = [];
+    return;
+  }
+  albumSuggestTimer = setTimeout(() => {
+    fetchAlbumSuggestions(trimmed);
+  }, 300);
+}
+
+async function fetchAlbumSuggestions(keyword: string) {
+  albumSuggestLoading.value = true;
+  try {
+    const res = await suggestAlbums(keyword, currentArtistId(), 10);
+    if (res.code === 0) {
+      albumSuggestions.value = res.data ?? [];
+    } else {
+      albumSuggestions.value = [];
+    }
+  } catch {
+    // 联想失败不该打断填写流程：静默降级为「没有候选」，用户仍可手输
+    albumSuggestions.value = [];
+  } finally {
+    albumSuggestLoading.value = false;
+  }
+}
+
+/** el-autocomplete 的取数回调：把已拿到的候选转成它要的 value 字段。 */
+function queryAlbumSuggestions(
+  queryString: string,
+  callback: (items: Array<{ value: string; item: AlbumSuggestItem }>) => void
+) {
+  const trimmed = queryString.trim();
+  if (!trimmed) {
+    albumSuggestions.value = [];
+    callback([]);
+    return;
+  }
+  fetchAlbumSuggestions(trimmed).then(() => {
+    callback(
+      albumSuggestions.value.map(item => ({
+        value: item.albumName,
+        item
+      }))
+    );
+  });
+}
+
+/**
+ * 选中一个候选：绑定 albumId，并把专辑名回填到输入框。
+ *
+ * <p>回填名字很重要 —— 否则输入框里可能还是用户手打的不完整文字，
+ * 而实际归入的是候选里那张专辑，两者不一致会造成困惑。
+ */
+function handleAlbumSelect(payload: { item?: AlbumSuggestItem }) {
+  const item = payload?.item;
+  if (!item) return;
+  form.album = item.albumName;
+  albumId.value = item.albumId;
+  selectedAlbum.value = item;
+  albumSuggestions.value = [];
+}
+
+/** 专辑状态的展示文案。 */
+const albumHint = computed(() => {
+  if (!form.album.trim()) {
+    return { type: "info" as const, text: "可选，留空则不归入任何专辑" };
+  }
+  if (selectedAlbum.value) {
+    const artist = selectedAlbum.value.artistName || "未知歌手";
+    const count = selectedAlbum.value.songCount ?? 0;
+    return {
+      type: "success" as const,
+      text: `将归入已有专辑《${selectedAlbum.value.albumName}》（${artist}，${count} 首）`
+    };
+  }
+  const artistId = currentArtistId();
+  if (!artistId) {
+    // 没有歌手时无法判定归属（同名专辑可能属于不同歌手），只提示不结论
+    return {
+      type: "info" as const,
+      text: "请先选择歌手，才能判断该专辑是否已存在"
+    };
+  }
+  return {
+    type: "warning" as const,
+    text: `专辑「${form.album.trim()}」不存在，保存时将自动创建`
+  };
+});
 
 async function handleCommit() {
   if (!uploadId.value) {
@@ -562,6 +711,9 @@ async function handleCommit() {
       artistId: hasArtistIds ? null : form.artistId,
       artistName: hasArtistIds ? null : form.artistName.trim(),
       album: form.album.trim(),
+      // 选中已有专辑时带上 albumId：后端 resolveAlbumId 会直接用它，
+      // 不必再按 (artistId, 专辑名) 反查，也就不怕同名专辑属于不同歌手。
+      albumId: albumId.value,
       releaseDate: form.releaseDate,
       style: form.style.length ? form.style.join(",") : null,
       lyrics: form.lyrics
@@ -621,6 +773,13 @@ function resetState() {
   coverManualMode.value = false;
   selectedAlbumMid.value = "";
   coverSize.value = 500;
+  albumSuggestions.value = [];
+  albumSuggestLoading.value = false;
+  clearAlbumSelection();
+  if (albumSuggestTimer) {
+    clearTimeout(albumSuggestTimer);
+    albumSuggestTimer = null;
+  }
   clearLocalCover();
   form.songName = "";
   form.artistName = "";
@@ -931,10 +1090,63 @@ onMounted(() => {
                 </el-col>
                 <el-col :xs="24" :md="12">
                   <el-form-item label="专辑">
-                    <el-input
-                      v-model="form.album"
-                      placeholder="可选，请输入专辑"
-                    />
+                    <div class="album-field">
+                      <el-autocomplete
+                        :model-value="form.album"
+                        :fetch-suggestions="queryAlbumSuggestions"
+                        :trigger-on-focus="false"
+                        :debounce="0"
+                        clearable
+                        placeholder="可选，输入专辑名会联想已有专辑"
+                        class="w-full"
+                        popper-class="album-suggest-popper"
+                        @update:model-value="handleAlbumInput"
+                        @select="handleAlbumSelect"
+                      >
+                        <template #default="{ item }">
+                          <div class="album-option">
+                            <el-image
+                              v-if="item.item.coverUrl"
+                              :src="item.item.coverUrl"
+                              fit="cover"
+                              class="album-option__cover"
+                            />
+                            <div v-else class="album-option__cover placeholder">
+                              <el-icon><Headset /></el-icon>
+                            </div>
+                            <div class="album-option__meta">
+                              <div class="album-option__title">
+                                <span>{{ item.item.albumName }}</span>
+                                <el-tag
+                                  v-if="item.item.artistStatus === 'DISABLED'"
+                                  size="small"
+                                  type="info"
+                                  effect="plain"
+                                >
+                                  已停用
+                                </el-tag>
+                              </div>
+                              <span class="album-option__sub">
+                                {{ item.item.artistName || "未知歌手" }}
+                                <template v-if="item.item.songCount">
+                                  · {{ item.item.songCount }} 首
+                                </template>
+                                <template v-if="item.item.releaseDate">
+                                  · {{ item.item.releaseDate }}
+                                </template>
+                              </span>
+                            </div>
+                          </div>
+                        </template>
+                      </el-autocomplete>
+
+                      <div class="album-hint" :class="`is-${albumHint.type}`">
+                        <el-icon v-if="albumSuggestLoading" class="is-loading">
+                          <Loading />
+                        </el-icon>
+                        {{ albumHint.text }}
+                      </div>
+                    </div>
                   </el-form-item>
                 </el-col>
                 <el-col :xs="24" :md="12">
@@ -1708,6 +1920,79 @@ onMounted(() => {
   small {
     color: var(--el-text-color-placeholder);
   }
+}
+
+/* 专辑联想：输入框 + 状态提示 */
+.album-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.album-hint {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+
+  &.is-success {
+    color: #15803d;
+  }
+
+  &.is-warning {
+    color: #b45309;
+  }
+}
+
+/* 下拉项：封面 + 专辑名 + 歌手/歌曲数/发行日期 */
+.album-option {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.album-option__cover {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+
+  &.placeholder {
+    display: grid;
+    color: var(--el-text-color-placeholder);
+    background: var(--el-fill-color);
+    place-items: center;
+  }
+}
+
+.album-option__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.album-option__title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.album-option__sub {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .artist-parsing {

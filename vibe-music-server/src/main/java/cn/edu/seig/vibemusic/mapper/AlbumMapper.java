@@ -2,6 +2,7 @@ package cn.edu.seig.vibemusic.mapper;
 
 import cn.edu.seig.vibemusic.model.entity.Album;
 import cn.edu.seig.vibemusic.model.vo.AlbumDetailVO;
+import cn.edu.seig.vibemusic.model.vo.AlbumSuggestVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -148,6 +149,66 @@ public interface AlbumMapper extends BaseMapper<Album> {
             LIMIT #{limit}
             """)
     List<AlbumVO> searchAlbums(@Param("keyword") String keyword, @Param("limit") int limit);
+
+    /**
+     * 管理端专辑联想：按关键词做前缀/包含匹配，并让「当前歌手的专辑」优先。
+     *
+     * <h3>与 {@link #searchAlbums} 的三处刻意差异</h3>
+     * <ol>
+     *   <li><b>不过滤歌手状态</b>：用户端要求 {@code ar.status = 'ACTIVE'}，管理端不能这样 ——
+     *       停用歌手的专辑仍然真实存在，管理员上传时看不到它只会困惑。改为把状态查出来，
+     *       由前端标注「已停用」。</li>
+     *   <li><b>不过滤专辑状态</b>：用户端只看 {@code PUBLISHED}，管理端要能看见草稿，
+     *       否则「新建了草稿专辑却搜不到」。</li>
+     *   <li><b>当前歌手优先</b>：传了 {@code artistId} 时，该歌手的专辑排在最前。
+     *       上传场景里最可能的意图就是「给这位歌手已有的专辑加歌」。</li>
+     * </ol>
+     *
+     * <p>排序分五档：本歌手 + 专辑名完全相等 &gt; 本歌手 + 前缀 &gt; 本歌手 + 包含
+     * &gt; 其它歌手 + 完全相等/前缀 &gt; 其它歌手 + 包含。同一档内按歌曲数倒序
+     * （歌多的专辑更可能是目标）、发行日期倒序。
+     *
+     * @param keyword  关键词，调用方保证已 trim 且非空
+     * @param artistId 当前选中的主歌手 id；为 null 时不区分歌手
+     * @param limit    返回条数上限，调用方已夹到合理区间
+     */
+    @Select("""
+            SELECT
+                a.id AS albumId,
+                a.name AS albumName,
+                a.artist_id AS artistId,
+                ar.name AS artistName,
+                ar.status AS artistStatus,
+                COALESCE(a.cover_url, MIN(s.cover_url)) AS coverUrl,
+                COALESCE(a.release_date, MIN(s.release_time)) AS releaseDate,
+                COUNT(s.id) AS songCount
+            FROM tb_album a
+            LEFT JOIN tb_artist ar ON a.artist_id = ar.id
+            LEFT JOIN tb_song s ON s.album_id = a.id
+            WHERE (a.name LIKE CONCAT('%', #{keyword}, '%')
+               OR ar.name LIKE CONCAT('%', #{keyword}, '%'))
+            GROUP BY a.id, a.name, a.artist_id, ar.name, ar.status,
+                     a.cover_url, a.release_date
+            ORDER BY
+                CASE
+                    WHEN #{artistId} IS NOT NULL AND a.artist_id = #{artistId}
+                         AND a.name = #{keyword} THEN 0
+                    WHEN #{artistId} IS NOT NULL AND a.artist_id = #{artistId}
+                         AND a.name LIKE CONCAT(#{keyword}, '%') THEN 1
+                    WHEN #{artistId} IS NOT NULL AND a.artist_id = #{artistId} THEN 2
+                    WHEN a.name = #{keyword} THEN 3
+                    WHEN a.name LIKE CONCAT(#{keyword}, '%') THEN 4
+                    ELSE 5
+                END,
+                COUNT(s.id) DESC,
+                COALESCE(a.release_date, MIN(s.release_time)) IS NULL,
+                COALESCE(a.release_date, MIN(s.release_time)) DESC,
+                a.id DESC
+            LIMIT #{limit}
+            """)
+    List<AlbumSuggestVO> suggestAlbumsForAdmin(@Param("keyword") String keyword,
+                                               @Param("artistId") Long artistId,
+                                               @Param("limit") int limit);
 
     @Select("""
             SELECT
