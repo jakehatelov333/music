@@ -75,6 +75,11 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+      # 类型检查放在构建之前：构建不跑 vue-tsc，历史上有 5 个类型错误长期潜伏
+      # （未使用变量、hexToRgb 的 void 返回契约），只因 CI 不检查才一直没被发现。
+      - name: 类型检查
+        run: pnpm type-check
+
       - name: 生产构建
         run: pnpm build
 

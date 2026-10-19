@@ -21,12 +21,7 @@ const state = reactive({
   pageSizes: [12, 24, 36, 48],
 })
 
-const matchesKeyword = (album: Album, keyword: string) => {
-  const normalizedKeyword = keyword.trim().toLocaleLowerCase()
-  if (!normalizedKeyword) return true
-  return [album.albumName, album.artistName]
-    .some((value) => value?.toLocaleLowerCase().includes(normalizedKeyword))
-}
+// 关键词检索一律走后端（fetchAlbums 传 keyword），这里不再保留本地过滤副本。
 
 const fetchAlbums = async () => {
   loading.value = true
