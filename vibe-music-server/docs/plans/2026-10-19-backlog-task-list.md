@@ -51,19 +51,21 @@
 | 管理员批量删 | `UserServiceImpl.deleteUsers` :670 | 只有 `deleteByIds`，无任何清理 |
 | 自助注销 | `UserServiceImpl.deleteAccount` :377–442 | 清理完整，但只处理头像，不处理个人歌单自定义封面 |
 
-- [ ] 抽 `AccountDeletionService`，管理员单删 / 批删 / 自助注销三入口统一复用
-- [ ] 修复「有反馈的用户删不掉」：`tb_feedback.user_id` 为 `ON DELETE RESTRICT`，事务内先删反馈
-- [ ] 补管理员路径的无外键表清理：`ai_chat_state` / `ai_chat_message` / `tb_ai_task_metric`
-- [ ] 收集头像，以及 `owner_user_id = ? AND cover_is_custom = TRUE` 的歌单封面，逐对象登记清理任务
-- [ ] 解决重试表容量问题：`tb_account_cleanup_task` 唯一键为 `(user_id, resource_type)`，N 个封面会互相覆盖 → 加 `resource_name` 或复用 `tb_media_cleanup_task`
-- [ ] 批量删按固定 ID 顺序锁行，避免死锁
-- [ ] 管理员端响应区分「删除失败」与「已删除、附件待清理」(`cleanupPending`)
-- [ ] 新增幂等迁移 `sql/phaseD_account_cleanup.sql`
-- [ ] 测试：有反馈账号可删 / 头像与 3 个封面分别入队不覆盖 / 管理员与自助注销结果一致 / 批删其一失败整体回滚
+- [x] 抽 `AccountDeletionService`，管理员单删 / 批删 / 自助注销三入口统一复用
+- [x] 修复「有反馈的用户删不掉」：`tb_feedback.user_id` 为 `ON DELETE RESTRICT`，事务内先删反馈
+- [x] 补管理员路径的无外键表清理：`ai_chat_state` / `ai_chat_message` / `tb_ai_task_metric`
+- [x] 收集头像，以及 `owner_user_id = ? AND cover_is_custom = TRUE` 的歌单封面，逐对象登记清理任务
+- [x] 解决重试表容量问题：唯一键改为 `(user_id, resource_type, resource_ref)`；封面改走 `tb_media_cleanup_task`（可做跨表引用核对）
+- [x] 批量删按固定 ID 顺序锁行，避免死锁
+- [x] 管理员端响应区分「删除失败」与「已删除、附件待清理」(`cleanupPending`)
+- [x] 新增幂等迁移 `sql/phaseD_account_cleanup.sql`
+- [x] 测试：有反馈账号可删 / 多封面分别入队不覆盖 / 管理员与自助注销结果一致 / 批删其一失败整体回滚
 
-验收：`AccountDeletionService` 为唯一删除实现；H2 真 SQL 测试全绿；真实库确认无孤儿行。
+验收：`AccountDeletionService` 为唯一删除实现；H2 真 SQL 测试全绿；真实库确认无孤儿行。 ✅ 已达成（2026-10-19，12 例新增测试 + 全量 337 通过）
 风险：中。不可逆删除，先用 H2 + 隔离库验证，不得拿真实用户试。
 估时：半天到一天。
+
+> **实现说明**：头像与歌单封面<b>不再</b>在注销路径上立即删除，改为登记到 `tb_media_cleanup_task`（`source_type = ACCOUNT_DELETE`），由 `MediaCleanupService` 跨表核对引用后决定能否删。共享封面因此会被判 `RETAINED` 保留。`tb_account_cleanup_task` 只保留 `REDIS_TOKEN` 这类无法核对引用的资源。
 
 ### P1-2　头像 / Banner 接入引用核对（C1 遗留）
 
@@ -154,3 +156,4 @@
 | --- | --- | --- |
 | 2026-10-19 | E-1 提交后失败不得删已入库媒体 | `SongUploadServiceImpl.commit` 引入 `committed` 分界线；提交后异常走 `recoverCommittedResult` 重读，绝不 `safeDeleteObject`；`resolveAlbumId` 改为接收 `TransactionTemplate`，与歌曲行同事务。新增 `SongUploadCommitBoundaryTest`（2 例）。全量回归 **325 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 323）。 |
 | 2026-10-19 | P0-1 前端类型错误 + CI | `hexToRgb` 返回契约改为 `number[] \| null`，`getDarkColor`/`getLightColor` 显式判空（去掉 `!` 断言）；`plugins.ts` 参数改 `_viteEnv`；`ResetPasswordForm.vue` 参数改 `_rule`；删除专辑页未使用的 `matchesKeyword`。`pnpm type-check` 退出码 0、`pnpm build` 通过，CI 用户端 job 增加「类型检查」步骤。浏览器实测：落地页、曲库、专辑页（265 条）、专辑内搜索（筛到 1 条）、播放条均正常，控制台无报错。 |
+| 2026-10-19 | P1-1 统一账号删除服务 | 新增 `AccountDeletionService`（单删/批删/自助注销唯一实现）、`MediaCleanupSourceType.ACCOUNT_DELETE`、`sql/phaseD_account_cleanup.sql`（唯一键改 `(user_id, resource_type, resource_ref)`）。修复：有反馈账号可删、管理员路径补齐无外键表与封面清理、批删整批回滚、封面走媒体清理管线保留共享对象。新增 `AccountDeletionServiceTest`（12 例），改造 `UserDeleteAccountTest` 装配与头像语义断言。全量回归 **337 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 325）。浏览器实测：落地页、曲库、播放（红玫瑰 00:20 正常推进）无回归，控制台无报错。 |

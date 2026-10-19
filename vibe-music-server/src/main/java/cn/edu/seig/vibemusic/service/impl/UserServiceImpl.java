@@ -19,6 +19,9 @@ import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.EmailService;
 import cn.edu.seig.vibemusic.service.IUserService;
+import cn.edu.seig.vibemusic.service.AccountDeletionService;
+import cn.edu.seig.vibemusic.service.AccountDeletionService.AccountDeletionOutcome;
+import cn.edu.seig.vibemusic.service.AccountDeletionService.BatchDeletionOutcome;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
@@ -82,6 +85,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     private AccountCleanupTaskMapper accountCleanupTaskMapper;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    /** 账号删除的唯一实现：管理员单删/批删/自助注销都委托它，入口只负责鉴权。 */
+    @Autowired
+    private AccountDeletionService accountDeletionService;
 
     /**
      * 发送验证码
@@ -379,78 +385,32 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
         Long userId = TypeConversionUtil.toLong(userIdObj);
 
-        // 查询用户信息，获取头像 URL
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            // 幂等：用户已不存在（重复注销，或上次注销后 token 未被成功作废）。视为已注销成功，
-            // 不报错、不二次误删、也不动 token。
-            return Result.success(MessageConstant.ACCOUNT_DELETED,
-                    new AccountDeletionResultVO(true, false, List.of()));
-        }
-        String userAvatar = user.getUserAvatar();
-
-        // 1) DB 事务：反馈 + 无外键表 + 用户行，全部成功或全部回滚
-        try {
-            new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
-                // tb_feedback 外键为 ON DELETE RESTRICT，不先删会在删用户时 FK 报错
-                feedbackMapper.delete(new QueryWrapper<Feedback>().eq("user_id", userId));
-
-                // 无外键、不会随 tb_user 级联的表必须显式清理
-                List<String> chatIds = accountCleanupMapper.selectChatIdsByUserId(userId);
-                if (chatIds != null && !chatIds.isEmpty()) {
-                    accountCleanupMapper.deleteChatMessagesByChatIds(chatIds);
-                }
-                accountCleanupMapper.deleteChatStateByUserId(userId);
-                accountCleanupMapper.deleteTaskMetricsByUserId(userId);
-
-                // 收藏/歌单/待确认任务/画像/偏好/设置/评论由外键 ON DELETE CASCADE 处理。
-                // 返回 0 说明用户已被并发请求删除：同样视为注销成功，不报错。
-                userMapper.deleteById(userId);
-            });
-        } catch (RuntimeException e) {
-            log.error("账号注销事务失败，userId={}", userId, e);
+        if (userId == null) {
             return Result.error(MessageConstant.ACCOUNT_DELETE_FAILED);
         }
 
-        // 2) DB 已提交，再清理外部资源。失败不回滚，落重试记录
-        List<String> pending = new ArrayList<>();
-        try {
-            // 先作废 token：token 留在 Redis 里等于注销后登录态仍然有效，安全关键
-            stringRedisTemplate.delete(token);
-        } catch (RuntimeException e) {
-            log.error("注销后作废 Redis token 失败，userId={}", userId, e);
-            pending.add(RESOURCE_REDIS_TOKEN);
-            recordCleanupTask(userId, RESOURCE_REDIS_TOKEN, token, e);
+        // 统一委托 AccountDeletionService：与管理员单删/批删共用同一套清理顺序，
+        // 补齐历史上漏掉的「个人歌单自定义封面」收集。封面必须在删用户之前收集 ——
+        // tb_playlist.owner_user_id 是 ON DELETE CASCADE，歌单行一删 cover_url 就查不到了。
+        AccountDeletionOutcome outcome = accountDeletionService.deleteAccount(userId, token, true);
+
+        if (!outcome.existed()) {
+            // 幂等：用户已不存在（重复注销，或上次注销后 token 未被成功作废）。
+            // 视为已注销成功：不报错、不二次误删、也不动 token。
+            return Result.success(MessageConstant.ACCOUNT_DELETED,
+                    new AccountDeletionResultVO(true, false, List.of()));
+        }
+        if (!outcome.deleted()) {
+            log.error("账号注销事务失败，userId={}，原因：{}", userId, outcome.failedMessage());
+            return Result.error(MessageConstant.ACCOUNT_DELETE_FAILED);
         }
 
-        if (userAvatar != null && !userAvatar.isEmpty()) {
-            try {
-                minioService.deleteFile(userAvatar);
-            } catch (RuntimeException e) {
-                log.error("注销后删除 MinIO 头像失败，userId={}", userId, e);
-                pending.add(RESOURCE_MINIO_AVATAR);
-                recordCleanupTask(userId, RESOURCE_MINIO_AVATAR, userAvatar, e);
-            }
-        }
-
-        if (pending.isEmpty()) {
+        if (outcome.pendingItems().isEmpty()) {
             return Result.success(MessageConstant.ACCOUNT_DELETED,
                     new AccountDeletionResultVO(true, false, List.of()));
         }
         return Result.success(MessageConstant.ACCOUNT_DELETED_PARTIAL,
-                new AccountDeletionResultVO(true, true, pending));
-    }
-
-    /**
-     * 落一条外部资源清理重试记录。记录本身失败只记日志，不能让已完成的注销对外报错。
-     */
-    private void recordCleanupTask(Long userId, String resourceType, String resourceRef, RuntimeException cause) {
-        try {
-            accountCleanupTaskMapper.upsertPending(userId, resourceType, resourceRef,
-                    truncate(cause.getMessage()), LocalDateTime.now());
-        } catch (RuntimeException e) {
-            log.error("记录账号注销清理重试任务失败，userId={}，type={}", userId, resourceType, e);
-        }
+                new AccountDeletionResultVO(true, true, List.copyOf(outcome.pendingItems())));
     }
 
     private static String truncate(String message) {
@@ -645,7 +605,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     /**
-     * 删除用户
+     * 删除用户（管理员单个删除）。
+     *
+     * <p>历史上这里只有一句 {@code userMapper.deleteById}：不删头像、不清无外键表
+     * （会话/消息/任务指标）、不收集个人歌单的自定义封面，而且碰到有反馈的账号会被
+     * {@code tb_feedback} 的 {@code ON DELETE RESTRICT} 直接拒绝。
+     * 现在统一委托 {@link AccountDeletionService}，与自助注销走同一套顺序。
+     *
+     * <p>管理员路径拿不到目标用户的登录 token，因此只清理数据与媒体，
+     * token 由 6 小时有效期自然过期（与「放弃鉴权改造」的既有决策一致）。
      *
      * @param userId 用户id
      * @return 结果
@@ -653,14 +621,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
     public Result deleteUser(Long userId) {
-        if (userMapper.deleteById(userId) == 0) {
+        if (userId == null) {
+            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+        AccountDeletionOutcome outcome = accountDeletionService.deleteAccount(userId, null, true);
+        if (!outcome.existed()) {
+            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+        if (!outcome.deleted()) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);
     }
 
     /**
-     * 批量删除用户
+     * 批量删除用户。
+     *
+     * <p>整批在同一事务内完成：任一账号删不掉就整体回滚，不会留下"前几个删了、后面失败"
+     * 的中间态。加锁顺序固定为 id 升序，避免并发批删互相等待成环。
      *
      * @param userIds 用户id数组
      * @return 结果
@@ -668,7 +646,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
     public Result deleteUsers(List<Long> userIds) {
-        if (userMapper.deleteByIds(userIds) == 0) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
+        }
+        BatchDeletionOutcome outcome = accountDeletionService.deleteAccounts(userIds);
+        if (!outcome.success()) {
             return Result.error(MessageConstant.DELETE + MessageConstant.FAILED);
         }
         return Result.success(MessageConstant.DELETE + MessageConstant.SUCCESS);

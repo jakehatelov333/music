@@ -5,9 +5,12 @@ import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.mapper.AccountCleanupMapper;
 import cn.edu.seig.vibemusic.mapper.AccountCleanupTaskMapper;
 import cn.edu.seig.vibemusic.mapper.FeedbackMapper;
+import cn.edu.seig.vibemusic.mapper.MediaCleanupTaskMapper;
+import cn.edu.seig.vibemusic.mapper.PlaylistMapper;
 import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.service.AccountDeletionService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.annotation.DbType;
@@ -80,6 +83,9 @@ class UserDeleteAccountTest {
             config.addMapper(FeedbackMapper.class);
             config.addMapper(AccountCleanupMapper.class);
             config.addMapper(AccountCleanupTaskMapper.class);
+            config.addMapper(PlaylistMapper.class);
+            config.addMapper(MediaCleanupTaskMapper.class);
+            config.addMapper(cn.edu.seig.vibemusic.mapper.MediaReferenceMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(source);
             factory.setConfiguration(config);
@@ -93,25 +99,43 @@ class UserDeleteAccountTest {
         @Bean FeedbackMapper feedbackMapper(SqlSessionTemplate session) { return session.getMapper(FeedbackMapper.class); }
         @Bean AccountCleanupMapper accountCleanupMapper(SqlSessionTemplate session) { return session.getMapper(AccountCleanupMapper.class); }
         @Bean AccountCleanupTaskMapper accountCleanupTaskMapper(SqlSessionTemplate session) { return session.getMapper(AccountCleanupTaskMapper.class); }
+        @Bean PlaylistMapper playlistMapper(SqlSessionTemplate session) { return session.getMapper(PlaylistMapper.class); }
+        @Bean MediaCleanupTaskMapper mediaCleanupTaskMapper(SqlSessionTemplate session) { return session.getMapper(MediaCleanupTaskMapper.class); }
+        @Bean cn.edu.seig.vibemusic.mapper.MediaReferenceMapper mediaReferenceMapper(SqlSessionTemplate session) { return session.getMapper(cn.edu.seig.vibemusic.mapper.MediaReferenceMapper.class); }
         @Bean MinioService minio() { return mock(MinioService.class); }
         @Bean StringRedisTemplate redis() { return mock(StringRedisTemplate.class); }
         @Bean cn.edu.seig.vibemusic.service.EmailService emailService() {
             return mock(cn.edu.seig.vibemusic.service.EmailService.class);
         }
 
-        @Bean UserServiceImpl userService(UserMapper userMapper, FeedbackMapper feedbackMapper,
-                                          AccountCleanupMapper accountCleanupMapper,
-                                          AccountCleanupTaskMapper accountCleanupTaskMapper,
-                                          StringRedisTemplate redis, MinioService minio,
-                                          DataSourceTransactionManager transactionManager) {
+        @Bean cn.edu.seig.vibemusic.service.MediaReferenceService mediaReferenceService(
+                cn.edu.seig.vibemusic.mapper.MediaReferenceMapper mapper) {
+            return new cn.edu.seig.vibemusic.service.MediaReferenceService(mapper);
+        }
+
+        @Bean cn.edu.seig.vibemusic.service.MediaCleanupService mediaCleanupService(
+                MediaCleanupTaskMapper taskMapper,
+                cn.edu.seig.vibemusic.service.MediaReferenceService referenceService,
+                MinioService minio) {
+            return new cn.edu.seig.vibemusic.service.MediaCleanupService(
+                    taskMapper, referenceService, minio, "vibe-music-data");
+        }
+
+        @Bean AccountDeletionService accountDeletionService(UserMapper userMapper, FeedbackMapper feedbackMapper,
+                                                           AccountCleanupMapper accountCleanupMapper,
+                                                           AccountCleanupTaskMapper accountCleanupTaskMapper,
+                                                           PlaylistMapper playlistMapper,
+                                                           cn.edu.seig.vibemusic.service.MediaCleanupService mediaCleanupService,
+                                                           StringRedisTemplate redis,
+                                                           DataSourceTransactionManager transactionManager) {
+            return new AccountDeletionService(userMapper, feedbackMapper, accountCleanupMapper,
+                    accountCleanupTaskMapper, playlistMapper, mediaCleanupService, redis, transactionManager);
+        }
+        @Bean UserServiceImpl userService(UserMapper userMapper, AccountDeletionService accountDeletionService) {
             UserServiceImpl impl = new UserServiceImpl();
             ReflectionTestUtils.setField(impl, "userMapper", userMapper);
-            ReflectionTestUtils.setField(impl, "feedbackMapper", feedbackMapper);
-            ReflectionTestUtils.setField(impl, "accountCleanupMapper", accountCleanupMapper);
-            ReflectionTestUtils.setField(impl, "accountCleanupTaskMapper", accountCleanupTaskMapper);
-            ReflectionTestUtils.setField(impl, "stringRedisTemplate", redis);
-            ReflectionTestUtils.setField(impl, "minioService", minio);
-            ReflectionTestUtils.setField(impl, "transactionManager", transactionManager);
+            // 账号删除的唯一实现已抽到 AccountDeletionService；UserServiceImpl 只负责鉴权与结果组装。
+            ReflectionTestUtils.setField(impl, "accountDeletionService", accountDeletionService);
             return impl;
         }
     }
@@ -144,7 +168,11 @@ class UserDeleteAccountTest {
                 + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE RESTRICT)");
 
         // 级联表（生产为 ON DELETE CASCADE）
-        jdbc.execute("CREATE TABLE tb_playlist(id BIGINT PRIMARY KEY, owner_user_id BIGINT, "
+        // ⚠️ 必须补齐 Playlist 实体全部列：MyBatis-Plus selectList 会查出全列，
+        // 少一列就是 BadSqlGrammar（AccountDeletionService 查自定义封面时会命中）。
+        jdbc.execute("CREATE TABLE tb_playlist(id BIGINT PRIMARY KEY, title VARCHAR(255), cover_url VARCHAR(255), "
+                + "introduction VARCHAR(1000), style VARCHAR(255), owner_user_id BIGINT, is_public BOOLEAN, "
+                + "status VARCHAR(16), cover_is_custom BOOLEAN, "
                 + "FOREIGN KEY(owner_user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
         jdbc.execute("CREATE TABLE tb_playlist_create_request(user_id BIGINT NOT NULL, request_key VARCHAR(64) NOT NULL, "
                 + "PRIMARY KEY(user_id, request_key), FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
@@ -326,20 +354,20 @@ class UserDeleteAccountTest {
     }
 
     @Test
-    @DisplayName("注销：MinIO 头像删除失败 → cleanupPending=true，并落重试记录")
-    void deleteAccountReportsPendingWhenMinioFails() {
+    @DisplayName("注销：头像改为登记到媒体清理队列（带引用核对），不再立即删除、也不再落 MINIO_AVATAR 重试")
+    void deleteAccountEnqueuesAvatarInsteadOfDeletingImmediately() {
         jdbc.update("UPDATE tb_user SET user_avatar = ? WHERE id = 1", AVATAR);
-        doThrow(new RuntimeException("minio down")).when(minio).deleteFile(AVATAR);
 
         Result<AccountDeletionResultVO> result = userService.deleteAccount(TOKEN);
 
-        assertEquals(0, result.getCode());
-        AccountDeletionResultVO data = result.getData();
-        assertTrue(data.isAccountDeleted());
-        assertTrue(data.isCleanupPending());
-        assertTrue(data.getPendingItems().contains("MINIO_AVATAR"));
-        verify(redis).delete(TOKEN); // Redis 成功，不受 MinIO 失败影响
-        assertEquals(1, count("tb_account_cleanup_task",
-                "user_id = 1 AND resource_type = 'MINIO_AVATAR' AND status = 'PENDING'"));
-    }
-}
+        assertEquals(0, result.getCode(), "账号必须能正常注销");
+        assertTrue(result.getData().isAccountDeleted());
+        // 语义变更：头像不再在注销路径上"立即删"，而是登记成待核对的媒体清理任务。
+        // 原因：头像可能与其他记录共享，必须由 MediaCleanupService 核对引用后才能删。
+        verify(minio, never()).deleteFile(anyString());
+        // 本用例没有给 MediaCleanupService 配置 URL→对象键解析，登记会被安全跳过，
+        // 因此这里只断言"没有走立即删除 + 没有误落账号级重试表"。
+        assertEquals(0, count("tb_account_cleanup_task"),
+                "头像不再使用 MINIO_AVATAR 账号级重试，改由媒体清理队列负责");
+        verify(redis).delete(TOKEN); // Redis 成功
+    }}

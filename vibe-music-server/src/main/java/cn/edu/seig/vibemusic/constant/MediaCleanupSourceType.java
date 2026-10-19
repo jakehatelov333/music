@@ -31,6 +31,16 @@ public final class MediaCleanupSourceType {
     /** 上传会话中止：暂存对象。本阶段未接入（留给 E 阶段），占位以固定取值域。 */
     public static final String UPLOAD_ABORT = "UPLOAD_ABORT";
 
+    /**
+     * 账号删除：该用户个人歌单的自定义封面。
+     *
+     * <p>{@code source_ref} = userId。必须在删除用户行<b>之前</b>登记 ——
+     * {@code tb_playlist.owner_user_id} 是 {@code ON DELETE CASCADE}，歌单行一删，
+     * {@code cover_url} 就再也查不到了。是否真的可删由 worker 的跨表引用核对决定
+     * （共享封面会被判 RETAINED 保留），不是"账号没了就删文件"。
+     */
+    public static final String ACCOUNT_DELETE = "ACCOUNT_DELETE";
+
     private MediaCleanupSourceType() {
     }
 }
