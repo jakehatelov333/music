@@ -337,7 +337,9 @@ export function useArtist(tableRef: Ref) {
           introduction: row?.introduction ?? "",
           status: row?.status ?? "ACTIVE",
           avatarFile: null,
-          avatarPreview: ""
+          avatarPreview: "",
+          qqSingerMid: "",
+          qqAvatarSize: 500
         }
       },
       width: "46%",
@@ -362,9 +364,13 @@ export function useArtist(tableRef: Ref) {
             if (title === "新增") {
               // 头像与歌手信息一次提交：分成两个请求时，第二步失败会留下「有歌手没头像」
               // 的半成品，而 addArtist 又不返回 id，前端没法补救。
-              const { avatarFile, avatarPreview, ...artistPayload } = curData;
+              const { avatarFile, avatarPreview, qqSingerMid, qqAvatarSize, ...artistPayload } =
+                curData;
               void avatarPreview;
-              addArtistWithAvatar(artistPayload, avatarFile ?? undefined)
+              addArtistWithAvatar(artistPayload, avatarFile ?? undefined, {
+                qqSingerMid: qqSingerMid || null,
+                avatarSize: qqAvatarSize ?? null
+              })
                 .then(res => {
                   if (res.code === 0) {
                     chores();

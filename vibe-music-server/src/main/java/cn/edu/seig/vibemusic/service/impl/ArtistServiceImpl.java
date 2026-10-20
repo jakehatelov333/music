@@ -24,6 +24,9 @@ import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.service.artist.ArtistProfileService;
+import cn.edu.seig.vibemusic.service.artist.QqArtistAvatarUrl;
+import cn.edu.seig.vibemusic.service.cover.CoverDownloader;
 import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
@@ -49,6 +52,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -79,6 +83,8 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     private SongArtistService songArtistService;
     @Autowired
     private MediaCleanupService mediaCleanupService;
+    @Autowired
+    private ArtistProfileService artistProfileService;
     @Autowired
     private RedisTemplate redisTemplate;
 
@@ -363,6 +369,29 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     @Override
     @CacheEvict(cacheNames = "artistCache", allEntries = true)
     public Result addArtist(ArtistAddDTO artistAddDTO, MultipartFile avatar) {
+        return addArtist(artistAddDTO, avatar, null, null);
+    }
+
+    /**
+     * 添加歌手，头像来自「上传的文件」或「服务端按 QQ mid 下载」，二选一。
+     *
+     * <h3>为什么先取头像、后插库</h3>
+     * 反过来（先插库再取头像）一旦取图失败，库里就留下一条没有头像的记录，而且调用方拿不到 id
+     * 去补救。当前顺序下最坏情况只是 MinIO 多一个对象，而插入失败时会在 catch 里把它删掉。
+     *
+     * <p>刻意<b>不</b>走 {@code MediaCleanupService} 清理这个失败残留：那套管线是为了处理
+     * 「可能仍被别处引用」的对象，需要事务内登记 + 提交后核对引用。这里的对象是本次请求刚产生、
+     * 还没有任何人能引用到它的，直接删是安全且更快的。真正需要走管线的场景是
+     * {@link #updateArtistAvatar} 换下的旧头像——那个可能还被别的行共用。
+     *
+     * <h3>QQ 头像下载失败为什么不阻断</h3>
+     * 头像只是可选信息。因为 CDN 抖动或对方撤图就丢掉整条歌手记录，会让管理员重填一遍
+     * 名字、生日、国籍、简介 —— 代价远大于「先没有头像，之后再补」。
+     */
+    @Override
+    @CacheEvict(cacheNames = "artistCache", allEntries = true)
+    public Result addArtist(ArtistAddDTO artistAddDTO, MultipartFile avatar,
+                            String qqSingerMid, Integer avatarSize) {
         if (artistAddDTO == null || !StringUtils.hasText(artistAddDTO.getArtistName())) {
             return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
         }
@@ -373,7 +402,11 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
         }
 
         String avatarUrl = null;
-        if (avatar != null && !avatar.isEmpty()) {
+        if (StringUtils.hasText(qqSingerMid)) {
+            // 服务端下载优先于上传文件：管理端选了 QQ 候选之后，本地文件选择器已被隐藏，
+            // 两者同时出现的唯一可能是前端状态残留，此时以用户最后选中的候选为准
+            avatarUrl = downloadQqAvatar(qqSingerMid, avatarSize);
+        } else if (avatar != null && !avatar.isEmpty()) {
             String invalid = validateAvatar(avatar);
             if (invalid != null) {
                 return Result.error(invalid);
@@ -403,6 +436,46 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             }
             throw e;
         }
+    }
+
+    /**
+     * 按 QQ 音乐 mid 下载头像并写入 MinIO。
+     *
+     * @return 头像 URL；下载或上传失败时返回 {@code null}（不抛异常，不阻断建歌手）
+     */
+    private String downloadQqAvatar(String qqSingerMid, Integer avatarSize) {
+        if (!QqArtistAvatarUrl.isValidSingerMid(qqSingerMid)) {
+            log.warn("忽略非法的 QQ 音乐歌手 mid：{}", qqSingerMid);
+            return null;
+        }
+        try {
+            CoverDownloader.Result downloaded = artistProfileService.downloadAvatar(qqSingerMid, avatarSize, null);
+            if (!downloaded.success()) {
+                log.warn("QQ 音乐头像下载失败，本次不设头像：mid={}，原因={}", qqSingerMid, downloaded.error());
+                return null;
+            }
+            String extension = avatarExtension(downloaded.contentType());
+            String objectName = "artist-qq-" + UUID.randomUUID() + "." + extension;
+            return minioService.uploadBytes(downloaded.bytes(), "artists", objectName, downloaded.contentType());
+        } catch (RuntimeException e) {
+            log.warn("QQ 音乐头像下载异常，本次不设头像：mid={}", qqSingerMid, e);
+            return null;
+        }
+    }
+
+    /** 由 Content-Type 推扩展名；只认三种常见图片格式，其余按 jpg 处理（CDN 实测均为 JPEG）。 */
+    private String avatarExtension(String contentType) {
+        if (contentType == null) {
+            return "jpg";
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        if (normalized.contains("png")) {
+            return "png";
+        }
+        if (normalized.contains("webp")) {
+            return "webp";
+        }
+        return "jpg";
     }
 
     /**

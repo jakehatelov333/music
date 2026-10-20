@@ -214,23 +214,34 @@ public class AdminController {
     }
 
     /**
-     * 新增歌手（可同时上传头像）。
+     * 新增歌手（可同时上传头像，或由服务端按 QQ 音乐 mid 下载头像）。
      *
      * <p>用 {@code multipart/form-data}：{@code artist} 部分是 JSON、{@code avatar} 是可选图片。
      * 之所以把两个字段塞进同一次请求，是为了让「建歌手 + 存头像」成为一个原子操作 ——
      * 分成两个接口时，中间任何一步失败都会留下半成品（有歌手没头像，或有头像没歌手）。
      *
-     * <p>{@code avatar} 刻意是 {@code required = false}：不带头像新增歌手仍然合法，
+     * <p>所有可选参数都标了 {@code required = false}：不带头像新增歌手仍然合法，
      * 与旧接口行为一致，老客户端不受影响。
      *
-     * @param artist     歌手信息 JSON
-     * @param avatar     头像图片，可省略
+     * <p>两种头像来源二选一，{@code qqSingerMid} 优先：
+     * <ul>
+     *   <li>{@code avatar} —— 管理员自己上传的图片文件；</li>
+     *   <li>{@code qqSingerMid} —— 从 QQ 音乐搜索并选中的候选，由服务端按 mid 下载。
+     *       下载失败<b>不阻断</b>建歌手，只是这条记录暂时没有头像。</li>
+     * </ul>
+     *
+     * @param artist      歌手信息 JSON
+     * @param avatar      头像图片，可省略
+     * @param qqSingerMid QQ 音乐歌手 mid，可省略
+     * @param avatarSize  头像尺寸（300/500/800），可省略，默认 500
      * @return 成功时 {@code data} 为新歌手 id
      */
     @PostMapping(value = "/addArtistWithAvatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result addArtistWithAvatar(@RequestPart("artist") ArtistAddDTO artist,
-                                      @RequestPart(value = "avatar", required = false) MultipartFile avatar) {
-        return artistService.addArtist(artist, avatar);
+                                      @RequestPart(value = "avatar", required = false) MultipartFile avatar,
+                                      @RequestParam(value = "qqSingerMid", required = false) String qqSingerMid,
+                                      @RequestParam(value = "avatarSize", required = false) Integer avatarSize) {
+        return artistService.addArtist(artist, avatar, qqSingerMid, avatarSize);
     }
 
     /**

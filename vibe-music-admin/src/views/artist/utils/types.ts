@@ -14,8 +14,16 @@ interface FormItemProps {
    * 「上传头像」入口（那里有裁剪），不在这里混着改。
    */
   avatarFile?: File | null;
-  /** 新增时头像的本地预览地址（objectURL），不提交给后端 */
+  /**
+   * 头像预览地址。两种来源：
+   * - `blob:` 开头 → 用户本地上传的文件，提交时走 `avatar` 文件字段
+   * - `https:` 开头 → 从 QQ 候选选中的图，提交时走 `qqSingerMid` 由服务端下载
+   */
   avatarPreview?: string;
+  /** 选中的 QQ 音乐歌手 mid；非空时由服务端下载头像，优先于 avatarFile */
+  qqSingerMid?: string;
+  /** 从 QQ 下载头像时使用的尺寸（300/500/800） */
+  qqAvatarSize?: number;
 }
 interface FormProps {
   formInline: FormItemProps;

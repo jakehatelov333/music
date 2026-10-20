@@ -59,6 +59,22 @@ public interface IArtistService extends IService<Artist> {
      */
     Result addArtist(ArtistAddDTO artistAddDTO, MultipartFile avatar);
 
+    /**
+     * 添加歌手，头像可以由服务端按 QQ 音乐 mid 下载。
+     *
+     * <p>与上传文件的区别在于「谁来取这张图」：管理端选中的候选头像在 QQ 的 CDN 上，
+     * 让浏览器先下载再回传等于多走一趟；由服务端直接下载则少一次往返，也避免
+     * 浏览器跨域读图失败（{@code canvas} 污染）。下载失败<b>不阻止</b>建歌手 ——
+     * 头像只是可选信息，没有理由因为它丢掉整条记录。
+     *
+     * @param artistAddDTO 歌手信息
+     * @param avatar       直接上传的头像文件，优先级低于 {@code qqSingerMid}，可为 {@code null}
+     * @param qqSingerMid  QQ 音乐歌手 mid，非空时由服务端下载头像
+     * @param avatarSize   头像尺寸，会被夹到 300/500/800
+     * @return 成功时 {@code data} 为新歌手的 id
+     */
+    Result addArtist(ArtistAddDTO artistAddDTO, MultipartFile avatar, String qqSingerMid, Integer avatarSize);
+
     // 更新歌手
     Result updateArtist(ArtistUpdateDTO artistUpdateDTO);
 

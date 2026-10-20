@@ -117,12 +117,21 @@ export const addArtist = (data: object) => {
 };
 
 /**
- * 歌手管理-新增歌手（可同时上传头像）。
+ * 歌手管理-新增歌手（可同时上传头像，或由服务端按 QQ 音乐 mid 下载头像）。
  *
  * 用 multipart 一次提交「歌手信息 + 头像」：分成两个请求时，中间任何一步失败都会
  * 留下半成品（有歌手没头像 / 有头像没歌手）。头像可选，不传就等同于 addArtist。
+ *
+ * 两种头像来源二选一，`qqSingerMid` 优先：
+ * - `avatar`：管理员自己上传的图片文件
+ * - `qqSingerMid`：从 QQ 音乐搜索并选中的候选，由服务端按 mid 下载。
+ *   下载失败不阻断建歌手，只是这条记录暂时没有头像。
  */
-export const addArtistWithAvatar = (artist: object, avatar?: File) => {
+export const addArtistWithAvatar = (
+  artist: object,
+  avatar?: File,
+  options?: { qqSingerMid?: string | null; avatarSize?: number | null }
+) => {
   const userData = getToken();
   const formData = new FormData();
   // 后端用 @RequestPart("artist") ArtistAddDTO 接收，必须声明 JSON 类型，
@@ -134,12 +143,20 @@ export const addArtistWithAvatar = (artist: object, avatar?: File) => {
   if (avatar) {
     formData.append("avatar", avatar);
   }
+  if (options?.qqSingerMid) {
+    formData.append("qqSingerMid", options.qqSingerMid);
+  }
+  if (options?.avatarSize) {
+    formData.append("avatarSize", String(options.avatarSize));
+  }
   return http.request<Result>("post", "/admin/addArtistWithAvatar", {
     headers: {
       "Content-Type": "multipart/form-data",
       Authorization: userData.accessToken
     },
-    data: formData
+    data: formData,
+    // 服务端要下载头像，比纯上传慢一些
+    timeout: 60000
   });
 };
 
