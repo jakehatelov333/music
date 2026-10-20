@@ -78,6 +78,31 @@ public interface IArtistService extends IService<Artist> {
     // 更新歌手
     Result updateArtist(ArtistUpdateDTO artistUpdateDTO);
 
+    /**
+     * 更新歌手，并可在同一次请求里替换头像（上传文件或由服务端按 QQ mid 下载）。
+     *
+     * <p>与新增时的头像处理共用一套语义：先取到新头像对象、再改库，改库失败就把新对象删掉。
+     * 区别在于这里的旧头像<b>可能仍被别的行引用</b>，因此必须走
+     * {@code MediaCleanupService} 核对引用后再删，不能就地删。
+     *
+     * <p>三种输入组合的含义：
+     * <ul>
+     *   <li>{@code qqSingerMid} 非空 —— 由服务端下载，优先于上传文件；</li>
+     *   <li>只给 {@code avatar} —— 用上传的图片；</li>
+     *   <li>两者都为空 —— <b>保持原头像不变</b>，而不是清空。</li>
+     * </ul>
+     * 最后一条是关键：编辑框里大部分字段是"原样回填再提交"的，
+     * 如果空值被当成"清空头像"，每次改简介都会把头像弄丢。
+     *
+     * @param artistUpdateDTO 歌手信息
+     * @param avatar          上传的头像文件，可为 {@code null}
+     * @param qqSingerMid     QQ 音乐歌手 mid，非空时由服务端下载头像
+     * @param avatarSize      头像尺寸，会被夹到 300/500/800
+     * @return 更新结果
+     */
+    Result updateArtist(ArtistUpdateDTO artistUpdateDTO, MultipartFile avatar,
+                        String qqSingerMid, Integer avatarSize);
+
     // 更新歌手头像
     Result updateArtistAvatar(Long artistId, String avatar);
 

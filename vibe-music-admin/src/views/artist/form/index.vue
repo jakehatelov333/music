@@ -61,6 +61,19 @@ const newFormInline = ref(props.formInline);
 
 const isCreate = computed(() => newFormInline.value.title === "新增");
 
+/**
+ * 是否用 QQ 资料覆盖「已有内容」。
+ *
+ * <p>两种模式的语义不同，所以做成开关而不是固定行为：
+ * <ul>
+ *   <li><b>新增</b>：表单基本是空的，谈不上覆盖；这里恒为 false 也不影响结果。</li>
+ *   <li><b>修改</b>：库里已有资料。默认「只填空缺」会让人以为点了没反应
+ *       （例如简介本来就有，点候选后毫无变化），所以修改模式默认<b>覆盖</b>；
+ *       但用户手填过的内容仍可能更准，因此保留一个开关随时关掉。</li>
+ * </ul>
+ */
+const qqOverwrite = ref(!isCreate.value);
+
 // ------------------------------------------------------------------ QQ 音乐搜索
 
 const qqKeyword = ref("");
@@ -72,7 +85,7 @@ const qqSearched = ref(false);
 const qqLoadingMid = ref("");
 /**
  * 记录上一次自动填充了哪些字段，便于在用户改过之后仍然只清掉「我们填的」部分。
- * 不用它做覆盖判断 —— 用户手填的内容永远优先，见 applyProfile 的注释。
+ * 不用它做覆盖判断 —— 覆盖与否由 qqOverwrite 决定，见 applyProfile 的注释。
  */
 const lastFilledFields = ref<string[]>([]);
 
@@ -128,6 +141,18 @@ async function handleSelectCandidate(candidate: ArtistCandidate) {
   }
 }
 
+/**
+ * 把 QQ 资料写进表单。
+ *
+ * <p>覆盖策略由 {@link qqOverwrite} 决定：
+ * <ul>
+ *   <li>{@code true}（修改模式默认）—— 用 QQ 的值覆盖，但会明确告诉用户覆盖了哪几项；</li>
+ *   <li>{@code false}（新增模式默认）—— 只填空字段，已有内容原样保留。</li>
+ * </ul>
+ *
+ * <p>无论哪种模式都<b>不会自动提交</b>：填充只是省去打字，最终写库仍要人点「确定」。
+ * 这一点对修改模式尤其重要 —— 覆盖掉的值如果自动保存，就没有挽回余地了。
+ */
 function applyProfile(profile: {
   artistName?: string | null;
   gender?: number | null;
@@ -140,8 +165,31 @@ function applyProfile(profile: {
   singerMid: string;
 }) {
   const form = newFormInline.value;
+  const overwrite = qqOverwrite.value;
   const filled: string[] = [];
   const kept: string[] = [];
+
+  /**
+   * 写入单个字段：`overwrite` 为真时直接覆盖，否则只在原值为空时填。
+   * 返回是否真的写入了。
+   */
+  const write = (
+    label: string,
+    next: string | number | null | undefined,
+    current: unknown,
+    apply: () => void
+  ) => {
+    if (next == null || next === "") {
+      return;
+    }
+    const hasCurrent = current != null && String(current).trim() !== "";
+    if (overwrite || !hasCurrent) {
+      apply();
+      filled.push(label);
+    } else {
+      kept.push(label);
+    }
+  };
 
   // 名字总是用选中的那位覆盖：用户点这个候选就是为了换人
   if (profile.artistName) {
@@ -149,33 +197,21 @@ function applyProfile(profile: {
     filled.push("歌手名");
   }
 
-  if (profile.gender != null) {
-    form.gender = profile.gender;
-    filled.push("类型");
-  }
+  write("类型", profile.gender, form.gender, () => {
+    form.gender = profile.gender as number;
+  });
 
-  if (profile.birth) {
+  write("生日", profile.birth, form.birth, () => {
     form.birth = profile.birth as any;
-    filled.push("生日");
-  }
+  });
 
-  if (profile.area) {
-    if (!form.area?.trim()) {
-      form.area = profile.area;
-      filled.push("国籍");
-    } else {
-      kept.push("国籍");
-    }
-  }
+  write("国籍", profile.area, form.area, () => {
+    form.area = profile.area as string;
+  });
 
-  if (profile.introduction) {
-    if (!form.introduction?.trim()) {
-      form.introduction = profile.introduction;
-      filled.push("简介");
-    } else {
-      kept.push("简介");
-    }
-  }
+  write("简介", profile.introduction, form.introduction, () => {
+    form.introduction = profile.introduction as string;
+  });
 
   // 头像：只有对方确实有图才接管预览。地址能拼出来不代表图存在。
   if (profile.hasAvatar && profile.avatarUrls?.["500"]) {
@@ -189,10 +225,10 @@ function applyProfile(profile: {
 
   const parts: string[] = [];
   if (filled.length) {
-    parts.push(`已填充：${filled.join("、")}`);
+    parts.push(`${overwrite ? "已覆盖" : "已填充"}：${filled.join("、")}`);
   }
   if (kept.length) {
-    parts.push(`保留你已填的：${kept.join("、")}`);
+    parts.push(`保留了原有：${kept.join("、")}`);
   }
   if (parts.length) {
     ElMessage.success(parts.join("；"));
@@ -201,20 +237,34 @@ function applyProfile(profile: {
   }
 }
 
-/** 清掉「来自 QQ」的状态，恢复成完全手填。 */
+/** 清掉「来自 QQ」的状态，恢复成原来的头像（修改模式）或空头像（新增模式）。 */
 function clearQqSelection() {
   const form = newFormInline.value;
   form.qqSingerMid = "";
-  if (form.avatarPreview && !form.avatarFile) {
-    // 当前预览来自 QQ，不是用户上传的文件
-    form.avatarPreview = "";
+  if (!form.avatarFile) {
+    // 当前预览不是用户上传的文件，还原成进入弹窗时的头像
+    form.avatarPreview = originalAvatar.value;
   }
   lastFilledFields.value = [];
 }
 
 /**
- * 选图后只做本地预览，不立即上传 —— 用户还可能改名字、甚至取消整个新增。
- * 真正上传发生在点「确定」时，由 addArtistWithAvatar 一并提交。
+ * 进入弹窗时的原头像。
+ *
+ * <p>「取消 QQ 填充」和「移除头像」都要能回到这里。新增模式下它是空串；
+ * 修改模式下是库里已有的头像地址 —— 否则用户点了移除就再也找不回原图了
+ * （表单只带 URL，不带原始文件）。
+ */
+const originalAvatar = ref(props.formInline.avatarPreview || "");
+
+/** 当前是否处于「已改动头像」状态：预览地址与进入时不同。 */
+const avatarChanged = computed(
+  () => (newFormInline.value.avatarPreview || "") !== originalAvatar.value
+);
+
+/**
+ * 选图后只做本地预览，不立即上传 —— 用户还可能改名字、甚至取消整个操作。
+ * 真正上传发生在点「确定」时，由 addArtistWithAvatar / updateArtistWithAvatar 一并提交。
  */
 function handleAvatarChange(uploadFile: { raw?: File }) {
   const file = uploadFile?.raw;
@@ -230,7 +280,7 @@ function handleAvatarChange(uploadFile: { raw?: File }) {
     return;
   }
   // 换图时释放上一个 objectURL，否则反复选图会一直占着内存
-  if (newFormInline.value.avatarPreview) {
+  if (newFormInline.value.avatarPreview?.startsWith("blob:")) {
     URL.revokeObjectURL(newFormInline.value.avatarPreview);
   }
   newFormInline.value.avatarFile = file;
@@ -239,12 +289,13 @@ function handleAvatarChange(uploadFile: { raw?: File }) {
   newFormInline.value.qqSingerMid = "";
 }
 
+/** 移除头像。修改模式下等价于「恢复原头像」，不会真的把库里的头像清空。 */
 function clearAvatar() {
   if (newFormInline.value.avatarPreview?.startsWith("blob:")) {
     URL.revokeObjectURL(newFormInline.value.avatarPreview);
   }
   newFormInline.value.avatarFile = null;
-  newFormInline.value.avatarPreview = "";
+  newFormInline.value.avatarPreview = originalAvatar.value;
   newFormInline.value.qqSingerMid = "";
 }
 
@@ -279,18 +330,22 @@ defineExpose({ getRef });
       </re-col>
 
       <!--
-        从 QQ 音乐搜索并自动填充。
+        从 QQ 音乐搜索并自动填充。新增与修改都可用。
         刻意做成「搜 → 选 → 填」三步而不是「输入名字就自动填」：
         实测有 47 位歌手搜出 2 个候选，且第一条不一定对（LANY 的第一条是「Blue」，
         Christopher 的第一条是「黄凯芹」），必须由人确认是哪一位。
       -->
-      <re-col v-if="isCreate" :value="24" :xs="24" :sm="24">
+      <re-col :value="24" :xs="24" :sm="24">
         <el-form-item label="自动填充">
           <div class="w-full">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <el-input
                 v-model="qqKeyword"
-                placeholder="输入歌手名，从 QQ 音乐搜索资料"
+                :placeholder="
+                  isCreate
+                    ? '输入歌手名，从 QQ 音乐搜索资料'
+                    : `输入歌手名搜索，当前：${newFormInline.artistName}`
+                "
                 clearable
                 class="!w-[260px]"
                 @keyup.enter="handleQqSearch"
@@ -302,6 +357,10 @@ defineExpose({ getRef });
               >
                 搜索
               </el-button>
+              <!-- 覆盖开关只在修改模式有意义：新增时表单本来就空 -->
+              <el-checkbox v-if="!isCreate" v-model="qqOverwrite">
+                覆盖已有内容
+              </el-checkbox>
               <span
                 v-if="newFormInline.qqSingerMid"
                 class="text-xs text-[var(--el-color-success)]"
@@ -343,8 +402,20 @@ defineExpose({ getRef });
                     {{ item.artistName }}
                   </div>
                   <div class="flex items-center gap-1 mt-[2px]">
+                    <!-- 修改模式下「库中已有」就是当前这位，标成「当前歌手」更直观 -->
                     <el-tag
-                      v-if="item.existingInLibrary"
+                      v-if="
+                        !isCreate &&
+                        item.existingArtistId === newFormInline.artistId
+                      "
+                      size="small"
+                      type="primary"
+                      effect="plain"
+                    >
+                      当前歌手
+                    </el-tag>
+                    <el-tag
+                      v-else-if="item.existingInLibrary"
                       size="small"
                       type="warning"
                       effect="plain"
@@ -384,7 +455,7 @@ defineExpose({ getRef });
               v-if="newFormInline.qqSingerMid"
               class="mt-2 text-xs text-[var(--el-text-color-secondary)]"
             >
-              填充只影响表单，不会自动保存；已填好的字段不会被覆盖。
+              填充只影响表单，不会自动保存。
               <el-button link type="danger" size="small" @click="clearQqSelection">
                 取消 QQ 填充
               </el-button>
@@ -393,8 +464,8 @@ defineExpose({ getRef });
         </el-form-item>
       </re-col>
 
-      <!-- 头像只在新增时可选：修改模式的头像走列表里的「上传头像」，那里带裁剪 -->
-      <re-col v-if="isCreate" :value="24" :xs="24" :sm="24">
+      <!-- 头像：新增时可直接选图；修改时显示当前头像并允许替换 -->
+      <re-col :value="24" :xs="24" :sm="24">
         <el-form-item label="歌手头像">
           <div class="flex items-center gap-4">
             <el-image
@@ -402,7 +473,15 @@ defineExpose({ getRef });
               :src="newFormInline.avatarPreview"
               fit="cover"
               class="w-[72px] h-[72px] rounded-full border border-[var(--el-border-color)]"
-            />
+            >
+              <template #error>
+                <div
+                  class="w-[72px] h-[72px] rounded-full bg-[var(--el-fill-color-light)] flex items-center justify-center text-xs text-[var(--el-text-color-placeholder)]"
+                >
+                  加载失败
+                </div>
+              </template>
+            </el-image>
             <div
               v-else
               class="w-[72px] h-[72px] rounded-full bg-[var(--el-fill-color-light)] flex items-center justify-center text-[var(--el-text-color-placeholder)]"
@@ -418,13 +497,20 @@ defineExpose({ getRef });
                   :on-change="handleAvatarChange"
                 >
                   <el-button size="small">
-                    {{
-                      newFormInline.avatarPreview ? "更换图片" : "选择图片"
-                    }}
+                    {{ avatarChanged ? "更换图片" : "选择图片" }}
                   </el-button>
                 </el-upload>
+                <!-- 修改模式下「还原」比「移除」更准确：库里原有头像不会被清空 -->
                 <el-button
-                  v-if="newFormInline.avatarPreview"
+                  v-if="avatarChanged && !isCreate"
+                  size="small"
+                  text
+                  @click="clearAvatar"
+                >
+                  还原
+                </el-button>
+                <el-button
+                  v-else-if="avatarChanged && isCreate"
                   size="small"
                   text
                   type="danger"
@@ -437,6 +523,7 @@ defineExpose({ getRef });
                 class="text-xs text-[var(--el-text-color-secondary)] leading-tight"
               >
                 可选，JPG / PNG / WebP，不超过 5 MB
+                <template v-if="!isCreate">；不改就保持原头像</template>
               </span>
             </div>
           </div>

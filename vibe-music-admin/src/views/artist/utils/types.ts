@@ -9,6 +9,8 @@ interface FormItemProps {
   introduction: string;
   /** 歌手状态：ACTIVE-启用，DISABLED-停用（软删除）；仅修改模式可改 */
   status: string;
+  /** 库里已有的头像地址，仅用于修改模式回填预览；不随表单提交 */
+  avatar?: string | null;
   /**
    * 新增时选中的头像文件。只在新增模式使用 —— 修改模式的头像走独立的
    * 「上传头像」入口（那里有裁剪），不在这里混着改。

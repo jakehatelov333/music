@@ -172,6 +172,42 @@ export const updateArtist = (data: object) => {
   });
 };
 
+/**
+ * 歌手管理-编辑歌手（可同时替换头像，或由服务端按 QQ 音乐 mid 下载头像）。
+ *
+ * 与 `addArtistWithAvatar` 对称。不传头像时后端**保持原头像不变** ——
+ * 编辑框每次提交都是整份表单，若空值被当成清空，改一次简介就会把头像弄丢。
+ */
+export const updateArtistWithAvatar = (
+  artist: object,
+  avatar?: File,
+  options?: { qqSingerMid?: string | null; avatarSize?: number | null }
+) => {
+  const userData = getToken();
+  const formData = new FormData();
+  formData.append(
+    "artist",
+    new Blob([JSON.stringify(artist)], { type: "application/json" })
+  );
+  if (avatar) {
+    formData.append("avatar", avatar);
+  }
+  if (options?.qqSingerMid) {
+    formData.append("qqSingerMid", options.qqSingerMid);
+  }
+  if (options?.avatarSize) {
+    formData.append("avatarSize", String(options.avatarSize));
+  }
+  return http.request<Result>("put", "/admin/updateArtistWithAvatar", {
+    headers: {
+      "Content-Type": "multipart/form-data",
+      Authorization: userData.accessToken
+    },
+    data: formData,
+    timeout: 60000
+  });
+};
+
 /** 歌手管理-更新歌手头像 */
 export const updateArtistAvatar = (id: number, data: object) => {
   const userData = getToken();

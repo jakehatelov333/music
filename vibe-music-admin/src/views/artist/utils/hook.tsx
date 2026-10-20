@@ -11,7 +11,7 @@ import { getKeyList, deviceDetection } from "@pureadmin/utils";
 import {
   getArtistList,
   addArtistWithAvatar,
-  updateArtist,
+  updateArtistWithAvatar,
   updateArtistAvatar,
   deleteArtist,
   deleteArtists
@@ -337,7 +337,8 @@ export function useArtist(tableRef: Ref) {
           introduction: row?.introduction ?? "",
           status: row?.status ?? "ACTIVE",
           avatarFile: null,
-          avatarPreview: "",
+          // 修改模式把库里已有的头像带进来：既是预览，也是「还原」的目标
+          avatarPreview: row?.avatar ?? "",
           qqSingerMid: "",
           qqAvatarSize: 500
         }
@@ -386,13 +387,29 @@ export function useArtist(tableRef: Ref) {
                   });
                 });
             } else {
-              updateArtist(curData).then(res => {
-                if (res.code === 0) {
-                  chores();
-                } else {
-                  message("修改歌手失败，" + res.message, { type: "error" });
-                }
-              });
+              // 修改也要能换头像：走 multipart 版本，一次提交文字字段 + 可选新头像。
+              // 不传头像时后端保持原头像不变（空值不等于清空）。
+              const { avatarFile, avatarPreview, qqSingerMid, qqAvatarSize, ...artistPayload } =
+                curData;
+              void avatarPreview;
+              updateArtistWithAvatar(artistPayload, avatarFile ?? undefined, {
+                qqSingerMid: qqSingerMid || null,
+                avatarSize: qqAvatarSize ?? null
+              })
+                .then(res => {
+                  if (res.code === 0) {
+                    chores();
+                  } else {
+                    message("修改歌手失败，" + res.message, { type: "error" });
+                  }
+                })
+                .catch(err => {
+                  const detail =
+                    err?.response?.data?.message ?? err?.message ?? "";
+                  message(`修改歌手失败${detail ? "：" + detail : ""}`, {
+                    type: "error"
+                  });
+                });
             }
           }
         });

@@ -256,6 +256,35 @@ public class AdminController {
     }
 
     /**
+     * 更新歌手信息（可同时替换头像，或由服务端按 QQ 音乐 mid 下载头像）。
+     *
+     * <p>与新增时的 {@code addArtistWithAvatar} 对称。所有可选参数都是
+     * {@code required = false}：不传头像就只改文字字段，老客户端不受影响。
+     *
+     * <p>三种头像来源的含义：
+     * <ul>
+     *   <li>{@code qqSingerMid} 非空 —— 服务端下载，优先于上传文件；</li>
+     *   <li>只给 {@code avatar} —— 用上传的图片；</li>
+     *   <li>两者都为空 —— <b>保持原头像不变</b>（不是清空）。</li>
+     * </ul>
+     * 最后一条很关键：编辑框每次提交都是整份表单，若空值被当成清空，
+     * 改一次简介就会把头像弄丢。
+     *
+     * @param artist      歌手信息 JSON，必须含 artistId
+     * @param avatar      头像图片，可省略
+     * @param qqSingerMid QQ 音乐歌手 mid，可省略
+     * @param avatarSize  头像尺寸（300/500/800），可省略，默认 500
+     * @return 结果
+     */
+    @PutMapping(value = "/updateArtistWithAvatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result updateArtistWithAvatar(@RequestPart("artist") ArtistUpdateDTO artist,
+                                         @RequestPart(value = "avatar", required = false) MultipartFile avatar,
+                                         @RequestParam(value = "qqSingerMid", required = false) String qqSingerMid,
+                                         @RequestParam(value = "avatarSize", required = false) Integer avatarSize) {
+        return artistService.updateArtist(artist, avatar, qqSingerMid, avatarSize);
+    }
+
+    /**
      * 更新歌手头像
      *
      * @param artistId 歌手id

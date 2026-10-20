@@ -526,7 +526,34 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     @CacheEvict(cacheNames = {"artistCache", "songCache", "userFavoriteCache"}, allEntries = true)
     @Transactional(rollbackFor = Exception.class)
     public Result updateArtist(ArtistUpdateDTO artistUpdateDTO) {
-        Long artistId = artistUpdateDTO.getArtistId();
+        return updateArtist(artistUpdateDTO, null, null, null);
+    }
+
+    /**
+     * 更新歌手，可选同时替换头像。
+     *
+     * <h3>为什么头像要单独判断「有没有新图」</h3>
+     * 编辑框提交的是整份表单：大部分字段是原样回填再提交的，头像字段并不在其中
+     * （它走独立的文件上传 / QQ 下载）。如果空值被当成「清空头像」，
+     * 那么每次改简介都会把头像弄丢。所以这里只在真的拿到新图时才动 avatar 列。
+     *
+     * <h3>顺序：先取新图、再改库、最后登记旧图清理</h3>
+     * 取新图失败直接返回错误（本次什么都没改）；改库失败则把刚上传的新图删掉。
+     * 旧图<b>不</b>就地删——它可能被别的行共用，交给清理管线核对引用后决定。
+     */
+    @Override
+    @CacheEvict(cacheNames = {"artistCache", "songCache", "userFavoriteCache"}, allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
+    public Result updateArtist(ArtistUpdateDTO artistUpdateDTO, MultipartFile avatar,
+                               String qqSingerMid, Integer avatarSize) {
+        Long artistId = artistUpdateDTO == null ? null : artistUpdateDTO.getArtistId();
+        if (artistId == null) {
+            return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
+        }
+        Artist existing = artistMapper.selectById(artistId);
+        if (existing == null) {
+            return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
+        }
 
         // 查重同样只看启用记录，并排除自己
         if (artistNameTaken(artistUpdateDTO.getArtistName(), artistId)) {
@@ -540,20 +567,73 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             return Result.error("非法的歌手状态");
         }
 
-        Artist artist = new Artist();
-        BeanUtils.copyProperties(artistUpdateDTO, artist);
-        if (artistMapper.updateById(artist) == 0) {
-            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        // 先取新头像（可能失败），失败就整体放弃，不留半成品
+        String newAvatarUrl = null;
+        boolean avatarReplaced = false;
+        if (StringUtils.hasText(qqSingerMid)) {
+            newAvatarUrl = downloadQqAvatar(qqSingerMid, avatarSize);
+            if (newAvatarUrl == null) {
+                // 与新增不同：这里是「用户明确要求换头像」，取不到图应当告知，
+                // 而不是静默保存其它字段让人以为头像也换了
+                return Result.error("头像下载失败，请稍后重试或改为上传图片");
+            }
+            avatarReplaced = true;
+        } else if (avatar != null && !avatar.isEmpty()) {
+            String invalid = validateAvatar(avatar);
+            if (invalid != null) {
+                return Result.error(invalid);
+            }
+            newAvatarUrl = minioService.uploadFile(avatar, "artists");
+            avatarReplaced = true;
+        }
+
+        String oldAvatar = existing.getAvatar();
+        try {
+            Artist artist = new Artist();
+            BeanUtils.copyProperties(artistUpdateDTO, artist);
+            if (avatarReplaced) {
+                artist.setAvatar(newAvatarUrl);
+            }
+            if (artistMapper.updateById(artist) == 0) {
+                if (avatarReplaced) {
+                    deleteQuietly(newAvatarUrl);
+                }
+                return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+            }
+        } catch (RuntimeException e) {
+            if (avatarReplaced) {
+                deleteQuietly(newAvatarUrl);
+            }
+            throw e;
         }
 
         // tb_song.artist_names 是派生值：歌手名一变，所有引用它的歌曲展示串都必须重建，
         // 否则歌曲列表里会继续显示旧名。重建与上面的改名在同一事务内完成。
         songArtistService.rebuildArtistNamesForArtist(artistId);
 
+        // 旧头像不就地删除：可能被别的行共用，也可能在本次事务回滚后仍然有效。
+        // 登记清理任务，由 worker 核对全部引用后再决定删或留。
+        if (avatarReplaced && StringUtils.hasText(oldAvatar) && !oldAvatar.equals(newAvatarUrl)) {
+            mediaCleanupService.enqueueForId(oldAvatar, MediaCleanupSourceType.ARTIST_AVATAR_REPLACE,
+                    artistId, "替换歌手头像");
+        }
+
         // 状态变化会影响推荐列表里的歌曲可见性
         evictRecommendedSongsCache();
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+    }
+
+    /** 删除对象，失败只记日志——用于清理本次请求刚产生、不可能被引用的残留。 */
+    private void deleteQuietly(String url) {
+        if (!StringUtils.hasText(url)) {
+            return;
+        }
+        try {
+            minioService.deleteFile(url);
+        } catch (RuntimeException e) {
+            log.warn("清理头像对象失败，需人工处理：url={}", url, e);
+        }
     }
 
     /**
