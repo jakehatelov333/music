@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import type { UploadFile } from "element-plus";
 import {
   ArrowLeft,
@@ -207,9 +207,34 @@ async function clearDraft(uploadId: string) {
   removeDraft(uploadId);
   if (localStorage.getItem("album-upload-id") === uploadId) localStorage.removeItem("album-upload-id");
 }
+/**
+ * 进页面时主动核对草稿。
+ *
+ * <p>localStorage 没有 TTL，草稿条目会一直留在列表里；只有点「继续」才校验的话，
+ * 界面会长期显示已经失效的草稿。这里一次性问服务端要会话，只移除「服务端明确说没有」的条目；
+ * 请求本身失败（断网、后端没起）时保留草稿，避免误删。</p>
+ */
+async function validateDrafts() {
+  if (!draftTasks.value.length) return;
+  const checks = await Promise.all(
+    draftTasks.value.map(async draft => {
+      const result = await getAlbumUploadSession(draft.uploadId).catch(() => null);
+      return { uploadId: draft.uploadId, expired: !!result && !result.data };
+    })
+  );
+  const expired = checks.filter(check => check.expired).map(check => check.uploadId);
+  for (const uploadId of expired) {
+    await clearDraft(uploadId);
+  }
+  if (expired.length) message(`已清理 ${expired.length} 个过期草稿`, { type: "info" });
+}
 async function openDraft(uploadId: string) {
   const result = await getAlbumUploadSession(uploadId).catch(() => null);
-  if (!result?.data) {
+  if (!result) {
+    // 网络错误不能当成「草稿过期」，否则一次断网就会把还能继续的草稿删掉
+    return message("无法连接服务器，请稍后重试", { type: "error" });
+  }
+  if (!result.data) {
     await clearDraft(uploadId);
     return message("草稿已过期，已从草稿箱移除", { type: "warning" });
   }
@@ -407,11 +432,14 @@ function confirmCreateArtists() {
   commit(true);
 }
 async function clear() {
-  if (prepared.value?.uploadId) await clearAlbumUpload(prepared.value.uploadId).catch(() => undefined);
+  // 先取 id 再清空状态：之前 removeDraft 放在 prepared.value = undefined 之后，
+  // 条件永远为 false，导致「清空任务」后草稿箱里还留着一条指向已删会话的死条目。
+  const uploadId = prepared.value?.uploadId || activeDraftId.value || localStorage.getItem("album-upload-id") || "";
+  if (uploadId) await clearAlbumUpload(uploadId).catch(() => undefined);
   prepared.value = undefined; audioFiles.value = []; coverFile.value = undefined; form.albumName = ""; form.artistName = ""; form.artistId = null; form.releaseDate = ""; form.description = "";
-  localStorage.removeItem("album-upload-id"); uploadProgress.value = {}; uploadErrors.value = {};
+  localStorage.removeItem("album-upload-id"); uploadProgress.value = {}; uploadErrors.value = {}; sessionFiles.value = [];
   pendingConfirm.value = null; pendingConfirmVisible.value = false;
-  if (prepared.value?.uploadId) removeDraft(prepared.value.uploadId);
+  if (uploadId) removeDraft(uploadId);
   activeDraftId.value = "";
   selectedFolderName.value = "";
 }
@@ -430,6 +458,7 @@ watch(form, () => {
   const id = prepared.value?.uploadId || activeDraftId.value || localStorage.getItem("album-upload-id") || "";
   if (id) updateDraftForm(id);
 }, { deep: true });
+onMounted(validateDrafts);
 onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview.value); });
 </script>
 

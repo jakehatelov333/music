@@ -100,8 +100,10 @@
 
 - [x] 统一 `STAGING_TTL_MILLIS = 24h`（:62）与 `SESSION_TTL_HOURS = 48h`（:63）为 12h，响应返回准确 `expiresAt`
       （**已随 P1-4 完成**：单一常量 `UPLOAD_TTL_HOURS = 12`，清理改按最后活动时间）
-- [ ] 处理 `AlbumUploadServiceImpl` :48 静态 `ConcurrentHashMap SESSIONS` 与 :498 Redis 过期后的内存回退（永不过期）
-- [ ] 评估建 `tb_media_upload_session`（计划书本意）或单删内存回退
+- [x] 处理 `AlbumUploadServiceImpl` :48 静态 `ConcurrentHashMap SESSIONS` 与 :498 Redis 过期后的内存回退（永不过期）
+      （**2026-10-20 已删除内存回退**：`getSession`/`cleanupOrphanStaging` 均只认 Redis key；
+      过期后会话不可恢复，孤儿 staging 由每小时任务正常回收）
+- [x] 评估建 `tb_media_upload_session`（计划书本意）或单删内存回退 —— **选择单删内存回退**，不引入新表
 - [ ] 问题 13：先做授权/存在性校验再上传，或补持久补偿
 
 估时：E-1 单独先做；E-2/E-3 合并，整体 1–2 天。

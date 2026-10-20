@@ -39,13 +39,11 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class AlbumUploadServiceImpl implements IAlbumUploadService {
-    private static final Map<String, List<StagedSong>> SESSIONS = new ConcurrentHashMap<>();
     private static final String REDIS_PREFIX = "album-upload:session:";
     private static final String STAGING_PREFIX = "staging/album-upload/";
     private static final long SESSION_TTL_HOURS = 48L;
@@ -115,7 +113,6 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             }
             List<StagedSong> sessionEntries = new ArrayList<>(staged);
             if (stagedCover != null) sessionEntries.add(stagedCover);
-            SESSIONS.put(id, sessionEntries);
             saveSession(id, sessionEntries);
             AlbumUploadPrepareVO vo = new AlbumUploadPrepareVO(); vo.setUploadId(id); vo.setAlbumName(album); vo.setArtistName(artist); vo.setCoverUrl(coverUrl); vo.setReleaseDate(firstReleaseDate(staged));
             List<AlbumUploadPrepareVO.Song> songs = new ArrayList<>();
@@ -325,7 +322,7 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             log.warn("专辑上传暂存清理失败，uploadId={}，将由定时任务兜底回收", uploadId, e);
         }
     }
-    @Override public Result<Object> clear(String id) { SESSIONS.remove(id); deleteRedisSession(id); minioService.deleteObjectsByPrefix("staging/album-upload/" + id + "/"); return Result.success(); }
+    @Override public Result<Object> clear(String id) { deleteRedisSession(id); minioService.deleteObjectsByPrefix("staging/album-upload/" + id + "/"); return Result.success(); }
 
     @Override
     public Result<Object> createSession(List<AlbumUploadFileRequest> files) {
@@ -366,6 +363,12 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     public Result<AlbumUploadPrepareVO> parseStaging(String uploadId) {
         List<StagedSong> entries = getSession(uploadId);
         if (entries == null) return Result.error("上传任务已过期");
+        // 缺文件时直接拒绝解析：以前是静默跳过，预览里少几首，直到 commit 才报
+        // 「歌曲列表与已上传文件数量不一致」，错误信息离真正的原因太远。
+        long missing = entries.stream().filter(entry -> !minioService.objectExists(entry.object)).count();
+        if (missing > 0) {
+            return Result.error("还有 " + missing + " 个文件尚未上传完成，请补传后再解析");
+        }
         List<StagedSong> parsed = new ArrayList<>();
         List<StagedSong> coverEntries = new ArrayList<>();
         String album = null, artist = null; String coverUrl = null;
@@ -406,7 +409,31 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         return COVER_EXTENSIONS.contains(ext) && baseName(entry.fileName).matches("(?i)cover(?:[._-].*)?");
     }
 
-    @Override public Result<Object> session(String uploadId) { List<StagedSong> entries = getSession(uploadId); return entries == null ? Result.error("上传任务已过期") : Result.success(Map.of("uploadId", uploadId, "files", entries)); }
+    /**
+     * 读取草稿会话，并按 MinIO 中对象的真实存在性补上 {@code uploaded} 标记。
+     *
+     * <p>直传是逐个文件完成的，中途关页面会留下「会话还在、文件没齐」的草稿。这个标记不写进
+     * Redis（StagedSong 保持原样，避免旧会话反序列化失败），而是每次读取时探测一次：
+     * MinIO 的 stat 是幂等的，草稿文件数量在几十的量级，代价可以忽略。</p>
+     */
+    @Override
+    public Result<Object> session(String uploadId) {
+        List<StagedSong> entries = getSession(uploadId);
+        if (entries == null) {
+            return Result.error("上传任务已过期");
+        }
+        List<Map<String, Object>> files = entries.stream()
+                .map(entry -> {
+                    Map<String, Object> file = new LinkedHashMap<>();
+                    file.put("fileName", entry.fileName);
+                    file.put("size", entry.size);
+                    file.put("object", entry.object);
+                    file.put("uploaded", minioService.objectExists(entry.object));
+                    return file;
+                })
+                .toList();
+        return Result.success(Map.of("uploadId", uploadId, "files", files));
+    }
 
     @Override
     public int cleanupOrphanStaging() {
@@ -421,9 +448,9 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         int cleaned = 0;
         for (String uploadId : uploadIds) {
             try {
-                // 会话以 Redis 为准：key 仍在说明草稿尚未结束，其暂存文件必须保留
-                boolean sessionAlive = Boolean.TRUE.equals(stringRedisTemplate.hasKey(REDIS_PREFIX + uploadId))
-                        || SESSIONS.containsKey(uploadId);
+                // 会话以 Redis 为唯一事实源：key 仍在说明草稿尚未结束，其暂存文件必须保留。
+                // 这里刻意不看任何进程内缓存 —— 内存条目没有 TTL，会把过期草稿的暂存文件永远留住。
+                boolean sessionAlive = Boolean.TRUE.equals(stringRedisTemplate.hasKey(REDIS_PREFIX + uploadId));
                 if (sessionAlive) continue;
                 minioService.deleteObjectsByPrefix(STAGING_PREFIX + uploadId + "/");
                 cleaned++;
@@ -495,7 +522,14 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     }
 
     private void saveSession(String id, List<StagedSong> entries) { try { stringRedisTemplate.opsForValue().set(REDIS_PREFIX+id, objectMapper.writeValueAsString(entries), SESSION_TTL_HOURS, java.util.concurrent.TimeUnit.HOURS); } catch(Exception e) { throw new IllegalStateException("上传状态保存失败",e); } }
-    private List<StagedSong> getSession(String id) { if (!StringUtils.hasText(id)) return null; try { String json=stringRedisTemplate.opsForValue().get(REDIS_PREFIX+id); if (StringUtils.hasText(json)) return objectMapper.readValue(json, objectMapper.getTypeFactory().constructCollectionType(List.class, StagedSong.class)); } catch(Exception ignored) {} return SESSIONS.get(id); }
+    /**
+     * 会话只从 Redis 读取；key 不存在或反序列化失败都视为「已过期」。
+     *
+     * <p>历史上这里会回退到进程内 {@code SESSIONS} 静态 Map，导致 Redis 的 48 小时 TTL 形同虚设：
+     * 会话写进内存后永不过期，清理任务又据此认为暂存文件仍被占用，只有重启进程才会回收。
+     * 现已删除该回退，Redis 是唯一事实源。</p>
+     */
+    private List<StagedSong> getSession(String id) { if (!StringUtils.hasText(id)) return null; try { String json=stringRedisTemplate.opsForValue().get(REDIS_PREFIX+id); if (StringUtils.hasText(json)) return objectMapper.readValue(json, objectMapper.getTypeFactory().constructCollectionType(List.class, StagedSong.class)); } catch(Exception ignored) {} return null; }
     private void deleteRedisSession(String id) { if (StringUtils.hasText(id)) stringRedisTemplate.delete(REDIS_PREFIX+id); }
     private String safeName(String name) { return StringUtils.hasText(name) ? name.replaceAll("[^\\w.\\-]", "_") : UUID.randomUUID().toString(); }
     private String extensionOf(String name) { if (!StringUtils.hasText(name)) return ""; int index = name.lastIndexOf('.'); return index >= 0 ? name.substring(index + 1).toLowerCase(Locale.ROOT) : ""; }

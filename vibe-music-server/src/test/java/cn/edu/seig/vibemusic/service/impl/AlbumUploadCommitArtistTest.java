@@ -9,6 +9,7 @@ import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
 import cn.edu.seig.vibemusic.model.entity.Album;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
+import cn.edu.seig.vibemusic.model.vo.AlbumUploadPrepareVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
@@ -31,11 +32,13 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -73,9 +76,12 @@ class AlbumUploadCommitArtistTest {
     private MinioService minioService;
     private SongArtistService songArtistService;
     private IArtistService artistService;
+    private StringRedisTemplate redisTemplate;
+    private ValueOperations<String, String> redisValueOperations;
     private AlbumUploadServiceImpl service;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
         artistStore.clear();
         sequence.set(200);
@@ -110,11 +116,10 @@ class AlbumUploadCommitArtistTest {
         ArtistProvisioningService provisioningService =
                 new ArtistProvisioningService(parser, artistService);
 
-        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
-        @SuppressWarnings("unchecked")
-        ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(anyString())).thenReturn(stagingSessionJson());
+        redisTemplate = mock(StringRedisTemplate.class);
+        redisValueOperations = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(redisValueOperations);
+        when(redisValueOperations.get(anyString())).thenReturn(stagingSessionJson());
 
         when(minioService.objectExists(anyString())).thenReturn(true);
         when(minioService.copyObject(anyString(), anyString(), anyString()))
@@ -195,6 +200,70 @@ class AlbumUploadCommitArtistTest {
         ArgumentCaptor<List<Long>> artistIdsCaptor = ArgumentCaptor.forClass(List.class);
         verify(songArtistService, times(2)).replaceSongArtists(any(), artistIdsCaptor.capture());
         assertEquals(List.of(EXISTING_ARTIST_ID), artistIdsCaptor.getAllValues().get(0));
+    }
+
+    @Test
+    void sessionMarksFilesMissingFromStagingAsNotUploaded() {
+        // 直传中断：会话里仍有两个文件，但第二个对象并没有落到 MinIO
+        when(minioService.objectExists("staging/album-upload/" + UPLOAD_ID + "/02 第二首.mp3"))
+                .thenReturn(false);
+
+        Result<Object> result = service.session(UPLOAD_ID);
+
+        assertEquals(0, result.getCode().intValue());
+        Map<?, ?> data = (Map<?, ?>) result.getData();
+        List<?> files = (List<?>) data.get("files");
+        assertEquals(2, files.size());
+
+        Map<?, ?> first = (Map<?, ?>) files.get(0);
+        assertEquals("01 第一首.mp3", first.get("fileName"));
+        assertEquals(true, first.get("uploaded"));
+
+        Map<?, ?> second = (Map<?, ?>) files.get(1);
+        assertEquals("02 第二首.mp3", second.get("fileName"));
+        assertEquals(false, second.get("uploaded"));
+    }
+
+    @Test
+    void parseRefusesSessionWithMissingStagedFile() {
+        when(minioService.objectExists("staging/album-upload/" + UPLOAD_ID + "/02 第二首.mp3"))
+                .thenReturn(false);
+
+        Result<AlbumUploadPrepareVO> result = service.parseStaging(UPLOAD_ID);
+
+        assertNotEquals(0, result.getCode().intValue());
+        assertTrue(result.getMessage().contains("尚未上传完成"));
+        // 解析阶段不能落库，也不能改动会话
+        verify(albumMapper, never()).insert(any(Album.class));
+        verify(songMapper, never()).insert(any(Song.class));
+    }
+
+    @Test
+    void expiredRedisSessionIsNoLongerServedFromProcessMemory() {
+        // Redis key 已过期：会话必须真的消失，不能再从任何进程内缓存里读回来
+        when(redisValueOperations.get(anyString())).thenReturn(null);
+
+        Result<Object> session = service.session(UPLOAD_ID);
+        assertNotEquals(0, session.getCode().intValue());
+        assertTrue(session.getMessage().contains("过期"));
+
+        Result<Object> commit = service.commit(commitDTO(true));
+        assertNotEquals(0, commit.getCode().intValue());
+        verify(albumMapper, never()).insert(any(Album.class));
+        verify(songMapper, never()).insert(any(Song.class));
+        verify(minioService, never()).copyObject(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void cleanupReclaimsStagingFilesOnceRedisSessionIsGone() {
+        when(redisTemplate.hasKey(anyString())).thenReturn(false);
+        when(minioService.listObjectNames(anyString()))
+                .thenReturn(List.of("staging/album-upload/" + UPLOAD_ID + "/01 第一首.mp3"));
+
+        int cleaned = service.cleanupOrphanStaging();
+
+        assertEquals(1, cleaned);
+        verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
     }
 
     // ------------------------------------------------------------------ 夹具
