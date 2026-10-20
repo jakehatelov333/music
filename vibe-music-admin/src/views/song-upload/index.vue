@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import type { UploadFile } from "element-plus";
 import {
   CircleCheckFilled,
@@ -29,6 +29,7 @@ import {
 import {
   clearSongUpload,
   commitSongUpload,
+  getSongUploadSession,
   prepareSongUpload,
   updateSongUploadAssets,
   type ArtistParsing,
@@ -153,6 +154,424 @@ const form = reactive({
   lyrics: ""
 });
 
+// ------------------------------------------------------------------ 草稿箱
+//
+// 与专辑上传的草稿箱保持一致：服务端（Redis 会话 + staging 文件）保存音频、
+// 封面、歌词与解析出的元数据；localStorage 只存「哪个 uploadId 是草稿」以及
+// 管理员在这张表单上填写过、服务端并不知道的内容。
+//
+// 之前这些全在内存里：一刷新 uploadId 就没了，而 staging 文件与 Redis 会话
+// 其实都还在（后端 12 小时 TTL），于是「信息都在，只是页面丢了」。
+// 现在刷新/关页面重开后，凭 uploadId 把会话原样取回来。
+
+const DRAFT_STORAGE_KEY = "song-upload-drafts";
+const ACTIVE_UPLOAD_KEY = "song-upload-id";
+
+/**
+ * 草稿里保存的表单快照。
+ *
+ * <p>只放表单里那些「服务端不知道」的字段：歌名/歌手/专辑/发行日期/曲风/歌词编辑内容，
+ * 外加 `albumId` 与 `releaseDateFromTag` 两个派生标记。
+ */
+type SongDraftForm = {
+  songName: string;
+  artistTokens: string[];
+  album: string;
+  albumId: number | null;
+  releaseDate: string | null;
+  /**
+   * 发行日期是否仍是「从音频标签年份自动推断」的 1 月 1 日。
+   *
+   * <p>不存这个标记的话，每次恢复都会把一个推断值当成管理员亲手填的，
+   * 之后又不再覆盖它 —— 音频标签改了年份，草稿里却还是旧日期。
+   */
+  releaseDateFromTag: boolean;
+  style: string[];
+  lyrics: string;
+};
+
+type SongDraft = {
+  uploadId: string;
+  /** 音频原始文件名，用于在草稿箱里认人 */
+  audioName: string;
+  updatedAt: number;
+  /** 服务端下发的绝对过期时间；本地编辑不会续期 */
+  expiresAt?: number;
+  form?: SongDraftForm;
+};
+
+function loadDrafts(): SongDraft[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DRAFT_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item): item is SongDraft =>
+            !!item && typeof item.uploadId === "string"
+        )
+      : [];
+  } catch {
+    // 本地数据损坏（手改、旧版本残留）时不能阻断整个页面
+    return [];
+  }
+}
+
+const draftTasks = ref<SongDraft[]>(loadDrafts());
+/** 每分钟走一格，让「剩余时间」与过期隐藏不需要刷新页面就能生效 */
+const nowTick = ref(Date.now());
+/** 当前正在编辑的草稿（刷新恢复时由它决定要不要自动打开） */
+const activeSongDraftId = ref("");
+/**
+ * 当前发行日期是否仍是「音频标签年份推断出的 1 月 1 日」。
+ *
+ * <p>不是界面上给人看的字段，而是草稿恢复时的判断依据：推断值可以随标签更新而被覆盖，
+ * 手填值必须原样保留。
+ */
+const releaseDateFromTag = ref(false);
+
+function draftStorageKey() {
+  return DRAFT_STORAGE_KEY;
+}
+
+function persistDrafts() {
+  const storageKey = draftStorageKey();
+  let removed = 0;
+  while (removed < 100) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(draftTasks.value));
+      if (removed > 0) {
+        message(`本地存储空间不足，已清理 ${removed} 条最旧的草稿`, {
+          type: "warning"
+        });
+      }
+      return;
+    } catch {
+      // 配额满时从最旧的一条开始丢：宁可少一条历史草稿，也不能丢掉当前正在编辑的这条
+      if (draftTasks.value.length <= 1) break;
+      const oldest = [...draftTasks.value].sort(
+        (left, right) => left.updatedAt - right.updatedAt
+      )[0];
+      draftTasks.value = draftTasks.value.filter(
+        item => item.uploadId !== oldest.uploadId
+      );
+      removed++;
+    }
+  }
+}
+
+function snapshotForm(): SongDraftForm {
+  return {
+    songName: form.songName,
+    artistTokens: [...form.artistTokens],
+    album: form.album,
+    albumId: albumId.value,
+    releaseDate: form.releaseDate ?? null,
+    releaseDateFromTag: releaseDateFromTag.value,
+    style: [...form.style],
+    lyrics: form.lyrics
+  };
+}
+
+/** 新建或刷新一条草稿。表单快照不在这里覆盖（由 {@link updateDraftForm} 负责）。 */
+function saveDraft(
+  uploadId: string,
+  audioOriginalName: string,
+  expiresAt?: number
+) {
+  const existing = draftTasks.value.find(item => item.uploadId === uploadId);
+  const current = draftTasks.value.filter(item => item.uploadId !== uploadId);
+  draftTasks.value = [
+    {
+      uploadId,
+      audioName: audioOriginalName || existing?.audioName || "",
+      updatedAt: Date.now(),
+      expiresAt: expiresAt ?? existing?.expiresAt,
+      form: existing?.form ?? snapshotForm()
+    },
+    ...current
+  ];
+  persistDrafts();
+}
+
+/** 把服务端返回的绝对过期时间写回草稿（以后端为准，本地不自行推算）。 */
+function updateDraftExpiry(uploadId: string, expiresAt?: number) {
+  if (!expiresAt) return;
+  const index = draftTasks.value.findIndex(item => item.uploadId === uploadId);
+  if (index < 0 || draftTasks.value[index].expiresAt === expiresAt) return;
+  draftTasks.value[index] = { ...draftTasks.value[index], expiresAt };
+  persistDrafts();
+}
+
+/**
+ * 把当前表单写回草稿箱。
+ *
+ * <p>「继续填写时能原样恢复」全靠它 —— 表单内容不在后端会话里，
+ * 只有这里存下来，刷新后才不会退回成音频标签解析的原始值。
+ */
+function updateDraftForm(uploadId: string) {
+  const index = draftTasks.value.findIndex(item => item.uploadId === uploadId);
+  if (index < 0) return;
+  draftTasks.value[index] = {
+    ...draftTasks.value[index],
+    form: snapshotForm(),
+    updatedAt: Date.now()
+  };
+  persistDrafts();
+}
+
+function removeDraft(uploadId: string) {
+  draftTasks.value = draftTasks.value.filter(
+    item => item.uploadId !== uploadId
+  );
+  persistDrafts();
+  if (localStorage.getItem(ACTIVE_UPLOAD_KEY) === uploadId) {
+    localStorage.removeItem(ACTIVE_UPLOAD_KEY);
+  }
+  if (activeSongDraftId.value === uploadId) {
+    activeSongDraftId.value = "";
+  }
+}
+
+/** 记住当前正在编辑的 uploadId，刷新后据此自动恢复。 */
+function rememberActiveUpload(id: string) {
+  if (!id) {
+    localStorage.removeItem(ACTIVE_UPLOAD_KEY);
+    return;
+  }
+  localStorage.setItem(ACTIVE_UPLOAD_KEY, id);
+  activeSongDraftId.value = id;
+}
+
+async function discardDraft(targetUploadId: string) {
+  await clearSongUpload(targetUploadId).catch(() => undefined);
+  const isCurrent = uploadId.value === targetUploadId;
+  removeDraft(targetUploadId);
+  if (isCurrent) {
+    // 放弃的正是当前这条：把界面收回到「未上传」状态（草稿列表本身不能跟着被清）
+    const keepDrafts = draftTasks.value;
+    resetState();
+    draftTasks.value = keepDrafts;
+    activeSongDraftId.value = "";
+  }
+}
+
+/**
+ * 进页面时主动核对草稿。
+ *
+ * <p>localStorage 没有 TTL，条目会一直留在列表里。一次性问服务端要会话，
+ * 只移除「服务端明确说没有」的条目；请求本身失败（断网、后端没起）时保留，
+ * 避免一次网络抖动就把还能继续的草稿删掉。
+ */
+async function validateDrafts() {
+  if (!draftTasks.value.length) return 0;
+  const checks = await Promise.all(
+    draftTasks.value.map(async draft => {
+      const result = await getSongUploadSession(draft.uploadId).catch(
+        () => null
+      );
+      return { uploadId: draft.uploadId, alive: result?.data, failed: !result };
+    })
+  );
+  let alive = 0;
+  for (const check of checks) {
+    // 请求失败只保留，不能当成过期
+    if (check.failed) {
+      alive++;
+      continue;
+    }
+    if (!check.alive) {
+      removeDraft(check.uploadId);
+      // 正在编辑的就是这条：把界面也收回去，否则「过期草稿」还挂在页面上，点提交必然失败
+      if (uploadId.value === check.uploadId) {
+        resetState();
+      }
+      continue;
+    }
+    alive++;
+    updateDraftExpiry(check.uploadId, check.alive.expiresAt);
+  }
+  return alive;
+}
+
+/** 草稿箱展示全部条目：只隐藏本地判断已过期的，等上面一次服务端校正把它们救回来或清掉 */
+const visibleDrafts = computed(() => {
+  const now = nowTick.value;
+  return [...draftTasks.value]
+    .filter(draft => !draft.expiresAt || draft.expiresAt > now)
+    .sort((left, right) => {
+      if (left.uploadId === activeSongDraftId.value) return -1;
+      if (right.uploadId === activeSongDraftId.value) return 1;
+      return right.updatedAt - left.updatedAt;
+    });
+});
+
+function draftRemaining(draft: SongDraft) {
+  if (!draft.expiresAt) return "";
+  const minutes = Math.max(
+    0,
+    Math.round((draft.expiresAt - nowTick.value) / 60_000)
+  );
+  if (minutes <= 0) return "已过期";
+  if (minutes < 60) return `${minutes} 分钟后过期`;
+  return `${Math.round(minutes / 60)} 小时后过期`;
+}
+
+function isDraftExpiringSoon(draft: SongDraft) {
+  return !!draft.expiresAt && draft.expiresAt - nowTick.value < 6 * 3600_000;
+}
+
+/** 草稿展示标题：优先用已填的歌名，退回音频文件名。 */
+function draftTitle(draft: SongDraft) {
+  return draft.form?.songName?.trim() || draft.audioName || "未命名歌曲";
+}
+
+/**
+ * 打开一条草稿：从服务端取回会话并还原界面。
+ *
+ * <p>恢复顺序是「先服务端、再本地表单」：
+ * <ul>
+ *   <li>歌名/歌手/专辑/发行日期 —— 本地手填优先，那才是管理员真正编辑过的内容；</li>
+ *   <li>歌词 —— 服务端有内容就用服务端（可能是后来补传的歌词文件），
+ *       服务端为空才用本地（刷新前搜到/手改过的）；</li>
+ *   <li>曲风 —— 纯前端字段，服务端没有，直接用本地。</li>
+ * </ul>
+ */
+async function openDraft(uploadIdToOpen: string) {
+  const result = await getSongUploadSession(uploadIdToOpen).catch(() => null);
+  if (!result) {
+    return message("无法连接服务器，请稍后重试", { type: "error" });
+  }
+  if (!result.data) {
+    const wasCurrent = uploadId.value === uploadIdToOpen;
+    removeDraft(uploadIdToOpen);
+    if (wasCurrent) resetState();
+    return message("草稿已过期，已从草稿箱移除", { type: "warning" });
+  }
+  const saved = draftTasks.value.find(
+    item => item.uploadId === uploadIdToOpen
+  )?.form;
+  applyPreparedResult(result.data, false);
+  restoreForm(result.data, saved);
+  rememberActiveUpload(uploadIdToOpen);
+  // 已上传的音频无法还原成 File 对象，用会话里的原始文件名让界面知道「传了什么」
+  const draftAudioName =
+    draftTasks.value.find(item => item.uploadId === uploadIdToOpen)
+      ?.audioName || "";
+  audioName.value = draftAudioName || result.data.metadata?.title || "";
+  message(
+    saved
+      ? "草稿已恢复，已还原上次填写的信息"
+      : "草稿已恢复，可以继续校正并提交",
+    { type: "success" }
+  );
+}
+
+/** 用「服务端解析结果 + 本地表单快照」还原表单。 */
+function restoreForm(data: SongUploadPrepareResult, saved?: SongDraftForm) {
+  const serverLyrics = data.files?.lyricsContent || "";
+  const rawArtistName = (
+    data.matchedArtistName ||
+    data.metadata.artist ||
+    ""
+  ).trim();
+  const serverTokens = buildArtistTokensFromParsing(data, rawArtistName);
+
+  form.songName = saved?.songName?.trim()
+    ? saved.songName
+    : data.metadata.title || "";
+  form.album = saved?.album ?? data.metadata.album ?? "";
+  // 恢复的歌手 token 也要先并入候选，否则多选标签会退化成只显示 id
+  artistOptions.value = keepSelectedArtists([
+    ...serverTokens
+      .map(token => {
+        const id = artistIdOf(token);
+        return id != null
+          ? { artistId: id, artistName: artistNameOf(token) }
+          : null;
+      })
+      .filter(
+        (item): item is { artistId: number; artistName: string } => !!item
+      ),
+    ...artistOptions.value
+  ]);
+  form.artistTokens = saved?.artistTokens?.length
+    ? [...saved.artistTokens]
+    : serverTokens;
+
+  // 发行日期：标签推断出来的 1 月 1 日只在「本地没存过」或「本地也仍是推断值」时才覆盖
+  const tagDate = data.metadata.year
+    ? `${data.metadata.year}-01-01`
+    : undefined;
+  const savedDate = saved?.releaseDate || undefined;
+  if (savedDate && !saved?.releaseDateFromTag) {
+    form.releaseDate = savedDate;
+    releaseDateFromTag.value = false;
+  } else {
+    form.releaseDate = tagDate ?? savedDate;
+    // 没有年份标签但本地存过日期时，那个日期是手填的
+    releaseDateFromTag.value =
+      !!tagDate && (!savedDate || !!saved?.releaseDateFromTag);
+  }
+
+  form.style = saved?.style ? [...saved.style] : [];
+  // 服务端有歌词就用服务端（可能是后来补传的），否则用本地那份
+  form.lyrics = serverLyrics || saved?.lyrics || "";
+
+  // 专辑归属：只有本地记录的那个 albumId 仍然对得上当前歌手时才算数
+  const savedAlbumId = saved?.albumId ?? null;
+  if (savedAlbumId && form.album.trim()) {
+    albumId.value = savedAlbumId;
+    // 先给一个最小可用态（名字 + 当前主歌手），歌手名与歌曲数随后异步补齐
+    selectedAlbum.value = {
+      albumId: savedAlbumId,
+      albumName: form.album.trim(),
+      artistId: currentArtistId() ?? 0
+    };
+    // 补齐歌手名/歌曲数，让「将归入已有专辑」的提示完整
+    refreshSelectedAlbum(savedAlbumId, form.album.trim());
+  } else {
+    clearAlbumSelection();
+  }
+
+  artistMatched.value =
+    form.artistTokens.length > 0 &&
+    !form.artistTokens.some(token => token.startsWith(ARTIST_TOKEN_NAME));
+}
+
+/** 把解析出的歌手转成 token（与 {@link applyPreparedResult} 的自动预填规则一致）。 */
+function buildArtistTokensFromParsing(
+  data: SongUploadPrepareResult,
+  rawArtistName: string
+) {
+  const parsed = data.artistParsing;
+  const autoFilled =
+    parsed?.strategy === "EXACT_MATCH" || parsed?.strategy === "SPLIT_CONFIRMED"
+      ? (parsed.candidates || [])
+          .filter(candidate => candidate.matched && candidate.artistId)
+          .map(candidate => ARTIST_TOKEN_ID + candidate.artistId)
+      : [];
+  return autoFilled.length
+    ? autoFilled
+    : rawArtistName
+      ? [ARTIST_TOKEN_NAME + rawArtistName]
+      : [];
+}
+
+/** 恢复草稿里「已确认的专辑」时，把候选的歌手名与歌曲数补齐（纯展示用）。 */
+async function refreshSelectedAlbum(id: number, albumName: string) {
+  try {
+    const res = await suggestAlbums(albumName, currentArtistId(), 10);
+    const matched = (res.code === 0 ? (res.data ?? []) : []).find(
+      item => item.albumId === id
+    );
+    if (!matched) return;
+    // 期间用户可能已经改了选择，别把新状态盖掉
+    if (albumId.value !== id || form.album.trim() !== albumName) return;
+    selectedAlbum.value = matched;
+  } catch {
+    // 补全纯属展示，失败就保持「只有名字」的最小态
+  }
+}
+
 /** 从 token 解析出歌手 id；非 id token 返回 null。 */
 function artistIdOf(token: string): number | null {
   if (!token.startsWith(ARTIST_TOKEN_ID)) return null;
@@ -245,6 +664,9 @@ async function prepareAudio(audio: File) {
     }
     applyPreparedResult(res.data, true);
     audioName.value = pendingAudioName.value;
+    // 音频已落 staging、会话也已建好：立刻登记成草稿，之后的每一步都能刷新后找回
+    saveDraft(res.data.uploadId, audio.name, res.data.expiresAt ?? undefined);
+    rememberActiveUpload(res.data.uploadId);
     message("音频上传成功，已自动解析歌曲信息", { type: "success" });
     if (pendingCover.value || pendingLyrics.value) {
       await uploadAssets(pendingCover.value, pendingLyrics.value);
@@ -577,6 +999,8 @@ function applyPreparedResult(data: SongUploadPrepareResult, fillForm: boolean) {
     form.releaseDate = data.metadata.year
       ? `${data.metadata.year}-01-01`
       : undefined;
+    // 记录「这个日期是标签推断的」：草稿恢复时它允许被新标签覆盖，手填值不允许
+    releaseDateFromTag.value = !!data.metadata.year;
     form.lyrics = data.files.lyricsContent || "";
 
     // 只有「完整匹配」或「每一段都唯一命中」才自动预填多选；
@@ -802,6 +1226,8 @@ async function handleCommit() {
   }
 
   committing.value = true;
+  // 先记住这一条的 id：resetState() 会清掉 uploadId，之后就拿不到该删哪条草稿了
+  const committedUploadId = uploadId.value;
   try {
     const res = await commitSongUpload({
       uploadId: uploadId.value,
@@ -830,6 +1256,8 @@ async function handleCommit() {
         : `《${res.data.songName}》上传成功`,
       { type: "success" }
     );
+    // 已入库：这条草稿的使命结束，从草稿箱移除（会话在 commit 时已被后端清理）
+    removeDraft(committedUploadId);
     resetState();
   } catch (error: any) {
     message(error?.message || "歌曲保存失败，请重试", { type: "error" });
@@ -843,12 +1271,15 @@ async function handleClear() {
     resetState();
     return;
   }
+  // 同样是先取 id 再清状态
+  const clearedUploadId = uploadId.value;
   try {
-    const res = await clearSongUpload(uploadId.value);
+    const res = await clearSongUpload(clearedUploadId);
     if (res.code !== 0) {
       throw new Error(res.message || "清空失败");
     }
     message("临时文件已清空", { type: "success" });
+    removeDraft(clearedUploadId);
     resetState();
   } catch (error: any) {
     message(error?.message || "清空失败，请重试", { type: "error" });
@@ -857,6 +1288,9 @@ async function handleClear() {
 
 function resetState() {
   uploadId.value = "";
+  activeSongDraftId.value = "";
+  localStorage.removeItem(ACTIVE_UPLOAD_KEY);
+  releaseDateFromTag.value = false;
   prepared.value = false;
   metadata.value = null;
   files.value = null;
@@ -929,9 +1363,53 @@ function formatDuration(seconds?: number | null) {
 
 onBeforeUnmount(clearLocalCover);
 
+/**
+ * 表单任何改动都写回草稿箱。
+ *
+ * <p>用「当前是哪个 uploadId 在编辑」来判断，而不是挂在 uploadId 变化上 ——
+ * 恢复草稿时是先 applyPreparedResult 再 restoreForm，前者也会改 uploadId，
+ * 若用 watch(uploadId) 会在表单还没还原时先存一份半成品，把旧快照盖掉。
+ */
+watch(
+  form,
+  () => {
+    const id = uploadId.value || activeSongDraftId.value;
+    if (id) updateDraftForm(id);
+  },
+  { deep: true }
+);
+
+/**
+ * 刷新/关页面重开后自动把上次那条草稿接回来。
+ *
+ * <p>只在「页面本来就是空的」时自动恢复：用户明确点开另一条草稿时不会被抢。
+ */
+async function restoreLastDraft() {
+  const lastId = localStorage.getItem(ACTIVE_UPLOAD_KEY) || "";
+  if (!lastId || draftTasks.value.length === 0) return;
+  const draft = draftTasks.value.find(item => item.uploadId === lastId);
+  if (!draft) {
+    localStorage.removeItem(ACTIVE_UPLOAD_KEY);
+    return;
+  }
+  await openDraft(lastId);
+}
+
+let clockTimer: number | undefined;
+
 // 预载一页歌手，让多选下拉一打开就有候选（远程搜索会在此基础上收窄）。
-onMounted(() => {
+onMounted(async () => {
+  clockTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 60_000);
   loadArtistOptions();
+  // 先核对草稿（会顺手清掉服务端已过期的条目），再恢复上次那条
+  await validateDrafts();
+  await restoreLastDraft();
+});
+
+onBeforeUnmount(() => {
+  if (clockTimer) window.clearInterval(clockTimer);
 });
 </script>
 
@@ -950,6 +1428,71 @@ onMounted(() => {
         <el-step title="核对信息" description="自动解析后可修改" />
         <el-step title="上传并保存" description="正式写入歌曲库" />
       </el-steps>
+    </section>
+
+    <!-- 草稿箱：常驻显示，没有草稿时给出空态提示。未提交的上传都在这里，刷新不丢。 -->
+    <section class="panel draft-panel">
+      <div class="draft-head">
+        <el-icon><Timer /></el-icon>
+        <span>上传草稿箱（{{ visibleDrafts.length }}）</span>
+      </div>
+      <template v-if="visibleDrafts.length">
+        <div
+          v-for="draft in visibleDrafts"
+          :key="draft.uploadId"
+          class="draft-row"
+          :class="{ 'is-active': draft.uploadId === uploadId }"
+        >
+          <span class="draft-title" :title="draft.audioName">
+            {{ draftTitle(draft) }}
+            <small v-if="draft.audioName">{{ draft.audioName }}</small>
+          </span>
+          <span class="draft-actions">
+            <span
+              v-if="draftRemaining(draft)"
+              class="draft-expiry"
+              :class="{ 'is-soon': isDraftExpiringSoon(draft) }"
+            >
+              {{ draftRemaining(draft) }}
+            </span>
+            <el-button
+              v-if="draft.uploadId === uploadId"
+              size="small"
+              text
+              type="success"
+              disabled
+            >
+              编辑中
+            </el-button>
+            <el-button
+              v-else
+              size="small"
+              text
+              type="primary"
+              :loading="preparing && draft.uploadId === activeSongDraftId"
+              @click="openDraft(draft.uploadId)"
+            >
+              继续
+            </el-button>
+            <el-button
+              size="small"
+              text
+              type="danger"
+              @click="discardDraft(draft.uploadId)"
+            >
+              放弃
+            </el-button>
+          </span>
+        </div>
+        <p class="draft-note">
+          草稿有效期 12
+          小时，到期自动移除，暂存文件同时被服务端回收。刷新或关闭页面后重新打开本页，
+          正在编辑的那条会自动接回来。
+        </p>
+      </template>
+      <p v-else class="draft-empty">
+        暂无草稿。上传音频后会自动暂存到这里，歌曲信息与临时文件都不会因为刷新而丢失。
+      </p>
     </section>
 
     <div class="content-grid">
@@ -1287,6 +1830,7 @@ onMounted(() => {
                       placeholder="请选择发行日期"
                       :disabled-date="date => date.getTime() > Date.now()"
                       class="w-full"
+                      @change="releaseDateFromTag = false"
                     />
                   </el-form-item>
                 </el-col>
@@ -1746,6 +2290,84 @@ onMounted(() => {
 .panel {
   padding: 20px;
   isolation: isolate;
+}
+
+/* ---------- 草稿箱 ---------- */
+
+/* 草稿箱整行铺满，不跟下方两栏网格对齐：它是「页面级」的状态区 */
+.draft-panel {
+  margin: 0 20px 14px;
+  padding: 14px 18px;
+}
+
+.draft-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.draft-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.draft-row.is-active {
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+}
+
+.draft-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-title small {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.draft-expiry {
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.draft-expiry.is-soon {
+  color: var(--el-color-warning);
+}
+
+.draft-note,
+.draft-empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 
 .panel-heading {

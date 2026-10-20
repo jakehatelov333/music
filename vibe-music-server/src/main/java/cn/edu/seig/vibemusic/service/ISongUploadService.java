@@ -29,6 +29,18 @@ public interface ISongUploadService {
 
     Result<SongUploadCommitVO> commit(SongUploadCommitDTO dto);
 
+    /**
+     * 按 {@code uploadId} 读取仍在有效期内的上传会话，重建成与 {@code prepare} 相同的结构。
+     *
+     * <p>供管理端草稿箱使用：音频、内嵌封面、补充封面与歌词都已在 staging 里，
+     * 会话也保存在 Redis 中，唯一缺的就是「前端记住了哪个 uploadId」。
+     * 页面刷新/关掉重开后，凭它即可把上次的解析结果原样取回，不用重新上传音频。
+     *
+     * <p>返回 {@code data = null}（而不是 error）表示会话已过期或不存在：
+     * 草稿过期是正常生命周期事件，管理端据此静默移除条目即可。
+     */
+    Result<SongUploadPrepareVO> session(String uploadId);
+
     Result clear(String uploadId);
 
     void cleanupExpired();

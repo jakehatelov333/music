@@ -9,6 +9,7 @@ import cn.edu.seig.vibemusic.service.ISongUploadService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -61,6 +62,17 @@ public class SongUploadController {
     @PostMapping("/commit")
     public Result<SongUploadCommitVO> commit(@RequestBody @Valid SongUploadCommitDTO dto) {
         return songUploadService.commit(dto);
+    }
+
+    /**
+     * 读取仍未过期的上传会话（管理端草稿箱的「继续 / 刷新后恢复」入口）。
+     *
+     * <p>非幂等、非只读的清理逻辑不放在这里：过期判定只由 Redis TTL 与定时任务负责，
+     * 本接口只读。会话已过期时返回 {@code data = null}。
+     */
+    @GetMapping("/{uploadId}")
+    public Result<SongUploadPrepareVO> session(@PathVariable("uploadId") String uploadId) {
+        return songUploadService.session(uploadId);
     }
 
     @DeleteMapping("/{uploadId}")

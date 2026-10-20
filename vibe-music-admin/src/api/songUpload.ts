@@ -60,6 +60,11 @@ export type SongUploadPrepareResult = {
   /** 歌手字段解析结果，供上传预览做人工确认 */
   artistParsing?: ArtistParsing | null;
   warning?: string | null;
+  /**
+   * 会话的绝对过期时间（毫秒时间戳）。仅「读取会话」接口返回；
+   * 它由后端按 Redis 真实 TTL 换算，前端只镜像展示，不自行推算。
+   */
+  expiresAt?: number | null;
 };
 
 export type SongUploadCommitPayload = {
@@ -173,6 +178,22 @@ export const commitSongUpload = (data: SongUploadCommitPayload) => {
 export const clearSongUpload = (uploadId: string) => {
   return http.request<SongUploadResult<null>>(
     "delete",
+    `/admin/song-upload/${uploadId}`,
+    {
+      headers: authHeaders()
+    }
+  );
+};
+
+/**
+ * 歌曲上传-读取仍未过期的上传会话（草稿箱「继续」与刷新后恢复）。
+ *
+ * 会话还在时返回与 prepare 完全一致的结构；已过期时 `code === 0` 且 `data` 为 `null`
+ * —— 过期是正常的生命周期终点，调用方据此静默移除本地草稿即可，不要当错误弹窗。
+ */
+export const getSongUploadSession = (uploadId: string) => {
+  return http.request<SongUploadResult<SongUploadPrepareResult | null>>(
+    "get",
     `/admin/song-upload/${uploadId}`,
     {
       headers: authHeaders()

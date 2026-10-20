@@ -508,6 +508,47 @@ public class SongUploadServiceImpl implements ISongUploadService {
         return Result.success("封面已应用", buildPrepareVO(session, buildWarning(session)));
     }
 
+    /**
+     * 读取草稿会话。
+     *
+     * <p>只要 Redis 里还有会话，staging 里的音频/封面/歌词就一定还在（会话与暂存文件
+     * 共用同一个 12 小时 TTL，且每次 {@code saveSession} 都会续期），所以这里不需要
+     * 像专辑端那样逐个探测 MinIO 的对象存在性，直接复用 {@link #buildPrepareVO} 重建即可。
+     *
+     * <p>会话已过期时返回 {@code data = null}：这是正常的生命周期终点，不是错误 ——
+     * 管理端草稿箱据此把本地条目清掉，不必弹红色报错。
+     */
+    @Override
+    public Result<SongUploadPrepareVO> session(String uploadId) {
+        if (!isValidUploadId(uploadId)) {
+            return Result.error("上传任务不存在或参数不合法");
+        }
+        SongUploadSession session = getSession(uploadId);
+        if (session == null) {
+            return Result.success("上传任务已过期", null);
+        }
+        SongUploadPrepareVO vo = buildPrepareVO(session, buildWarning(session));
+        vo.setExpiresAt(remainingExpiresAt(uploadId));
+        return Result.success(vo);
+    }
+
+    /**
+     * 会话的绝对过期时间（毫秒）。
+     *
+     * <p>优先读 Redis 的真实 TTL：每次 {@code saveSession} 都会续期，
+     * 拿「创建时间 + 固定时长」猜会偏短。Redis 没有返回 TTL 时退回配置值。
+     */
+    private Long remainingExpiresAt(String uploadId) {
+        try {
+            Long remaining = stringRedisTemplate.getExpire(sessionKey(uploadId), TimeUnit.SECONDS);
+            long seconds = remaining != null && remaining > 0 ? remaining : UPLOAD_TTL_HOURS * 3600;
+            return System.currentTimeMillis() + seconds * 1000;
+        } catch (Exception e) {
+            log.warn("读取歌曲上传会话 TTL 失败，uploadId={}", uploadId, e);
+            return null;
+        }
+    }
+
     @Override
     public Result clear(String uploadId) {
         if (!isValidUploadId(uploadId)) {
