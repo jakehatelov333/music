@@ -44,4 +44,15 @@ public interface ISongUploadService {
     Result clear(String uploadId);
 
     void cleanupExpired();
+
+    /**
+     * 回收「已无对应 Redis 会话」的 staging 目录（孤儿文件兜底）。
+     *
+     * <p>{@link #cleanupExpired()} 的判据是 zset 索引，只覆盖正常走完流程的上传。
+     * {@code prepare} 中途失败、历史版本删会话但删文件失败、Redis 被清空等情况，
+     * 索引里都没有记录，那些文件只能靠扫 MinIO 目录 + 反查 Redis 才会被发现。
+     *
+     * @return 本次清理掉的 uploadId 数量
+     */
+    int cleanupOrphanStaging();
 }

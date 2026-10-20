@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Map;
+
 /**
  * 管理员歌曲上传工作流接口。
  */
@@ -78,5 +80,15 @@ public class SongUploadController {
     @DeleteMapping("/{uploadId}")
     public Result clear(@PathVariable("uploadId") String uploadId) {
         return songUploadService.clear(uploadId);
+    }
+
+    /**
+     * 手动触发一次孤儿暂存文件回收（定时任务之外的补充入口）。
+     *
+     * <p>只删除「已无对应 Redis 会话」的 staging 目录：进行中的草稿会话仍在，绝不会被误删。
+     */
+    @PostMapping("/cleanup-orphans")
+    public Result<Map<String, Integer>> cleanupOrphans() {
+        return Result.success(Map.of("cleanedUploadIds", songUploadService.cleanupOrphanStaging()));
     }
 }

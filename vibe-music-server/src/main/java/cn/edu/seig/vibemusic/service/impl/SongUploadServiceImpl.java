@@ -45,6 +45,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -556,10 +557,21 @@ public class SongUploadServiceImpl implements ISongUploadService {
         }
         SongUploadSession session = getSession(uploadId);
         if (session == null) {
-            minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
+            // 会话已不在（可能已过期）：staging 里仍可能有残留对象，尽力删一次；
+            // 这里删失败也不报错 —— 已无会话可保留，交给 cleanupOrphanStaging 兜底。
+            try {
+                minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
+            } catch (Exception e) {
+                log.warn("清理残留 staging 文件失败，uploadId={}", uploadId, e);
+            }
             return Result.success("临时文件已清理");
         }
-        cleanupSession(uploadId);
+        try {
+            cleanupSession(uploadId);
+        } catch (IllegalStateException e) {
+            // MinIO 删除失败：会话与索引都还在，管理员可以重试，绝不能报告「已清空」
+            return Result.error(e.getMessage());
+        }
         return Result.success("临时文件已清空");
     }
 
@@ -573,14 +585,65 @@ public class SongUploadServiceImpl implements ISongUploadService {
         }
         for (String uploadId : expiredUploadIds) {
             try {
-                minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
-                stringRedisTemplate.delete(sessionKey(uploadId));
-                stringRedisTemplate.opsForZSet().remove(SESSION_INDEX_KEY, uploadId);
+                // 复用同一套顺序：文件删干净才删会话。失败时索引项保留，下一轮还能重试。
+                cleanupSession(uploadId);
                 log.info("已清理过期歌曲上传任务，uploadId={}", uploadId);
             } catch (Exception e) {
                 log.warn("清理过期歌曲上传任务失败，uploadId={}", uploadId, e);
             }
         }
+    }
+
+    /**
+     * 回收「没有对应 Redis 会话」的 staging 目录。
+     *
+     * <p>定时任务的判据是 zset 索引 + 最后活动时间，只覆盖「正常走完生命周期」的上传。
+     * 以下情况会留下孤儿目录，索引里根本没有它们的记录：
+     * <ul>
+     *   <li>{@code prepare} 在写会话之前失败（解析抛异常、MinIO 写着写着失败）；</li>
+     *   <li>历史版本里「MinIO 删除失败但仍然删掉会话」留下的残留；</li>
+     *   <li>Redis 被清空/换了 database。</li>
+     * </ul>
+     *
+     * <p>判据与专辑端一致：<b>以 Redis 为唯一事实源</b>，key 还在就说明草稿仍在使用，
+     * 暂存文件必须保留。刻意不看任何进程内缓存 —— 内存条目没有 TTL，会把过期草稿永远留住。
+     *
+     * @return 本次清理掉的 uploadId 数量
+     */
+    @Override
+    public int cleanupOrphanStaging() {
+        Set<String> uploadIds = new LinkedHashSet<>();
+        try {
+            for (String object : minioService.listObjectNames(STAGING_ROOT + "/")) {
+                if (object == null || !object.startsWith(STAGING_ROOT + "/")) {
+                    continue;
+                }
+                String rest = object.substring((STAGING_ROOT + "/").length());
+                int slash = rest.indexOf('/');
+                if (slash > 0) {
+                    uploadIds.add(rest.substring(0, slash));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("列举歌曲上传 staging 对象失败，跳过本轮孤儿清理", e);
+            return 0;
+        }
+        int cleaned = 0;
+        for (String uploadId : uploadIds) {
+            try {
+                // 只认 Redis：会话仍在 = 草稿还活着，绝不能删它的文件
+                if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(sessionKey(uploadId)))) {
+                    continue;
+                }
+                minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
+                stringRedisTemplate.opsForZSet().remove(SESSION_INDEX_KEY, uploadId);
+                cleaned++;
+                log.info("已清理无会话的歌曲上传暂存文件，uploadId={}", uploadId);
+            } catch (Exception e) {
+                log.warn("清理歌曲上传暂存文件失败，uploadId={}", uploadId, e);
+            }
+        }
+        return cleaned;
     }
 
     /**
@@ -907,12 +970,26 @@ public class SongUploadServiceImpl implements ISongUploadService {
         }
     }
 
+    /**
+     * 清理一次上传会话：先删 staging 文件，<b>确认删干净之后</b>才删 Redis 会话。
+     *
+     * <p>顺序不能反，也不能把两步都包在「失败只记日志」里。曾经的写法是两步各自 try/catch：
+     * MinIO 删除一旦失败（网络抖动、权限变更、对象被占用），Redis 会话照样被删掉，
+     * 而这个会话正是唯一记录「staging 目录里有哪些文件」的地方。它没了之后：
+     * 文件还在占存储，{@code cleanupExpired} 也再找不到这个 uploadId（索引项一并被删），
+     * 这些对象就永久变成孤儿，没有任何路径会再清理它们。
+     *
+     * <p>现在 MinIO 删除失败会抛出 {@link IllegalStateException}，由调用方转成可读错误，
+     * 会话与索引<b>原样保留</b>，下一次清理或定时任务还能重试。
+     */
     private void cleanupSession(String uploadId) {
         try {
             minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
         } catch (Exception e) {
-            log.warn("清理歌曲上传 staging 文件失败，uploadId={}", uploadId, e);
+            log.warn("清理歌曲上传 staging 文件失败，保留会话待重试，uploadId={}", uploadId, e);
+            throw new IllegalStateException("暂存文件清理失败，请稍后重试");
         }
+        // 文件已经确认删除，此时会话删失败只会留下一个空目录引用，下次 clear 会走到「文件已不在」分支
         try {
             stringRedisTemplate.delete(sessionKey(uploadId));
             stringRedisTemplate.opsForZSet().remove(SESSION_INDEX_KEY, uploadId);

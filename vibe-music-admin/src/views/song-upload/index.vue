@@ -341,8 +341,26 @@ function rememberActiveUpload(id: string) {
   activeSongDraftId.value = id;
 }
 
+/**
+ * 放弃一条草稿：先让服务端清理 staging 文件与 Redis 会话，**确认成功后才移除本地条目**。
+ *
+ * <p>为什么不能像以前那样 `catch(() => undefined)` 吞掉失败：一旦请求失败（断网、
+ * 后端 500、MinIO 删除异常），服务端的音频/封面/歌词全都还在，而本地记录被删掉后
+ * 就再也没有任何东西指向它们 —— 这些文件不会再被任何人访问，却要一直占着存储，
+ * 管理者还以为「已经删干净了」。失败时保留草稿，用户看到提示后可以重试。
+ */
 async function discardDraft(targetUploadId: string) {
-  await clearSongUpload(targetUploadId).catch(() => undefined);
+  try {
+    const res = await clearSongUpload(targetUploadId);
+    if (res.code !== 0) {
+      throw new Error(res.message || "清理失败");
+    }
+  } catch (error: any) {
+    return message(
+      `草稿清理失败，暂存文件仍保留在服务器：${error?.message || "请稍后重试"}`,
+      { type: "error" }
+    );
+  }
   const isCurrent = uploadId.value === targetUploadId;
   removeDraft(targetUploadId);
   if (isCurrent) {

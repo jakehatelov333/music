@@ -24,5 +24,12 @@ public class SongUploadCleanupTask {
     )
     public void cleanupExpiredUploads() {
         songUploadService.cleanupExpired();
+        // 再扫一遍「没有会话的 staging 目录」：prepare 中途失败等情况不会进 zset 索引，
+        // 只靠上面的过期清理永远发现不了它们。
+        try {
+            songUploadService.cleanupOrphanStaging();
+        } catch (Exception e) {
+            // 兜底清扫失败不能影响主流程，下一轮再试
+        }
     }
 }
