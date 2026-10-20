@@ -24,6 +24,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -39,6 +40,7 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -46,7 +48,15 @@ import java.util.stream.Collectors;
 public class AlbumUploadServiceImpl implements IAlbumUploadService {
     private static final String REDIS_PREFIX = "album-upload:session:";
     private static final String STAGING_PREFIX = "staging/album-upload/";
-    private static final long SESSION_TTL_HOURS = 48L;
+    /**
+     * 会话（草稿）在 Redis 中的存活小时数。
+     *
+     * <p>这是草稿过期时间的唯一权威来源：前端只镜像 {@code expiresAt} 用于展示和离线兜底，
+     * 不自己计算续期。签约/完成单个文件会刷新 TTL，因此「最后一次上传动作 + N 小时」
+     * 才是准确的可恢复窗口。</p>
+     */
+    @Value("${album-upload.session-ttl-hours:12}")
+    private long sessionTtlHours = 12;
     private static final Set<String> AUDIO_EXTENSIONS = Set.of("mp3", "flac", "wav", "m4a", "aac", "ogg", "opus");
     private static final Set<String> COVER_EXTENSIONS = Set.of("jpg", "jpeg", "png", "webp");
     @Autowired private AlbumMapper albumMapper;
@@ -336,7 +346,10 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         }
         if (entries.isEmpty()) return Result.error("没有有效文件");
         saveSession(id, entries);
-        return Result.success(Map.of("uploadId", id, "expiresInHours", SESSION_TTL_HOURS));
+        return Result.success(Map.of(
+                "uploadId", id,
+                "expiresInHours", sessionTtlHours,
+                "expiresAt", System.currentTimeMillis() + sessionTtlHours * 3600_000L));
     }
 
     @Override
@@ -432,7 +445,25 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
                     return file;
                 })
                 .toList();
-        return Result.success(Map.of("uploadId", uploadId, "files", files));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("uploadId", uploadId);
+        body.put("files", files);
+        body.putAll(expiryInfo(uploadId));
+        return Result.success(body);
+    }
+
+    /**
+     * 会话的剩余有效期。
+     *
+     * <p>优先读 Redis 的真实 TTL：签约与完成单个文件都会续期，拿「创建时间 + 固定时长」猜会偏短。
+     * Redis 没有返回 TTL（键刚写入、或本地不可用时）则退回配置值。</p>
+     */
+    private Map<String, Object> expiryInfo(String uploadId) {
+        Long remaining = stringRedisTemplate.getExpire(REDIS_PREFIX + uploadId, TimeUnit.SECONDS);
+        long seconds = remaining != null && remaining > 0 ? remaining : sessionTtlHours * 3600;
+        return Map.of(
+                "expiresAt", System.currentTimeMillis() + seconds * 1000,
+                "expiresInHours", (seconds + 3599) / 3600);
     }
 
     @Override
@@ -521,7 +552,7 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         return ids.isEmpty() ? null : ids;
     }
 
-    private void saveSession(String id, List<StagedSong> entries) { try { stringRedisTemplate.opsForValue().set(REDIS_PREFIX+id, objectMapper.writeValueAsString(entries), SESSION_TTL_HOURS, java.util.concurrent.TimeUnit.HOURS); } catch(Exception e) { throw new IllegalStateException("上传状态保存失败",e); } }
+    private void saveSession(String id, List<StagedSong> entries) { try { stringRedisTemplate.opsForValue().set(REDIS_PREFIX+id, objectMapper.writeValueAsString(entries), sessionTtlHours, TimeUnit.HOURS); } catch(Exception e) { throw new IllegalStateException("上传状态保存失败",e); } }
     /**
      * 会话只从 Redis 读取；key 不存在或反序列化失败都视为「已过期」。
      *

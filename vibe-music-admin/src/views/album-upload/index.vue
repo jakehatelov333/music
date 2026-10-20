@@ -42,8 +42,19 @@ const uploadProgress = ref<Record<string, number>>({});
 const uploadErrors = ref<Record<string, string>>({});
 const sessionFiles = ref<Array<{ fileName: string; size: number; object: string; uploaded?: boolean }>>([]);
 type AlbumDraftForm = { albumName: string; artistName: string; artistId: number | null; releaseDate: string; description: string };
-type AlbumDraft = { uploadId: string; fileNames: string[]; updatedAt: number; form?: AlbumDraftForm };
-const draftTasks = ref<AlbumDraft[]>(JSON.parse(localStorage.getItem("album-upload-drafts") || "[]"));
+type AlbumDraft = { uploadId: string; fileNames: string[]; updatedAt: number; expiresAt?: number; form?: AlbumDraftForm };
+function loadDrafts(): AlbumDraft[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("album-upload-drafts") || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is AlbumDraft => !!item && typeof item.uploadId === "string") : [];
+  } catch {
+    // 本地数据损坏（手改、旧版本残留）时不能阻断整个页面
+    return [];
+  }
+}
+const draftTasks = ref<AlbumDraft[]>(loadDrafts());
+/** 每分钟走一格，让「剩余时间」和过期隐藏不需要刷新页面就能生效 */
+const nowTick = ref(Date.now());
 const activeDraftId = ref("");
 const prepared = ref<AlbumUploadPrepareResult>();
 const coverPreview = ref("");
@@ -180,15 +191,47 @@ function onCoverChange(file: UploadFile) {
   coverPreview.value = URL.createObjectURL(file.raw);
 }
 function persistDrafts() {
-  localStorage.setItem("album-upload-drafts", JSON.stringify(draftTasks.value));
+  const storageKey = "album-upload-drafts";
+  let removed = 0;
+  while (removed < 100) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(draftTasks.value));
+      if (removed > 0) message(`本地存储空间不足，已清理 ${removed} 条最旧的草稿`, { type: "warning" });
+      return;
+    } catch {
+      // 配额满时从最旧的一条开始丢：宁可少一条历史草稿，也不能丢掉当前正在上传的这条
+      if (draftTasks.value.length <= 1) break;
+      const oldest = [...draftTasks.value].sort((left, right) => left.updatedAt - right.updatedAt)[0];
+      draftTasks.value = draftTasks.value.filter(item => item.uploadId !== oldest.uploadId);
+      removed++;
+    }
+  }
 }
 function snapshotForm(): AlbumDraftForm {
   return { albumName: form.albumName, artistName: form.artistName, artistId: form.artistId, releaseDate: form.releaseDate, description: form.description };
 }
-function saveDraft(uploadId: string, files: File[]) {
+function saveDraft(uploadId: string, files: File[], expiresAt?: number) {
   const existing = draftTasks.value.find(item => item.uploadId === uploadId);
   const current = draftTasks.value.filter(item => item.uploadId !== uploadId);
-  draftTasks.value = [{ uploadId, fileNames: files.map(file => file.name), updatedAt: Date.now(), form: existing?.form ?? snapshotForm() }, ...current].slice(0, 10);
+  draftTasks.value = [
+    {
+      uploadId,
+      fileNames: files.map(file => file.name),
+      updatedAt: Date.now(),
+      // 过期时间只认服务端下发的绝对时间，表单编辑不会续期
+      expiresAt: expiresAt ?? existing?.expiresAt,
+      form: existing?.form ?? snapshotForm()
+    },
+    ...current
+  ];
+  persistDrafts();
+}
+/** 把服务端返回的绝对过期时间写回草稿（签约/完成文件会续期，必须以后端为准） */
+function updateDraftExpiry(uploadId: string, expiresAt?: number) {
+  if (!expiresAt) return;
+  const index = draftTasks.value.findIndex(item => item.uploadId === uploadId);
+  if (index < 0 || draftTasks.value[index].expiresAt === expiresAt) return;
+  draftTasks.value[index] = { ...draftTasks.value[index], expiresAt };
   persistDrafts();
 }
 /** 把当前表单（含发行日期等）写回草稿箱，保证「复用草稿」时能恢复用户填写内容 */
@@ -219,14 +262,45 @@ async function validateDrafts() {
   const checks = await Promise.all(
     draftTasks.value.map(async draft => {
       const result = await getAlbumUploadSession(draft.uploadId).catch(() => null);
-      return { uploadId: draft.uploadId, expired: !!result && !result.data };
+      return { uploadId: draft.uploadId, alive: result?.data, failed: !result };
     })
   );
-  const expired = checks.filter(check => check.expired).map(check => check.uploadId);
+  const expired: string[] = [];
+  for (const check of checks) {
+    // 请求失败（断网、后端没起）只保留，不能当成过期
+    if (check.failed) continue;
+    if (!check.alive) {
+      expired.push(check.uploadId);
+      continue;
+    }
+    // 服务端才是过期时间的权威：本地展示用的 expiresAt 每次都按真实 TTL 校正
+    updateDraftExpiry(check.uploadId, check.alive.expiresAt);
+  }
   for (const uploadId of expired) {
     await clearDraft(uploadId);
   }
   if (expired.length) message(`已清理 ${expired.length} 个过期草稿`, { type: "info" });
+}
+/** 草稿箱展示全部条目：只隐藏本地判断已过期的，等上面一次服务端校正把它们救回来或清掉 */
+const visibleDrafts = computed(() => {
+  const now = nowTick.value;
+  return [...draftTasks.value]
+    .filter(draft => !draft.expiresAt || draft.expiresAt > now)
+    .sort((left, right) => {
+      if (left.uploadId === activeDraftId.value) return -1;
+      if (right.uploadId === activeDraftId.value) return 1;
+      return right.updatedAt - left.updatedAt;
+    });
+});
+function draftRemaining(draft: AlbumDraft) {
+  if (!draft.expiresAt) return "";
+  const minutes = Math.max(0, Math.round((draft.expiresAt - nowTick.value) / 60_000));
+  if (minutes <= 0) return "已过期";
+  if (minutes < 60) return `${minutes} 分钟后过期`;
+  return `${Math.round(minutes / 60)} 小时后过期`;
+}
+function isDraftExpiringSoon(draft: AlbumDraft) {
+  return !!draft.expiresAt && draft.expiresAt - nowTick.value < 6 * 3600_000;
 }
 async function openDraft(uploadId: string) {
   const result = await getAlbumUploadSession(uploadId).catch(() => null);
@@ -238,6 +312,7 @@ async function openDraft(uploadId: string) {
     await clearDraft(uploadId);
     return message("草稿已过期，已从草稿箱移除", { type: "warning" });
   }
+  updateDraftExpiry(uploadId, result.data.expiresAt);
   activeDraftId.value = uploadId;
   localStorage.setItem("album-upload-id", uploadId);
   sessionFiles.value = (result.data.files || []) as any;
@@ -321,10 +396,12 @@ async function prepare() {
   preparing.value = true;
   try {
     let uploadId = activeDraftId.value || localStorage.getItem("album-upload-id") || "";
+    let draftExpiresAt: number | undefined;
     const selectedKeys = [...audioFiles.value, ...(coverFile.value ? [coverFile.value] : [])].map(file => `${file.name}:${file.size}`).sort().join("|");
     if (uploadId) {
       const existing = await getAlbumUploadSession(uploadId).catch(() => null);
       const existingFiles = existing?.data?.files || [];
+      draftExpiresAt = existing?.data?.expiresAt;
       const existingKeys = existingFiles.map((item: any) => `${item.fileName}:${item.size}`).sort().join("|");
       if (!existing?.data) {
         localStorage.removeItem("album-upload-id");
@@ -347,10 +424,11 @@ async function prepare() {
       ]);
       if (session.code !== 0 || !session.data?.uploadId) throw new Error(session.message || "创建上传任务失败");
       uploadId = session.data.uploadId;
+      draftExpiresAt = session.data.expiresAt;
       localStorage.setItem("album-upload-id", uploadId);
       sessionFiles.value = (session.data as any).files || [];
     }
-    saveDraft(uploadId, [...audioFiles.value, ...(coverFile.value ? [coverFile.value] : [])]);
+    saveDraft(uploadId, [...audioFiles.value, ...(coverFile.value ? [coverFile.value] : [])], draftExpiresAt);
     uploading.value = true;
     const files = [...audioFiles.value, ...(coverFile.value ? [coverFile.value] : [])];
     let cursor = 0;
@@ -458,8 +536,17 @@ watch(form, () => {
   const id = prepared.value?.uploadId || activeDraftId.value || localStorage.getItem("album-upload-id") || "";
   if (id) updateDraftForm(id);
 }, { deep: true });
-onMounted(validateDrafts);
-onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview.value); });
+let clockTimer: number | undefined;
+onMounted(() => {
+  validateDrafts();
+  clockTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 60_000);
+});
+onBeforeUnmount(() => {
+  if (clockTimer) window.clearInterval(clockTimer);
+  if (coverPreview.value) URL.revokeObjectURL(coverPreview.value);
+});
 </script>
 
 <template>
@@ -496,21 +583,28 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
       </div>
     </section>
 
-    <!-- 草稿箱 -->
-    <section v-if="draftTasks.length" class="panel draft-panel">
+    <!-- 草稿箱：常驻显示，没有草稿时给出空态提示 -->
+    <section class="panel draft-panel">
       <div class="draft-head">
         <el-icon><InfoFilled /></el-icon>
-        <span>上传草稿箱</span>
+        <span>上传草稿箱（{{ visibleDrafts.length }}）</span>
       </div>
-      <div v-for="draft in draftTasks" :key="draft.uploadId" class="draft-row">
-        <span class="draft-files">
-          {{ draft.fileNames.length }} 个文件 · {{ draft.fileNames.slice(0, 3).join("、") }}{{ draft.fileNames.length > 3 ? " …" : "" }}
-        </span>
-        <span class="draft-actions">
-          <el-button size="small" text type="primary" @click="openDraft(draft.uploadId)">继续</el-button>
-          <el-button size="small" text type="danger" @click="clearDraft(draft.uploadId)">放弃</el-button>
-        </span>
-      </div>
+      <template v-if="visibleDrafts.length">
+        <div v-for="draft in visibleDrafts" :key="draft.uploadId" class="draft-row">
+          <span class="draft-files">
+            {{ draft.fileNames.length }} 个文件 · {{ draft.fileNames.slice(0, 3).join("、") }}{{ draft.fileNames.length > 3 ? " …" : "" }}
+          </span>
+          <span class="draft-actions">
+            <span v-if="draftRemaining(draft)" class="draft-expiry" :class="{ 'is-soon': isDraftExpiringSoon(draft) }">
+              {{ draftRemaining(draft) }}
+            </span>
+            <el-button size="small" text type="primary" @click="openDraft(draft.uploadId)">继续</el-button>
+            <el-button size="small" text type="danger" @click="clearDraft(draft.uploadId)">放弃</el-button>
+          </span>
+        </div>
+        <p class="draft-note">草稿有有效期，到期后会自动从列表移除，暂存文件也会被服务端回收。</p>
+      </template>
+      <p v-else class="draft-empty">暂无草稿。上传整张专辑后会自动暂存到这里，未提交的草稿到期会自动清理。</p>
     </section>
     <section v-if="activeDraftId && sessionFiles.length" class="panel draft-panel is-success">
       <div class="draft-head">
@@ -1200,6 +1294,12 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
   color: var(--el-text-color-secondary);
 }
 
+.draft-empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
 .draft-row {
   display: flex;
   align-items: center;
@@ -1218,6 +1318,18 @@ onBeforeUnmount(() => { if (coverPreview.value) URL.revokeObjectURL(coverPreview
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
+  gap: 4px;
+}
+
+.draft-expiry {
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.draft-expiry.is-soon {
+  color: var(--el-color-warning);
 }
 
 .confirm-layout {

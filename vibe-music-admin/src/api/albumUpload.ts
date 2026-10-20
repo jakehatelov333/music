@@ -70,7 +70,7 @@ type Result<T> = { code: number; message: string; data: T };
 const headers = () => ({ Authorization: getToken().accessToken });
 
 export type AlbumUploadSessionFile = { fileName: string; size: number; contentType?: string; cover?: boolean };
-export type AlbumUploadSession = { uploadId: string; expiresInHours?: number; files?: Array<Record<string, unknown>> };
+export type AlbumUploadSession = { uploadId: string; expiresInHours?: number; expiresAt?: number; files?: Array<Record<string, unknown>> };
 
 export const createAlbumUploadSession = (files: AlbumUploadSessionFile[]) =>
   http.request<Result<AlbumUploadSession>>("post", "/admin/album-upload/session", { headers: headers(), data: files });

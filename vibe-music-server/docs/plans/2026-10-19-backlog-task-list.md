@@ -106,6 +106,10 @@
 - [x] 评估建 `tb_media_upload_session`（计划书本意）或单删内存回退 —— **选择单删内存回退**，不引入新表
 - [ ] 问题 13：先做授权/存在性校验再上传，或补持久补偿
 
+- [x] 草稿箱容量与过期策略（2026-10-20）：移除前端 `slice(0, 10)` 静默丢弃，改为展示全部；
+      过期时间统一由 `album-upload.session-ttl-hours`（默认 12h）控制，`POST /session` 与
+      `GET /{uploadId}` 返回绝对 `expiresAt`，前端只镜像展示；localStorage 配额不足时从最旧条目开始清理
+
 估时：E-1 单独先做；E-2/E-3 合并，整体 1–2 天。
 
 ---

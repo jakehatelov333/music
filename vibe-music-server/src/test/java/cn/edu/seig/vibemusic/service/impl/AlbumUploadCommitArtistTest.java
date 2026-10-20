@@ -14,6 +14,7 @@ import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
 import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
+import cn.edu.seig.vibemusic.service.IAlbumUploadService;
 import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -43,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -264,6 +267,37 @@ class AlbumUploadCommitArtistTest {
 
         assertEquals(1, cleaned);
         verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
+    }
+
+    @Test
+    void createSessionReturnsConfiguredExpiry() {
+        long before = System.currentTimeMillis();
+
+        Result<Object> result = service.createSession(List.of(
+                new IAlbumUploadService.AlbumUploadFileRequest("01 第一首.mp3", 1024, "audio/mpeg", false)));
+
+        assertEquals(0, result.getCode().intValue());
+        Map<?, ?> data = (Map<?, ?>) result.getData();
+        // 默认配置 12 小时：前端据此展示「剩余时间」并做离线兜底
+        assertEquals(12L, ((Number) data.get("expiresInHours")).longValue());
+        long expiresAt = ((Number) data.get("expiresAt")).longValue();
+        assertTrue(expiresAt >= before + 12 * 3600_000L - 5_000);
+        verify(redisValueOperations).set(anyString(), anyString(), eq(12L), eq(TimeUnit.HOURS));
+    }
+
+    @Test
+    void sessionReportsRemainingTtlFromRedis() {
+        // 签约/完成单个文件会续期，剩余时间必须以 Redis 真实 TTL 为准，而不是「创建时间 + 12h」
+        when(redisTemplate.getExpire(anyString(), eq(TimeUnit.SECONDS))).thenReturn(1800L);
+        long before = System.currentTimeMillis();
+
+        Result<Object> result = service.session(UPLOAD_ID);
+
+        Map<?, ?> data = (Map<?, ?>) result.getData();
+        long expiresAt = ((Number) data.get("expiresAt")).longValue();
+        assertTrue(expiresAt >= before + 1_800_000L - 1_000);
+        assertTrue(expiresAt <= System.currentTimeMillis() + 1_800_000L + 1_000);
+        assertEquals(1L, ((Number) data.get("expiresInHours")).longValue());
     }
 
     // ------------------------------------------------------------------ 夹具

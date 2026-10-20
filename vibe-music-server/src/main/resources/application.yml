@@ -171,3 +171,10 @@ ai:
 app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:8090,http://localhost:8089,http://127.0.0.1:8090,http://127.0.0.1:8089}
+
+# 专辑上传会话（草稿箱）配置
+album-upload:
+  # 草稿在 Redis 中的存活小时数，也是前端展示「剩余时间」的依据。
+  # 签约/完成单个文件会续期，因此实际窗口从最后一次上传动作重新计算。
+  # 超时后草稿不可恢复，暂存文件由每小时的 AlbumUploadCleanupTask 回收。
+  session-ttl-hours: 12
