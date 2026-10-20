@@ -1,6 +1,7 @@
 package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
@@ -20,6 +21,7 @@ import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.IArtistService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.util.JwtUtil;
@@ -31,6 +33,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheConfig;
@@ -39,8 +42,11 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -53,9 +59,13 @@ import java.util.stream.Collectors;
  * @author sunpingli
  * @since 2025-01-09
  */
+@Slf4j
 @Service
 @CacheConfig(cacheNames = "artistCache")
 public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> implements IArtistService {
+
+    /** 头像体积上限，与个人歌单封面保持一致（{@code PersonalPlaylistService.MAX_COVER_BYTES}）。 */
+    private static final long MAX_AVATAR_BYTES = 5L * 1024 * 1024;
 
     @Autowired
     private ArtistMapper artistMapper;
@@ -67,6 +77,8 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     private MinioService minioService;
     @Autowired
     private SongArtistService songArtistService;
+    @Autowired
+    private MediaCleanupService mediaCleanupService;
     @Autowired
     private RedisTemplate redisTemplate;
 
@@ -333,18 +345,81 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     @Override
     @CacheEvict(cacheNames = "artistCache", allEntries = true)
     public Result addArtist(ArtistAddDTO artistAddDTO) {
+        return addArtist(artistAddDTO, null);
+    }
+
+    /**
+     * 添加歌手，可选同时上传头像。
+     *
+     * <h3>为什么先传文件、后插库</h3>
+     * 反过来（先插库再传文件）一旦上传失败，库里就留下一条没有头像的记录，而且调用方拿不到 id
+     * 去补救。当前顺序下最坏情况只是 MinIO 多一个对象，而插入失败时会在 catch 里把它删掉。
+     *
+     * <p>刻意<b>不</b>走 {@code MediaCleanupService} 清理这个失败残留：那套管线是为了处理
+     * 「可能仍被别处引用」的对象，需要事务内登记 + 提交后核对引用。这里的对象是本次请求刚上传、
+     * 还没有任何人能引用到它的，直接删是安全且更快的。真正需要走管线的场景是
+     * {@link #updateArtistAvatar} 换下的旧头像——那个可能还被别的行共用。
+     */
+    @Override
+    @CacheEvict(cacheNames = "artistCache", allEntries = true)
+    public Result addArtist(ArtistAddDTO artistAddDTO, MultipartFile avatar) {
+        if (artistAddDTO == null || !StringUtils.hasText(artistAddDTO.getArtistName())) {
+            return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
+        }
         // 查重只看「启用中」的记录：同名停用记录（例如被合并掉的组合歌手）不应阻止重新创建 ——
         // 所有面向业务的查询都带 status = ACTIVE，因此不会产生归属歧义。
         if (artistNameTaken(artistAddDTO.getArtistName(), null)) {
             return Result.error(MessageConstant.ARTIST + MessageConstant.ALREADY_EXISTS);
         }
 
-        Artist artist = new Artist();
-        BeanUtils.copyProperties(artistAddDTO, artist);
-        artist.setStatus(ArtistStatusEnum.ACTIVE.getStatus());
-        artistMapper.insert(artist);
+        String avatarUrl = null;
+        if (avatar != null && !avatar.isEmpty()) {
+            String invalid = validateAvatar(avatar);
+            if (invalid != null) {
+                return Result.error(invalid);
+            }
+            avatarUrl = minioService.uploadFile(avatar, "artists");
+        }
 
-        return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS);
+        try {
+            Artist artist = new Artist();
+            BeanUtils.copyProperties(artistAddDTO, artist);
+            artist.setStatus(ArtistStatusEnum.ACTIVE.getStatus());
+            if (avatarUrl != null) {
+                artist.setAvatar(avatarUrl);
+            }
+            artistMapper.insert(artist);
+
+            return Result.success(MessageConstant.ADD + MessageConstant.SUCCESS, artist.getArtistId());
+        } catch (RuntimeException e) {
+            // 刚上传的头像此刻不可能被任何行引用，直接删；删失败也只记日志，
+            // 不能让它覆盖掉真正的插入异常
+            if (avatarUrl != null) {
+                try {
+                    minioService.deleteFile(avatarUrl);
+                } catch (RuntimeException cleanupError) {
+                    log.warn("新增歌手失败后清理头像对象失败，需人工处理：url={}", avatarUrl, cleanupError);
+                }
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 校验头像文件，合法返回 {@code null}，否则返回可读原因。
+     *
+     * <p>用与个人歌单封面一致的规则（≤5 MB、Content-Type 必须 {@code image/*}），
+     * 避免同一个系统里两处对"什么是合法图片"给出不同答案。
+     */
+    private String validateAvatar(MultipartFile avatar) {
+        if (avatar.getSize() > MAX_AVATAR_BYTES) {
+            return "头像图片不能超过 5 MB";
+        }
+        String contentType = avatar.getContentType();
+        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("image/")) {
+            return "头像仅支持 JPG、PNG、WebP 等图片格式";
+        }
+        return null;
     }
 
     /**
@@ -417,16 +492,25 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      */
     @Override
     @CacheEvict(cacheNames = "artistCache", allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Result updateArtistAvatar(Long artistId, String avatar) {
         Artist artist = artistMapper.selectById(artistId);
-        String avatarUrl = artist.getAvatar();
-        if (avatarUrl != null && !avatarUrl.isEmpty()) {
-            minioService.deleteFile(avatarUrl);
+        if (artist == null) {
+            return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
         }
+        String oldAvatar = artist.getAvatar();
 
         artist.setAvatar(avatar);
         if (artistMapper.updateById(artist) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+
+        // 旧头像不再就地删除：它可能被别的行共用（实测库里存在同一对象被多行引用的情形），
+        // 也可能在本次事务回滚后仍然是有效头像。改为登记清理任务，由 worker 核对全部引用后再决定删或留。
+        // 必须放在改库之后、且在同一事务内 —— 回滚时任务一并回滚，不会误删仍在用的对象。
+        if (StringUtils.hasText(oldAvatar) && !oldAvatar.equals(avatar)) {
+            mediaCleanupService.enqueueForId(oldAvatar, MediaCleanupSourceType.ARTIST_AVATAR_REPLACE,
+                    artistId, "替换歌手头像");
         }
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);

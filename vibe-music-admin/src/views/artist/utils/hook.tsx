@@ -10,7 +10,7 @@ import type { FormItemProps } from "../utils/types";
 import { getKeyList, deviceDetection } from "@pureadmin/utils";
 import {
   getArtistList,
-  addArtist,
+  addArtistWithAvatar,
   updateArtist,
   updateArtistAvatar,
   deleteArtist,
@@ -190,16 +190,25 @@ export function useArtist(tableRef: Ref) {
   }
 
   function handleDelete(row) {
-    deleteArtist(row.artistId).then(res => {
-      if (res.code === 0) {
-        message(`您删除了歌手编号为 ${row.artistId} 的这条数据`, {
-          type: "success"
+    deleteArtist(row.artistId)
+      .then(res => {
+        if (res.code === 0) {
+          message(`您删除了歌手编号为 ${row.artistId} 的这条数据`, {
+            type: "success"
+          });
+          onSearch();
+        } else {
+          message("删除歌手失败，" + (res.message ?? ""), { type: "error" });
+        }
+      })
+      .catch(err => {
+        // 以前没有 catch：401（token 失效）/403/500 会被静默吞掉，
+        // 页面既不提示也不刷新，看起来就是「点了删除没反应」。
+        const detail = err?.response?.data?.message ?? err?.message ?? "";
+        message(`删除歌手失败${detail ? "：" + detail : ""}`, {
+          type: "error"
         });
-        onSearch();
-      } else {
-        message("删除歌手失败", { type: "error" });
-      }
-    });
+      });
   }
 
   function handleSizeChange(val: number) {
@@ -326,7 +335,9 @@ export function useArtist(tableRef: Ref) {
           birth: row?.birth ?? "",
           area: row?.area ?? "",
           introduction: row?.introduction ?? "",
-          status: row?.status ?? "ACTIVE"
+          status: row?.status ?? "ACTIVE",
+          avatarFile: null,
+          avatarPreview: ""
         }
       },
       width: "46%",
@@ -349,13 +360,25 @@ export function useArtist(tableRef: Ref) {
           if (valid) {
             // 表单规则校验通过
             if (title === "新增") {
-              addArtist(curData).then(res => {
-                if (res.code === 0) {
-                  chores();
-                } else {
-                  message("新增歌手失败，" + res.message, { type: "error" });
-                }
-              });
+              // 头像与歌手信息一次提交：分成两个请求时，第二步失败会留下「有歌手没头像」
+              // 的半成品，而 addArtist 又不返回 id，前端没法补救。
+              const { avatarFile, avatarPreview, ...artistPayload } = curData;
+              void avatarPreview;
+              addArtistWithAvatar(artistPayload, avatarFile ?? undefined)
+                .then(res => {
+                  if (res.code === 0) {
+                    chores();
+                  } else {
+                    message("新增歌手失败，" + res.message, { type: "error" });
+                  }
+                })
+                .catch(err => {
+                  const detail =
+                    err?.response?.data?.message ?? err?.message ?? "";
+                  message(`新增歌手失败${detail ? "：" + detail : ""}`, {
+                    type: "error"
+                  });
+                });
             } else {
               updateArtist(curData).then(res => {
                 if (res.code === 0) {

@@ -28,6 +28,9 @@ public final class MediaCleanupSourceType {
     /** 个人歌单封面变更/清除：被换下或清掉的自定义封面。{@code source_ref} = playlistId。 */
     public static final String PLAYLIST_COVER = "PLAYLIST_COVER";
 
+    /** 替换歌手头像：被换下的旧头像。{@code source_ref} = artistId。 */
+    public static final String ARTIST_AVATAR_REPLACE = "ARTIST_AVATAR_REPLACE";
+
     /** 上传会话中止：暂存对象。本阶段未接入（留给 E 阶段），占位以固定取值域。 */
     public static final String UPLOAD_ABORT = "UPLOAD_ABORT";
 

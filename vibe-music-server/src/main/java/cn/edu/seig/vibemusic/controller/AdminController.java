@@ -14,6 +14,7 @@ import cn.edu.seig.vibemusic.service.*;
 import cn.edu.seig.vibemusic.util.BindingResultUtil;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -210,6 +211,26 @@ public class AdminController {
     @PostMapping("/addArtist")
     public Result addArtist(@RequestBody ArtistAddDTO artistAddDTO) {
         return artistService.addArtist(artistAddDTO);
+    }
+
+    /**
+     * 新增歌手（可同时上传头像）。
+     *
+     * <p>用 {@code multipart/form-data}：{@code artist} 部分是 JSON、{@code avatar} 是可选图片。
+     * 之所以把两个字段塞进同一次请求，是为了让「建歌手 + 存头像」成为一个原子操作 ——
+     * 分成两个接口时，中间任何一步失败都会留下半成品（有歌手没头像，或有头像没歌手）。
+     *
+     * <p>{@code avatar} 刻意是 {@code required = false}：不带头像新增歌手仍然合法，
+     * 与旧接口行为一致，老客户端不受影响。
+     *
+     * @param artist     歌手信息 JSON
+     * @param avatar     头像图片，可省略
+     * @return 成功时 {@code data} 为新歌手 id
+     */
+    @PostMapping(value = "/addArtistWithAvatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result addArtistWithAvatar(@RequestPart("artist") ArtistAddDTO artist,
+                                      @RequestPart(value = "avatar", required = false) MultipartFile avatar) {
+        return artistService.addArtist(artist, avatar);
     }
 
     /**

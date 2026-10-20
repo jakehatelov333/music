@@ -116,6 +116,33 @@ export const addArtist = (data: object) => {
   });
 };
 
+/**
+ * 歌手管理-新增歌手（可同时上传头像）。
+ *
+ * 用 multipart 一次提交「歌手信息 + 头像」：分成两个请求时，中间任何一步失败都会
+ * 留下半成品（有歌手没头像 / 有头像没歌手）。头像可选，不传就等同于 addArtist。
+ */
+export const addArtistWithAvatar = (artist: object, avatar?: File) => {
+  const userData = getToken();
+  const formData = new FormData();
+  // 后端用 @RequestPart("artist") ArtistAddDTO 接收，必须声明 JSON 类型，
+  // 否则 Spring 会当成普通文本字段而反序列化失败
+  formData.append(
+    "artist",
+    new Blob([JSON.stringify(artist)], { type: "application/json" })
+  );
+  if (avatar) {
+    formData.append("avatar", avatar);
+  }
+  return http.request<Result>("post", "/admin/addArtistWithAvatar", {
+    headers: {
+      "Content-Type": "multipart/form-data",
+      Authorization: userData.accessToken
+    },
+    data: formData
+  });
+};
+
 /** 歌手管理-编辑歌手 */
 export const updateArtist = (data: object) => {
   const userData = getToken();
