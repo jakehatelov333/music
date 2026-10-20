@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import ReCol from "@/components/ReCol";
+import ProfilePreview from "./ProfilePreview.vue";
+import EyeIcon from "@iconify-icons/ri/eye-line";
+import KeyboardIcon from "@iconify-icons/ri/keyboard-line";
+import LoaderIcon from "@iconify-icons/ri/loader-4-line";
 import { formRules } from "../utils/rule";
 import { FormProps } from "../utils/types";
 import {
   searchQqArtists,
   getQqArtistProfile,
-  type ArtistCandidate
+  type ArtistCandidate,
+  type ArtistProfile
 } from "@/api/artistProfile";
 
 const props = withDefaults(defineProps<FormProps>(), {
@@ -84,47 +89,80 @@ const qqSearched = ref(false);
 /** 正在取详情的 mid，用于在候选行上显示 loading */
 const qqLoadingMid = ref("");
 /**
- * 记录上一次自动填充了哪些字段，便于在用户改过之后仍然只清掉「我们填的」部分。
- * 不用它做覆盖判断 —— 覆盖与否由 qqOverwrite 决定，见 applyProfile 的注释。
+ * 当前预览的那位歌手的完整资料。
+ *
+ * <p>点候选<b>只预览、不写表单</b>：搜索结果只有名字和头像，管理员得先看清
+ * 生日、国籍、简介、代表作，才知道要不要用它覆盖表单里的内容。
+ * 真正的写入由「填充到表单」按钮或 Alt + Enter 触发。
  */
-const lastFilledFields = ref<string[]>([]);
+const qqPreview = ref<ArtistProfile | null>(null);
+/** 当前预览的资料是否已经填进表单了 */
+const qqPreviewApplied = ref(false);
 
-async function handleQqSearch() {
-  const keyword = qqKeyword.value.trim();
-  if (!keyword) {
-    ElMessage.warning("请先输入歌手名");
-    return;
-  }
+/**
+ * 执行一次搜索。
+ *
+ * <p>抽成独立函数是因为 Alt + Enter 要「搜索 → 挑精确匹配 → 预览 → 填充」一气呵成，
+ * 不该在两条路径里各写一遍错误处理。
+ *
+ * <p>搜完顺手预览一位：预览是只读的，不会改表单，所以不存在「悄悄填错人」的风险；
+ * 而搜索结果通常只有一位，让人再点一下纯属多余。有精确匹配就预览它，
+ * 否则只在结果唯一时预览（多条又不精确时，让人自己点）。
+ *
+ * @returns 候选列表；失败时为空数组
+ */
+async function runSearch(keyword: string): Promise<ArtistCandidate[]> {
   qqSearching.value = true;
+  // 换关键词重新搜之后，上一位的预览就不再对应任何候选了
+  qqPreview.value = null;
+  qqPreviewApplied.value = false;
   try {
     const res = await searchQqArtists(keyword);
     if (res.code !== 0) {
       qqCandidates.value = [];
       ElMessage.error(res.message ?? "搜索失败");
-      return;
+      return [];
     }
     qqCandidates.value = res.data ?? [];
     if (!qqCandidates.value.length) {
       ElMessage.info("没搜到这位歌手，可以手动填写下面的资料");
+      return [];
     }
+    const exact = qqCandidates.value.find(item => item.exactMatch);
+    const autoPreview =
+      exact ?? (qqCandidates.value.length === 1 ? qqCandidates.value[0] : null);
+    if (autoPreview) {
+      await previewCandidate(autoPreview);
+    }
+    return qqCandidates.value;
   } catch (error) {
     qqCandidates.value = [];
     const detail = (error as any)?.response?.data?.message ?? "";
     ElMessage.error(`搜索失败${detail ? "：" + detail : ""}`);
+    return [];
   } finally {
     qqSearching.value = false;
     qqSearched.value = true;
   }
 }
 
+/** 按搜索框里的关键词搜索（Enter 或点「搜索」）。 */
+async function handleQqSearch() {
+  const keyword = qqKeyword.value.trim();
+  if (!keyword) {
+    ElMessage.warning("请先输入歌手名");
+    return;
+  }
+  await runSearch(keyword);
+}
+
 /**
- * 选中一位候选，取其完整资料并填充表单。
+ * 取某位候选的完整资料并显示预览。
  *
- * 刻意<b>不</b>自动提交：填充只是省去打字，最终写库仍要人点「确定」。
- * 同理，已经有值的字段不会被覆盖 —— 用户可能在搜之前就手填了内容，
- * 那些是更可靠的信息。
+ * <p>刻意<b>不</b>顺手填表单：预览就是给人看的，看了再决定填不填。
+ * 尤其修改模式下，直接覆盖会让人还没看清就把简介换掉了。
  */
-async function handleSelectCandidate(candidate: ArtistCandidate) {
+async function previewCandidate(candidate: ArtistCandidate) {
   qqLoadingMid.value = candidate.singerMid;
   try {
     const res = await getQqArtistProfile(candidate.singerMid);
@@ -132,13 +170,106 @@ async function handleSelectCandidate(candidate: ArtistCandidate) {
       ElMessage.error(res.message ?? "没取到这位歌手的资料");
       return;
     }
-    applyProfile(res.data);
+    qqPreview.value = res.data;
+    qqPreviewApplied.value = false;
   } catch (error) {
     const detail = (error as any)?.response?.data?.message ?? "";
     ElMessage.error(`获取资料失败${detail ? "：" + detail : ""}`);
   } finally {
     qqLoadingMid.value = "";
   }
+}
+
+/** 把当前预览的资料填进表单（点「填充到表单」）。 */
+function applyPreview() {
+  if (!qqPreview.value) {
+    return;
+  }
+  applyProfile(qqPreview.value);
+  qqPreviewApplied.value = true;
+}
+
+/**
+ * Alt + Enter：一键自动灌装。
+ *
+ * <p>搜索框为空时用表单里已填的歌手名（修改歌手时就是这位歌手的名字），
+ * 所以改老歌手时不用再手打一遍名字。
+ *
+ * <p>只认「精确匹配」的候选：实测 LANY 的第一条是「Blue」、Christopher 的第一条是
+ * 「黄凯芹」，按第一条盲填会把别人的资料写进来。没有精确匹配时只列出候选，
+ * 让人自己选 —— 宁可多一次点击，也不要悄悄填错人。
+ */
+async function autoFillFromArtistName() {
+  const keyword = (
+    qqKeyword.value ||
+    newFormInline.value.artistName ||
+    ""
+  ).trim();
+  if (!keyword) {
+    ElMessage.warning("请先填写歌手名，或在搜索框里输入关键词");
+    return;
+  }
+  // 用户要的效果：按下 Alt + Enter，搜索框里直接补上歌手名
+  qqKeyword.value = keyword;
+
+  const candidates = await runSearch(keyword);
+  if (!candidates.length) {
+    return;
+  }
+  const exact = candidates.find(item => item.exactMatch);
+  if (!exact) {
+    ElMessage.warning(`没有与「${keyword}」完全一致的候选，请在下面手动选一位`);
+    return;
+  }
+  // runSearch 已经预览过精确匹配的那位；万一没有（理论上不会），这里补一次
+  if (qqPreview.value?.singerMid !== exact.singerMid) {
+    await previewCandidate(exact);
+  }
+  if (qqPreview.value) {
+    applyPreview();
+  }
+}
+
+/**
+ * 搜索框按键：Enter 搜索。
+ *
+ * <p>Alt + Enter 交给全局监听处理（见 {@link handleGlobalKeydown}）：这样光标停在
+ * 歌手名、简介甚至「确定」按钮上时，快捷键照样有效 —— 用户说的是「我按下 Alt + Enter」，
+ * 不该要求他先把光标挪到某个输入框里。
+ *
+ * <p>必须挡掉输入法组合状态：中文歌手名几乎都是打拼音再选词，此时按 Enter 是
+ * 「确认候选词」，若被当成搜索，会拿半截拼音去查。{@code keyCode === 229} 是
+ * 部分浏览器在组合期间给的值，一并挡掉。
+ */
+function handleQqKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (event.altKey) {
+    // 交给 document 上的全局监听，这里不处理，避免同一件事触发两次
+    return;
+  }
+  event.preventDefault();
+  void handleQqSearch();
+}
+
+/**
+ * 全局 Alt + Enter：自动灌装。
+ *
+ * <p>监听 document 而不是某个输入框，是因为本组件只在弹窗打开期间存在
+ * （{@code contentRenderer} 每次开窗新建），所以这段时间里的 Alt + Enter
+ * 一定是在对这张表单说话。Alt + Enter 本身也不是浏览器的常用快捷键，
+ * 不会抢走别的行为。
+ */
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" || !event.altKey) {
+    return;
+  }
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  event.preventDefault();
+  void autoFillFromArtistName();
 }
 
 /**
@@ -221,8 +352,6 @@ function applyProfile(profile: {
     filled.push("头像");
   }
 
-  lastFilledFields.value = filled;
-
   const parts: string[] = [];
   if (filled.length) {
     parts.push(`${overwrite ? "已覆盖" : "已填充"}：${filled.join("、")}`);
@@ -245,7 +374,6 @@ function clearQqSelection() {
     // 当前预览不是用户上传的文件，还原成进入弹窗时的头像
     form.avatarPreview = originalAvatar.value;
   }
-  lastFilledFields.value = [];
 }
 
 /**
@@ -303,6 +431,13 @@ function getRef() {
   return ruleFormRef.value;
 }
 
+// 弹窗打开期间才存在，因此这里挂载/卸载 document 监听是安全的：
+// 关窗时组件销毁，监听随之移除，不会留到别的页面去。
+onMounted(() => document.addEventListener("keydown", handleGlobalKeydown));
+onBeforeUnmount(() =>
+  document.removeEventListener("keydown", handleGlobalKeydown)
+);
+
 defineExpose({ getRef });
 </script>
 
@@ -330,14 +465,17 @@ defineExpose({ getRef });
       </re-col>
 
       <!--
-        从 QQ 音乐搜索并自动填充。新增与修改都可用。
-        刻意做成「搜 → 选 → 填」三步而不是「输入名字就自动填」：
+        从 QQ 音乐搜索、预览、再决定是否填充。新增与修改都可用。
+        刻意做成「搜 → 预览 → 填」三步而不是「输入名字就自动填」：
         实测有 47 位歌手搜出 2 个候选，且第一条不一定对（LANY 的第一条是「Blue」，
         Christopher 的第一条是「黄凯芹」），必须由人确认是哪一位。
       -->
       <re-col :value="24" :xs="24" :sm="24">
-        <el-form-item label="自动填充">
+        <el-form-item label="自动灌装">
           <div class="w-full">
+            <div class="text-xs text-[var(--el-text-color-secondary)] mb-1">
+              输入歌手名，快速补全歌手资料
+            </div>
             <div class="flex items-center gap-2 flex-wrap">
               <el-input
                 v-model="qqKeyword"
@@ -348,7 +486,7 @@ defineExpose({ getRef });
                 "
                 clearable
                 class="!w-[260px]"
-                @keyup.enter="handleQqSearch"
+                @keydown="handleQqKeydown"
               />
               <el-button
                 type="primary"
@@ -369,6 +507,14 @@ defineExpose({ getRef });
               </span>
             </div>
 
+            <!-- 快捷键提示：写出来别人才知道有 Alt + Enter -->
+            <div
+              class="mt-1 flex items-center gap-1 text-xs text-[var(--el-text-color-secondary)]"
+            >
+              <IconifyIconOffline :icon="KeyboardIcon" class="shrink-0" />
+              <span>按 Enter 搜索 · Alt + Enter 自动灌装</span>
+            </div>
+
             <div
               v-if="qqCandidates.length"
               class="mt-2 grid grid-cols-2 gap-2 max-h-[210px] overflow-auto"
@@ -378,11 +524,12 @@ defineExpose({ getRef });
                 :key="item.singerMid"
                 class="flex items-center gap-2 p-2 rounded border cursor-pointer transition-colors"
                 :class="
-                  newFormInline.qqSingerMid === item.singerMid
+                  qqPreview?.singerMid === item.singerMid
                     ? 'border-[var(--el-color-primary)] bg-[var(--el-color-primary-light-9)]'
                     : 'border-[var(--el-border-color)] hover:border-[var(--el-color-primary-light-5)]'
                 "
-                @click="handleSelectCandidate(item)"
+                :title="`点击预览 ${item.artistName} 的资料`"
+                @click="previewCandidate(item)"
               >
                 <el-image
                   :src="item.avatarUrls?.['300']"
@@ -433,14 +580,31 @@ defineExpose({ getRef });
                     <el-tag v-else size="small" type="success" effect="plain">
                       精确匹配
                     </el-tag>
+                    <!-- 已经填进表单的那位额外标一下，否则填完就看不出来是谁了 -->
+                    <el-tag
+                      v-if="
+                        qqPreviewApplied &&
+                        qqPreview?.singerMid === item.singerMid
+                      "
+                      size="small"
+                      type="success"
+                      effect="dark"
+                    >
+                      已填入
+                    </el-tag>
                   </div>
                 </div>
                 <el-icon
                   v-if="qqLoadingMid === item.singerMid"
                   class="is-loading shrink-0"
                 >
-                  <IconifyIconOffline icon="ri:loader-4-line" />
+                  <IconifyIconOffline :icon="LoaderIcon" />
                 </el-icon>
+                <IconifyIconOffline
+                  v-else
+                  :icon="EyeIcon"
+                  class="shrink-0 text-[var(--el-text-color-secondary)]"
+                />
               </div>
             </div>
 
@@ -451,12 +615,31 @@ defineExpose({ getRef });
               没搜到候选。可以直接手填下面的资料，或换个关键词再试。
             </div>
 
+            <!-- 预览卡片：看清生日/国籍/简介/代表作之后，再决定要不要写进表单 -->
+            <div v-if="qqPreview" class="mt-2">
+              <ProfilePreview
+                :key="qqPreview.singerMid"
+                :profile="qqPreview"
+                :is-current-artist="
+                  !isCreate &&
+                  qqPreview.existingArtistId === newFormInline.artistId
+                "
+                :applied="qqPreviewApplied"
+                @apply="applyPreview"
+              />
+            </div>
+
             <div
               v-if="newFormInline.qqSingerMid"
               class="mt-2 text-xs text-[var(--el-text-color-secondary)]"
             >
               填充只影响表单，不会自动保存。
-              <el-button link type="danger" size="small" @click="clearQqSelection">
+              <el-button
+                link
+                type="danger"
+                size="small"
+                @click="clearQqSelection"
+              >
                 取消 QQ 填充
               </el-button>
             </div>
