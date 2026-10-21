@@ -77,12 +77,16 @@ export const listConversations = (limit?: number, signal?: AbortSignal) =>
 
 /** 彻底删除一段对话。传别人的 chatId 会得到 404（服务端校验归属）。 */
 export const deleteConversation = (chatId: string, signal?: AbortSignal) =>
-  http<Result<string>>('delete', `/ai/conversations/${encodeURIComponent(chatId)}`, {
-    signal,
-    withCredentials: true,
-    baseURL: API_BASE,
-    timeout: 20000,
-  })
+  http<Result<string>>(
+    'delete',
+    `/ai/conversations/${encodeURIComponent(chatId)}`,
+    {
+      signal,
+      withCredentials: true,
+      baseURL: API_BASE,
+      timeout: 20000,
+    }
+  )
 
 /** 清除全部会话返回的统计结果。字段与后端 ClearConversationsResultVO 对齐。 */
 export interface ClearConversationsResultVO {
@@ -140,6 +144,56 @@ export const aiMetrics = (limit = 10) =>
     baseURL: API_BASE,
     timeout: 20000,
   })
+
+/**
+ * `start` 事件。
+ *
+ * <p>服务端发的是完整的 {@code AgentEvent} record，`chatId` 嵌在 `data` 里：
+ * `{"type":"start","taskId":"…","data":{"model":"qwen-flash","chatId":"user_chat_id_…"}}`。
+ * 这里描述的是 `parseStartEvent` **归一化之后**的形状 —— 扁平、`chatId` 在顶层。
+ */
+export interface AgentStartEvent {
+  taskId: string
+  model: string
+  chatId?: string
+}
+
+/**
+ * 把服务端的 `start` 载荷归一化成 {@link AgentStartEvent}。
+ *
+ * <p><b>为什么需要这一步（真实事故）：</b>多会话改造时服务端把 `chatId` 放进了 `data`，
+ * 而这里仍按扁平结构读 `payload.chatId`，于是拿到 `undefined` ——
+ * 前端认领不到新会话的标识，「新对话」标志永远清不掉，
+ * 用户每发一条消息都会再新建一段对话。表现为「聊到第三轮模型突然失忆」，
+ * 实际上是三轮分别落在三个不同的 chatId 上，模型从来没看到过前两轮。
+ *
+ * <p>同时兼容扁平结构：`chatId` 缺失时回退到 `data.chatId`，两种形状都认。
+ */
+export const parseStartEvent = (raw: unknown): AgentStartEvent | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const payload = raw as {
+    taskId?: unknown
+    model?: unknown
+    chatId?: unknown
+    data?: { model?: unknown; chatId?: unknown } | null
+  }
+  const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
+  if (!taskId) return null
+  const model =
+    typeof payload.model === 'string'
+      ? payload.model
+      : typeof payload.data?.model === 'string'
+        ? payload.data.model
+        : ''
+  const nested = payload.data?.chatId
+  const chatId =
+    typeof payload.chatId === 'string' && payload.chatId
+      ? payload.chatId
+      : typeof nested === 'string' && nested
+        ? nested
+        : undefined
+  return chatId ? { taskId, model, chatId } : { taskId, model }
+}
 
 /** 工具调用事件：同一 toolCallId 的 start / end 配对。 */
 export interface AgentToolEvent {
@@ -213,8 +267,12 @@ export interface SSECallbacks {
    * chatId 必须在回调里被采纳：点「新对话」时前端还不知道新会话的标识
    * （会话是服务端在收到第一条消息时才创建的，这样不会留下空会话），
    * 只能从第一个事件里认领它。
+   *
+   * <p>回调收到的 {@code chatId} 已经由本模块从服务端载荷里**归一化**出来
+   * （服务端把它放在 {@code data.chatId}，见下方 {@code start} 分支），
+   * 调用方不必再关心嵌套结构。
    */
-  onStart?: (payload: { taskId: string; model: string; chatId?: string }) => void
+  onStart?: (payload: AgentStartEvent) => void
   /** 工具开始/结束。 */
   onTool?: (payload: AgentToolEvent) => void
   /** 结构化歌曲数据，用于渲染歌曲卡片。 */
@@ -303,7 +361,7 @@ export const aiStreamChat = (
             callbacks.onError(new Error(data || 'AI 回复失败'))
             break
           case 'start': {
-            const payload = parseJson<{ taskId: string; model: string }>(data)
+            const payload = parseStartEvent(parseJson<unknown>(data))
             if (payload) callbacks.onStart?.(payload)
             break
           }
