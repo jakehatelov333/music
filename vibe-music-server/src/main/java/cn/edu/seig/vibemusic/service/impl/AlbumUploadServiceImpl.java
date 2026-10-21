@@ -14,10 +14,12 @@ import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumUploadPrepareVO;
 import cn.edu.seig.vibemusic.model.vo.ArtistParsingVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
 import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAlbumUploadService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
+import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import lombok.extern.slf4j.Slf4j;
@@ -49,6 +51,13 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     private static final String REDIS_PREFIX = "album-upload:session:";
     private static final String STAGING_PREFIX = "staging/album-upload/";
     /**
+     * 孤儿清扫的最小存活时间：暂存目录最近 {@code N} 分钟内有过写入就跳过。
+     *
+     * <p>{@code prepare} 是「先传完所有文件、再 saveSession」，这段窗口里目录已存在而会话还没建，
+     * 与孤儿看起来完全一样。取 10 分钟：远大于一次专辑上传+解析的耗时，又远小于会话 TTL。
+     */
+    private static final long ORPHAN_MIN_AGE_MILLIS = 10L * 60 * 1000;
+    /**
      * 会话（草稿）在 Redis 中的存活小时数。
      *
      * <p>这是草稿过期时间的唯一权威来源：前端只镜像 {@code expiresAt} 用于展示和离线兜底，
@@ -67,6 +76,7 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
     @Autowired private SongArtistService songArtistService;
     @Autowired private ArtistNameParser artistNameParser;
     @Autowired private ArtistProvisioningService artistProvisioningService;
+    @Autowired private MediaCleanupService mediaCleanupService;
 
     /** 主艺人必须存在且处于启用状态（停用歌手不能再挂新专辑）。 */
     private boolean isActiveArtist(Long artistId) {
@@ -171,21 +181,32 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
         List<String> copiedObjects = new ArrayList<>();
         String coverUrl = a.getCoverUrl();
         Album album = albumMapper.selectOne(new QueryWrapper<Album>().eq("artist_id", artistId).eq("name", a.getAlbumName().trim()));
-        // 封面在暂存目录，需转存到正式目录后再入库（提交成功会清理 staging）
-        if (coverEntry != null && minioService.objectExists(coverEntry.object)) {
-            String targetCoverName = "album-cover-" + UUID.randomUUID() + extensionSuffix(coverEntry.fileName);
-            coverUrl = minioService.copyObject(coverEntry.object, "albumCovers", targetCoverName);
-            copiedObjects.add("albumCovers/" + targetCoverName);
-        }
-        if (album == null) {
-            album = new Album().setArtistId(artistId).setAlbumName(a.getAlbumName().trim()).setCoverUrl(coverUrl).setReleaseDate(a.getReleaseDate()).setDescription(a.getDescription()).setStatus(StringUtils.hasText(a.getStatus()) ? a.getStatus() : "DRAFT");
-            albumMapper.insert(album);
-        } else if (coverEntry != null) {
-            // 专辑已存在时同样更新封面，避免重新上传同名专辑后封面依旧为空
-            albumMapper.update(null, new UpdateWrapper<Album>().eq("id", album.getAlbumId()).set("cover_url", coverUrl));
-            album.setCoverUrl(coverUrl);
-        }
+        // 专辑行与封面转存必须包在同一个 try 里：insert/update 若抛异常（唯一键、字段超长、连接中断），
+        // 上面已经转存到 albumCovers 的封面就再没有代码路径会回收它 —— 它不在 staging 前缀下，
+        // 孤儿清扫也扫不到，只会永久占着存储。
         try {
+            // 封面在暂存目录，需转存到正式目录后再入库（提交成功会清理 staging）
+            if (coverEntry != null && minioService.objectExists(coverEntry.object)) {
+                String targetCoverName = "album-cover-" + UUID.randomUUID() + extensionSuffix(coverEntry.fileName);
+                coverUrl = minioService.copyObject(coverEntry.object, "albumCovers", targetCoverName);
+                copiedObjects.add("albumCovers/" + targetCoverName);
+            }
+            if (album == null) {
+                album = new Album().setArtistId(artistId).setAlbumName(a.getAlbumName().trim()).setCoverUrl(coverUrl).setReleaseDate(a.getReleaseDate()).setDescription(a.getDescription()).setStatus(StringUtils.hasText(a.getStatus()) ? a.getStatus() : "DRAFT");
+                albumMapper.insert(album);
+            } else if (coverEntry != null) {
+                // 专辑已存在时同样更新封面，避免重新上传同名专辑后封面依旧为空
+                String oldCoverUrl = album.getCoverUrl();
+                albumMapper.update(null, new UpdateWrapper<Album>().eq("id", album.getAlbumId()).set("cover_url", coverUrl));
+                album.setCoverUrl(coverUrl);
+                // 被换下的旧封面不就地删：它可能被歌曲行或别的专辑共用，登记任务由 worker 核对引用后再决定。
+                // 与 AlbumServiceImpl#updateAlbum 的封面替换走同一条管线、同一个 sourceType。
+                // 登记与改库在同一事务内，提交失败时任务一并回滚，不会误删仍在用的对象。
+                if (StringUtils.hasText(oldCoverUrl) && !oldCoverUrl.equals(coverUrl)) {
+                    mediaCleanupService.enqueueForId(oldCoverUrl, MediaCleanupSourceType.ALBUM_COVER_REPLACE,
+                            album.getAlbumId(), "上传同名专辑时替换封面");
+                }
+            }
             for (int i = 0; i < dto.getSongs().size(); i++) {
                 AlbumUploadCommitDTO.SongInfo x = dto.getSongs().get(i);
                 StagedSong raw = staged.get(i);
@@ -332,7 +353,56 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
             log.warn("专辑上传暂存清理失败，uploadId={}，将由定时任务兜底回收", uploadId, e);
         }
     }
-    @Override public Result<Object> clear(String id) { deleteRedisSession(id); minioService.deleteObjectsByPrefix("staging/album-upload/" + id + "/"); return Result.success(); }
+
+    /**
+     * 提交成功后的收尾：<b>先删会话</b>，再尽力删暂存文件。
+     *
+     * <p>顺序与 {@link #abort(String)} 相反，是刻意的：提交已经成功，暂存文件就是纯垃圾。
+     * 会话必须先消失 —— 孤儿清扫以「没有会话」为判据，会话留着会让这些垃圾被跳过，
+     * 多挂 12 小时。这里删文件失败不回滚、不报错，交给孤儿清扫兜底。
+     */
+    @Override
+    public Result<Object> clear(String id) {
+        deleteRedisSession(id);
+        minioService.deleteObjectsByPrefix(STAGING_PREFIX + id + "/");
+        return Result.success();
+    }
+
+    /**
+     * 放弃一次上传（管理端「放弃草稿」）：先删文件、确认成功才删会话。
+     *
+     * <p>失败语义与 {@link #clear(String)} 相反：文件删不掉就<b>保留会话并返回错误</b>。
+     * 会话在，管理员重试时还能找到这次上传；会话没了而文件还在，就只能等孤儿清扫
+     * （最多晚一轮定时任务）才能收走。
+     *
+     * <p>会话已经不存在时仍尽力删一次文件，并返回成功 —— 那是正常的生命周期终点，
+     * 不是需要管理员处理的错误。
+     */
+    @Override
+    public Result<Object> abort(String uploadId) {
+        if (!StringUtils.hasText(uploadId)) {
+            return Result.error("上传任务不存在或参数不合法");
+        }
+        List<StagedSong> session = getSession(uploadId);
+        if (session == null) {
+            // 会话已过期：暂存目录里可能仍有残留，尽力删一次；删失败交给孤儿清扫
+            try {
+                minioService.deleteObjectsByPrefix(STAGING_PREFIX + uploadId + "/");
+            } catch (Exception e) {
+                log.warn("清理残留专辑暂存文件失败，uploadId={}", uploadId, e);
+            }
+            return Result.success("暂存文件已清理");
+        }
+        try {
+            minioService.deleteObjectsByPrefix(STAGING_PREFIX + uploadId + "/");
+        } catch (Exception e) {
+            log.warn("清理专辑暂存文件失败，保留会话待重试，uploadId={}", uploadId, e);
+            return Result.error("暂存文件清理失败，请稍后重试");
+        }
+        // 文件已确认删除，此时会话删失败只会留下一个空目录引用，下次 abort 会走到「会话已不在」分支
+        deleteRedisSession(uploadId);
+        return Result.success("暂存文件已清理");
+    }
 
     @Override
     public Result<Object> createSession(List<AlbumUploadFileRequest> files) {
@@ -468,13 +538,23 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
 
     @Override
     public int cleanupOrphanStaging() {
-        List<String> objects = minioService.listObjectNames(STAGING_PREFIX);
+        List<MinioService.StagedObject> objects = minioService.listStagedObjects(STAGING_PREFIX);
         Set<String> uploadIds = new LinkedHashSet<>();
-        for (String object : objects) {
-            if (object == null || !object.startsWith(STAGING_PREFIX)) continue;
-            String rest = object.substring(STAGING_PREFIX.length());
+        // 每个目录最近一次写入的时间，用于跳过「文件已落盘、会话还没建」的窗口
+        Map<String, Long> lastWriteAt = new HashMap<>();
+        long now = System.currentTimeMillis();
+        for (MinioService.StagedObject object : objects) {
+            String name = object.objectName();
+            if (name == null || !name.startsWith(STAGING_PREFIX)) continue;
+            String rest = name.substring(STAGING_PREFIX.length());
             int slash = rest.indexOf('/');
-            if (slash > 0) uploadIds.add(rest.substring(0, slash));
+            if (slash <= 0) continue;
+            String uploadId = rest.substring(0, slash);
+            uploadIds.add(uploadId);
+            long modified = object.lastModified() == null
+                    ? now                       // 拿不到时间就当作「刚写入」，宁可少删
+                    : object.lastModified().toInstant().toEpochMilli();
+            lastWriteAt.merge(uploadId, modified, Math::max);
         }
         int cleaned = 0;
         for (String uploadId : uploadIds) {
@@ -483,6 +563,13 @@ public class AlbumUploadServiceImpl implements IAlbumUploadService {
                 // 这里刻意不看任何进程内缓存 —— 内存条目没有 TTL，会把过期草稿的暂存文件永远留住。
                 boolean sessionAlive = Boolean.TRUE.equals(stringRedisTemplate.hasKey(REDIS_PREFIX + uploadId));
                 if (sessionAlive) continue;
+                // prepare（multipart 老路径）是「先传完所有文件、再 saveSession」，这期间同样
+                // 「有文件、无会话」。给一个最小存活时间，避免把正在上传的专辑删掉。
+                long writtenAt = lastWriteAt.getOrDefault(uploadId, now);
+                if (now - writtenAt < ORPHAN_MIN_AGE_MILLIS) {
+                    log.debug("专辑暂存目录刚有写入，本轮跳过，uploadId={}", uploadId);
+                    continue;
+                }
                 minioService.deleteObjectsByPrefix(STAGING_PREFIX + uploadId + "/");
                 cleaned++;
                 log.info("已清理过期的专辑上传暂存文件，uploadId={}", uploadId);

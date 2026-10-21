@@ -276,6 +276,27 @@ public class MinioServiceImpl implements MinioService {
     }
 
     @Override
+    public List<StagedObject> listStagedObjects(String prefix) {
+        List<StagedObject> objects = new ArrayList<>();
+        try {
+            Iterable<Result<Item>> results = minioClient.listObjects(
+                    ListObjectsArgs.builder()
+                            .bucket(bucketName)
+                            .prefix(prefix == null ? "" : prefix)
+                            .recursive(true)
+                            .build()
+            );
+            for (Result<Item> result : results) {
+                Item item = result.get();
+                objects.add(new StagedObject(item.objectName(), item.lastModified()));
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("列出文件失败: " + e.getMessage(), e);
+        }
+        return objects;
+    }
+
+    @Override
     public InputStream getObject(String objectName) {
         try {
             return minioClient.getObject(GetObjectArgs.builder().bucket(bucketName).object(objectName).build());

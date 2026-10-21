@@ -13,6 +13,7 @@ import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.*;
 import cn.edu.seig.vibemusic.util.BindingResultUtil;
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.validation.BindingResult;
@@ -30,6 +31,7 @@ import java.util.List;
  * @author sunpingli
  * @since 2025-01-09
  */
+@Slf4j
 @RestController
 @RequestMapping("/admin")
 public class AdminController {
@@ -294,7 +296,17 @@ public class AdminController {
     @PatchMapping("/updateArtistAvatar/{id}")
     public Result updateArtistAvatar(@PathVariable("id") Long artistId, @RequestParam("avatar") MultipartFile avatar) {
         String avatarUrl = minioService.uploadFile(avatar, "artists");  // 上传到 artists 目录
-        return artistService.updateArtistAvatar(artistId, avatarUrl);
+        Result result = artistService.updateArtistAvatar(artistId, avatarUrl);
+        if (result.getCode() != 0) {
+            // 歌手不存在 / 改库失败时，刚上传的这个对象没有任何行引用它，
+            // 不在这里删掉就成了永久孤儿（不在 staging 前缀下，清扫任务扫不到）。
+            try {
+                minioService.deleteFile(avatarUrl);
+            } catch (RuntimeException e) {
+                log.warn("歌手头像更新失败后回收新对象失败，需人工处理：url={}", avatarUrl, e);
+            }
+        }
+        return result;
     }
 
     /**

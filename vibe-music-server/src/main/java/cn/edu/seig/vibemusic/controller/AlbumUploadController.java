@@ -24,8 +24,15 @@ public class AlbumUploadController {
     @PostMapping("/commit")
     public Result<Object> commit(@RequestBody AlbumUploadCommitDTO dto) { return albumUploadService.commit(dto); }
 
+    /**
+     * 放弃一次上传（管理端「放弃草稿」）。
+     *
+     * <p>走 {@code abort} 而不是 {@code clear}：用户主动放弃时，暂存文件删不掉必须
+     * <b>明确报错并保留会话</b>，让管理员能重试；报「已清理」但文件还在，用户会以为删干净了。
+     * {@code clear} 只用于提交成功后的垃圾清理（内部调用）。
+     */
     @DeleteMapping("/{uploadId}")
-    public Result<Object> clear(@PathVariable String uploadId) { return albumUploadService.clear(uploadId); }
+    public Result<Object> clear(@PathVariable String uploadId) { return albumUploadService.abort(uploadId); }
 
     @PostMapping("/session")
     public Result<Object> createSession(@RequestBody List<IAlbumUploadService.AlbumUploadFileRequest> files) {

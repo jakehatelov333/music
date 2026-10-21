@@ -75,4 +75,25 @@ public interface MinioService {
 
     /** 列出指定前缀下的所有对象名，用于回收孤儿暂存文件。 */
     List<String> listObjectNames(String prefix);
+
+    /**
+     * 列出指定前缀下的对象名与最后修改时间。
+     *
+     * <p>孤儿清扫必须知道「这个目录是刚建的还是早就没人管了」：{@code prepare} 是
+     * 「先传文件、后写 Redis 会话」，中间那段窗口里目录已存在而会话还没建，
+     * 只按「无会话」判断会把正在上传的文件删掉。调用方据此跳过最近有写入的目录。
+     *
+     * @param prefix 对象前缀
+     * @return 对象名 + 最后修改时间（{@link java.time.ZonedDateTime}，取不到时为 {@code null}）
+     */
+    List<StagedObject> listStagedObjects(String prefix);
+
+    /**
+     * 暂存对象的一项：对象名与最后修改时间。
+     *
+     * @param objectName   对象名
+     * @param lastModified 最后修改时间；MinIO 未返回时为 {@code null}（调用方应按「刚写入」处理，宁可不删）
+     */
+    record StagedObject(String objectName, java.time.ZonedDateTime lastModified) {
+    }
 }

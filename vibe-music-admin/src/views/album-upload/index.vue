@@ -245,10 +245,28 @@ function removeDraft(uploadId: string) {
   draftTasks.value = draftTasks.value.filter(item => item.uploadId !== uploadId);
   persistDrafts();
 }
-async function clearDraft(uploadId: string) {
-  await clearAlbumUpload(uploadId).catch(() => undefined);
+/**
+ * 放弃一条草稿：先让服务端清理暂存文件与 Redis 会话，**确认成功后才移除本地条目**。
+ *
+ * <p>不能像以前那样 `catch(() => undefined)` 吞掉失败：请求失败时（断网、后端 500、
+ * MinIO 删除异常）暂存文件全都还在服务端，而本地记录一删就再没有任何东西指向它们，
+ * 管理员却以为「已经删干净了」。失败时保留草稿，提示后可以重试。
+ */
+async function clearDraft(uploadId: string): Promise<boolean> {
+  try {
+    const res = await clearAlbumUpload(uploadId);
+    if (res.code !== 0) {
+      throw new Error(res.message || "清理失败");
+    }
+  } catch (error: any) {
+    message(`草稿清理失败，暂存文件仍保留在服务器：${error?.message || "请稍后重试"}`, {
+      type: "error"
+    });
+    return false;
+  }
   removeDraft(uploadId);
   if (localStorage.getItem("album-upload-id") === uploadId) localStorage.removeItem("album-upload-id");
+  return true;
 }
 /**
  * 进页面时主动核对草稿。
@@ -276,10 +294,12 @@ async function validateDrafts() {
     // 服务端才是过期时间的权威：本地展示用的 expiresAt 每次都按真实 TTL 校正
     updateDraftExpiry(check.uploadId, check.alive.expiresAt);
   }
+  let removed = 0;
   for (const uploadId of expired) {
-    await clearDraft(uploadId);
+    // 清理失败时 clearDraft 已经提示过原因，这里只统计真正清掉的条数
+    if (await clearDraft(uploadId)) removed++;
   }
-  if (expired.length) message(`已清理 ${expired.length} 个过期草稿`, { type: "info" });
+  if (removed) message(`已清理 ${removed} 个过期草稿`, { type: "info" });
 }
 /** 草稿箱展示全部条目：只隐藏本地判断已过期的，等上面一次服务端校正把它们救回来或清掉 */
 const visibleDrafts = computed(() => {
@@ -309,8 +329,11 @@ async function openDraft(uploadId: string) {
     return message("无法连接服务器，请稍后重试", { type: "error" });
   }
   if (!result.data) {
-    await clearDraft(uploadId);
-    return message("草稿已过期，已从草稿箱移除", { type: "warning" });
+    // 会话已经没了，服务端只剩可能的残留文件；清理失败时 clearDraft 会自己提示，
+    // 此时不再补一句「已移除」，避免同时出现两条互相矛盾的消息
+    const cleaned = await clearDraft(uploadId);
+    if (cleaned) message("草稿已过期，已从草稿箱移除", { type: "warning" });
+    return;
   }
   updateDraftExpiry(uploadId, result.data.expiresAt);
   activeDraftId.value = uploadId;
@@ -513,7 +536,20 @@ async function clear() {
   // 先取 id 再清空状态：之前 removeDraft 放在 prepared.value = undefined 之后，
   // 条件永远为 false，导致「清空任务」后草稿箱里还留着一条指向已删会话的死条目。
   const uploadId = prepared.value?.uploadId || activeDraftId.value || localStorage.getItem("album-upload-id") || "";
-  if (uploadId) await clearAlbumUpload(uploadId).catch(() => undefined);
+  if (uploadId) {
+    // 服务端没清干净就不能把界面收回去：否则暂存文件还在、管理员却失去了重试的入口
+    try {
+      const res = await clearAlbumUpload(uploadId);
+      if (res.code !== 0) {
+        throw new Error(res.message || "清理失败");
+      }
+    } catch (error: any) {
+      return message(
+        `暂存文件清理失败，请稍后重试：${error?.message || "未知原因"}`,
+        { type: "error" }
+      );
+    }
+  }
   prepared.value = undefined; audioFiles.value = []; coverFile.value = undefined; form.albumName = ""; form.artistName = ""; form.artistId = null; form.releaseDate = ""; form.description = "";
   localStorage.removeItem("album-upload-id"); uploadProgress.value = {}; uploadErrors.value = {}; sessionFiles.value = [];
   pendingConfirm.value = null; pendingConfirmVisible.value = false;

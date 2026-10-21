@@ -45,6 +45,8 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -53,6 +55,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -588,6 +591,14 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
         }
 
         String oldAvatar = existing.getAvatar();
+        // 本次请求刚上传/下载的新头像：只要事务没有成功提交，它就没有任何行引用，必须删掉。
+        // 以前 try 只包住 updateById，后面的 rebuildArtistNamesForArtist / enqueue 一旦抛异常，
+        // 事务整体回滚，而新头像留在 MinIO 里 —— 没有任何行指向它，谁也再找不到。
+        // 用 afterCompletion 兜住「整个方法走完、但事务在提交阶段失败」这种 try 覆盖不到的情况。
+        AtomicBoolean avatarHandled = new AtomicBoolean(false);
+        if (avatarReplaced) {
+            registerAvatarRollbackCleanup(newAvatarUrl, avatarHandled);
+        }
         try {
             Artist artist = new Artist();
             BeanUtils.copyProperties(artistUpdateDTO, artist);
@@ -596,32 +607,59 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             }
             if (artistMapper.updateById(artist) == 0) {
                 if (avatarReplaced) {
+                    // 返回而非抛异常 → 事务仍会提交，afterCompletion 不会回收，这里必须自己删
                     deleteQuietly(newAvatarUrl);
+                    avatarHandled.set(true);
                 }
                 return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+            }
+
+            // tb_song.artist_names 是派生值：歌手名一变，所有引用它的歌曲展示串都必须重建，
+            // 否则歌曲列表里会继续显示旧名。重建与上面的改名在同一事务内完成。
+            songArtistService.rebuildArtistNamesForArtist(artistId);
+
+            // 旧头像不就地删除：可能被别的行共用，也可能在本次事务回滚后仍然有效。
+            // 登记清理任务，由 worker 核对全部引用后再决定删或留。
+            if (avatarReplaced && StringUtils.hasText(oldAvatar) && !oldAvatar.equals(newAvatarUrl)) {
+                mediaCleanupService.enqueueForId(oldAvatar, MediaCleanupSourceType.ARTIST_AVATAR_REPLACE,
+                        artistId, "替换歌手头像");
             }
         } catch (RuntimeException e) {
             if (avatarReplaced) {
                 deleteQuietly(newAvatarUrl);
+                avatarHandled.set(true);
             }
             throw e;
-        }
-
-        // tb_song.artist_names 是派生值：歌手名一变，所有引用它的歌曲展示串都必须重建，
-        // 否则歌曲列表里会继续显示旧名。重建与上面的改名在同一事务内完成。
-        songArtistService.rebuildArtistNamesForArtist(artistId);
-
-        // 旧头像不就地删除：可能被别的行共用，也可能在本次事务回滚后仍然有效。
-        // 登记清理任务，由 worker 核对全部引用后再决定删或留。
-        if (avatarReplaced && StringUtils.hasText(oldAvatar) && !oldAvatar.equals(newAvatarUrl)) {
-            mediaCleanupService.enqueueForId(oldAvatar, MediaCleanupSourceType.ARTIST_AVATAR_REPLACE,
-                    artistId, "替换歌手头像");
         }
 
         // 状态变化会影响推荐列表里的歌曲可见性
         evictRecommendedSongsCache();
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
+    }
+
+    /**
+     * 注册「事务回滚时回收本次新上传的头像」。
+     *
+     * <p>只在有活动事务时注册。{@code afterCompletion} 在事务最终态确定后执行：
+     * 回滚就删，提交就什么都不做（此时头像已被 artist 行引用）。
+     *
+     * <p>与 {@code try/catch} 里的删除互补，不是重复：catch 覆盖的是「方法内部抛异常」，
+     * 这里覆盖的是「方法正常返回、但事务在提交阶段失败」（如提交时死锁、连接断开）。
+     * 两处都通过 {@code handled} 标记保证同一个对象只删一次。
+     */
+    private void registerAvatarRollbackCleanup(String url, AtomicBoolean handled) {
+        if (!StringUtils.hasText(url) || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED && handled.compareAndSet(false, true)) {
+                    deleteQuietly(url);
+                }
+            }
+        });
     }
 
     /** 删除对象，失败只记日志——用于清理本次请求刚产生、不可能被引用的残留。 */

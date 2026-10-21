@@ -20,6 +20,7 @@ import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -135,14 +136,14 @@ class SongUploadClearTest {
      */
     @Test
     @DisplayName("孤儿清扫只删无会话目录，保留进行中的草稿")
-    @SuppressWarnings("unchecked")
     void cleanupOrphanSkipsLiveSessions() {
         String aliveId = "11111111-1111-4111-8111-111111111111";
         String orphanId = "22222222-2222-4222-8222-222222222222";
-        when(minioService.listObjectNames("staging/song-upload/"))
+        ZonedDateTime old = ZonedDateTime.now().minusHours(2);
+        when(minioService.listStagedObjects("staging/song-upload/"))
                 .thenReturn(List.of(
-                        "staging/song-upload/" + aliveId + "/audio.mp3",
-                        "staging/song-upload/" + orphanId + "/audio.flac"));
+                        new MinioService.StagedObject("staging/song-upload/" + aliveId + "/audio.mp3", old),
+                        new MinioService.StagedObject("staging/song-upload/" + orphanId + "/audio.flac", old)));
         StringRedisTemplate redisTemplate =
                 (StringRedisTemplate) ReflectionTestUtils.getField(service, "stringRedisTemplate");
         when(redisTemplate.hasKey("song-upload:session:" + aliveId)).thenReturn(true);
@@ -154,6 +155,29 @@ class SongUploadClearTest {
         verify(minioService).deleteObjectsByPrefix("staging/song-upload/" + orphanId);
         verify(minioService, never())
                 .deleteObjectsByPrefix("staging/song-upload/" + aliveId);
+    }
+
+    /**
+     * prepare 的窗口：文件已经写进 staging、Redis 会话还没建。这段时间里「有文件 + 无会话」
+     * 与孤儿完全一样，清扫必须按写入时间跳过，否则会把正在上传的音频删掉。
+     */
+    @Test
+    @DisplayName("孤儿清扫跳过刚有写入的目录，不误删 prepare 中的文件")
+    void cleanupOrphanSkipsRecentlyWrittenFolders() {
+        String uploadingId = "33333333-3333-4333-8333-333333333333";
+        when(minioService.listStagedObjects("staging/song-upload/"))
+                .thenReturn(List.of(new MinioService.StagedObject(
+                        "staging/song-upload/" + uploadingId + "/audio.flac",
+                        ZonedDateTime.now().minusSeconds(5))));
+        StringRedisTemplate redisTemplate =
+                (StringRedisTemplate) ReflectionTestUtils.getField(service, "stringRedisTemplate");
+        when(redisTemplate.hasKey("song-upload:session:" + uploadingId)).thenReturn(false);
+
+        int cleaned = service.cleanupOrphanStaging();
+
+        assertEquals(0, cleaned);
+        verify(minioService, never())
+                .deleteObjectsByPrefix("staging/song-upload/" + uploadingId);
     }
 
     private static String sessionJson() {

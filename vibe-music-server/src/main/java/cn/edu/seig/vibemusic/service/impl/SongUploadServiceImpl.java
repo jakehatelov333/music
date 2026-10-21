@@ -45,6 +45,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -77,6 +78,15 @@ public class SongUploadServiceImpl implements ISongUploadService {
      */
     private static final long UPLOAD_TTL_HOURS = 12L;
     private static final long UPLOAD_TTL_MILLIS = TimeUnit.HOURS.toMillis(UPLOAD_TTL_HOURS);
+    /**
+     * 孤儿清扫的最小存活时间：暂存目录最近 {@code N} 分钟内有过写入就跳过。
+     *
+     * <p>覆盖的是 {@code prepare} 的窗口：音频与内嵌封面先写进 staging，解析完才写 Redis 会话。
+     * 这期间「有文件、无会话」看起来与孤儿完全一样，但文件正在被使用。取 10 分钟 ——
+     * 远大于大文件上传+解析的实际耗时，又远小于 12 小时的会话 TTL，
+     * 真正的孤儿最多晚一轮（每小时）被回收，代价可以忽略。
+     */
+    private static final long ORPHAN_MIN_AGE_MILLIS = TimeUnit.MINUTES.toMillis(10);
     private static final Set<String> AUDIO_EXTENSIONS = Set.of("mp3", "flac", "wav");
     private static final Set<String> COVER_EXTENSIONS = Set.of("jpg", "jpeg", "png");
     private static final Set<String> LYRICS_EXTENSIONS = Set.of("lrc", "txt");
@@ -327,11 +337,14 @@ public class SongUploadServiceImpl implements ISongUploadService {
         // 提交成功的分界线。一旦跨过它，正式封面/音频就已经被 tb_song 行引用，
         // 后续任何异常都<b>不得</b>再删除这两个对象 —— 否则会留下「记录在、文件没了」的静默损坏。
         boolean committed = false;
+        // 提到 try 外面：catch 里要用它们重组返回值（见 recoverCommittedResult）
+        Song song = null;
+        Long primaryArtistId = null;
+        boolean artistCreated = false;
         try {
             // 歌手：artistIds 优先（顺序即展示顺序）；否则回退到旧的「按名字解析/创建单个歌手」。
             List<Long> requestedArtistIds = SongArtistService.normalizeArtistIds(
                     dto.getArtistIds(), dto.getArtistId());
-            boolean artistCreated = false;
             List<Long> finalArtistIds;
             if (!requestedArtistIds.isEmpty() || hasPendingArtistNames(dto)) {
                 // 新路径：已存在的歌手（id）+ 待新建的歌手（名字）可能混排，
@@ -356,7 +369,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 }
                 finalArtistIds = List.of(resolvedId);
             }
-            Long primaryArtistId = finalArtistIds.get(0);
+            primaryArtistId = finalArtistIds.get(0);
             if (!minioService.objectExists(session.getAudioObjectName())) {
                 return Result.error("临时音频文件不存在或已过期，请重新上传");
             }
@@ -384,32 +397,14 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 );
             }
 
-            Long albumId = resolveAlbumId(
-                    primaryArtistId,
-                    dto.getAlbum(),
-                    dto.getAlbumId(),
-                    releaseDate,
-                    finalCoverUrl,
-                    transactionTemplate()
-            );
-            Integer trackNumber = dto.getTrackNumber();
-            if (trackNumber == null && albumId != null) {
-                trackNumber = albumMapper.getNextTrackNumber(albumId);
-            }
-            if (trackNumber == null || trackNumber < 1) {
-                trackNumber = 1;
-            }
-
             String lyricText = dto.getLyrics() != null ? dto.getLyrics() : session.getLyricsContent();
             boolean hasLyric = StringUtils.hasText(lyricText);
 
-            Song song = new Song()
+            song = new Song()
                     .setArtistId(primaryArtistId)
-                    .setAlbumId(albumId)
                     .setSongName(dto.getSongName().trim())
                     .setAlbum(trimToNull(dto.getAlbum()))
                     .setDiscNumber(dto.getDiscNumber() == null ? 1 : dto.getDiscNumber())
-                    .setTrackNumber(trackNumber)
                     .setLyric(hasLyric ? lyricText : null)
                     .setLyricSource(hasLyric ? "MANUAL" : null)
                     .setLyricStatus(hasLyric ? LyricStatusEnum.MANUAL.getId() : LyricStatusEnum.MISSING.getId())
@@ -420,16 +415,43 @@ public class SongUploadServiceImpl implements ISongUploadService {
                     .setAudioUrl(finalAudioUrl)
                     .setReleaseTime(releaseDate);
 
-            // 歌曲行与歌手关系必须同生共死：用一个独立的小事务包住这两步，失败整块回滚，
-            // 不会留下「有歌曲却没有任何歌手关系」的孤儿行。
-            // 这里用 TransactionTemplate 而不是给 commit 加 @Transactional —— 后者在外层
+            // 「建专辑 + 插歌曲 + 建歌手关系」必须同生共死：用一个独立的小事务包住，
+            // 任一步失败整块回滚。
+            //
+            // <p><b>建专辑必须在这个事务里，不能提前单独开事务</b>：曾经 resolveAlbumId 自带
+            // TransactionTemplate，会先把新专辑提交掉；随后插歌曲失败回滚、catch 里又把刚转存的
+            // 正式封面删掉 —— 库里于是留下一张「没有任何歌、封面指向已删对象」的空专辑。
+            // 这比文件孤儿更难发现：它不会占存储，只会让专辑页显示破图。
+            //
+            // <p>这里用 TransactionTemplate 而不是给 commit 加 @Transactional —— 后者在外层
             // catch 吞掉异常后事务已被标记 rollback-only，提交时反而抛 UnexpectedRollbackException。
+            // lambda 里只能捕获 effectively final：这几个变量在 try 外部声明是为了 catch 复用，
+            // 因此这里各取一份 final 别名。
+            final Song songToSave = song;
+            final Long artistIdForAlbum = primaryArtistId;
+            final String coverUrlForAlbum = finalCoverUrl;
+            final LocalDate releaseDateForAlbum = releaseDate;
             TransactionTemplate songTx = transactionTemplate();
             songTx.executeWithoutResult(status -> {
-                if (songMapper.insert(song) != 1) {
+                Long albumId = resolveAlbumId(
+                        artistIdForAlbum,
+                        dto.getAlbum(),
+                        dto.getAlbumId(),
+                        releaseDateForAlbum,
+                        coverUrlForAlbum
+                );
+                Integer trackNumber = dto.getTrackNumber();
+                if (trackNumber == null && albumId != null) {
+                    trackNumber = albumMapper.getNextTrackNumber(albumId);
+                }
+                if (trackNumber == null || trackNumber < 1) {
+                    trackNumber = 1;
+                }
+                songToSave.setAlbumId(albumId).setTrackNumber(trackNumber);
+                if (songMapper.insert(songToSave) != 1) {
                     throw new IllegalStateException("歌曲信息保存失败");
                 }
-                songArtistService.replaceSongArtists(song.getSongId(), finalArtistIds);
+                songArtistService.replaceSongArtists(songToSave.getSongId(), finalArtistIds);
             });
             committed = true;
 
@@ -438,13 +460,13 @@ public class SongUploadServiceImpl implements ISongUploadService {
         } catch (Exception e) {
             if (committed) {
                 // 已提交：正式封面/音频已被歌曲行引用，绝不能回收。
-                // 组装响应失败不代表入库失败，重新读取已提交结果返回即可（幂等重放）。
-                log.error("歌曲已入库，但组装响应失败，改为重读已提交结果，uploadId={}", dto.getUploadId(), e);
-                Result<SongUploadCommitVO> recovered = recoverCommittedResult(dto);
+                // 组装响应失败不代表入库失败，用刚插入的实体重新组装返回即可（幂等重放）。
+                log.error("歌曲已入库，但组装响应失败，改为用已提交实体重组结果，uploadId={}", dto.getUploadId(), e);
+                Result<SongUploadCommitVO> recovered = recoverCommittedResult(song, primaryArtistId, artistCreated);
                 if (recovered != null) {
                     return recovered;
                 }
-                // 连重读都失败：明确告诉调用方「已保存」而不是「请重试」，
+                // 连重组都失败：明确告诉调用方「已保存」而不是「请重试」，
                 // 避免管理员重复上传导致重复建歌。
                 return Result.error("歌曲已保存成功，但返回结果读取失败，请稍后在曲库中确认，勿重复提交");
             }
@@ -613,16 +635,28 @@ public class SongUploadServiceImpl implements ISongUploadService {
     @Override
     public int cleanupOrphanStaging() {
         Set<String> uploadIds = new LinkedHashSet<>();
+        // 目录里最近一次写入的时间。只按「无会话」判断会误删正在上传的文件：
+        // prepare 是「先传音频（+内嵌封面）到 staging、解析完才写 Redis 会话」，
+        // 大 FLAC 下这段窗口可达数十秒，期间目录已存在而会话还没建。
+        Map<String, Long> lastWriteAt = new HashMap<>();
+        long now = System.currentTimeMillis();
         try {
-            for (String object : minioService.listObjectNames(STAGING_ROOT + "/")) {
-                if (object == null || !object.startsWith(STAGING_ROOT + "/")) {
+            for (MinioService.StagedObject object : minioService.listStagedObjects(STAGING_ROOT + "/")) {
+                String name = object.objectName();
+                if (name == null || !name.startsWith(STAGING_ROOT + "/")) {
                     continue;
                 }
-                String rest = object.substring((STAGING_ROOT + "/").length());
+                String rest = name.substring((STAGING_ROOT + "/").length());
                 int slash = rest.indexOf('/');
-                if (slash > 0) {
-                    uploadIds.add(rest.substring(0, slash));
+                if (slash <= 0) {
+                    continue;
                 }
+                String uploadId = rest.substring(0, slash);
+                uploadIds.add(uploadId);
+                long modified = object.lastModified() == null
+                        ? now                       // 拿不到时间就当作「刚写入」，宁可少删
+                        : object.lastModified().toInstant().toEpochMilli();
+                lastWriteAt.merge(uploadId, modified, Math::max);
             }
         } catch (Exception e) {
             log.warn("列举歌曲上传 staging 对象失败，跳过本轮孤儿清理", e);
@@ -633,6 +667,12 @@ public class SongUploadServiceImpl implements ISongUploadService {
             try {
                 // 只认 Redis：会话仍在 = 草稿还活着，绝不能删它的文件
                 if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(sessionKey(uploadId)))) {
+                    continue;
+                }
+                // 再给一个最小存活时间：覆盖「文件已落盘、会话还没写」的 prepare 窗口
+                long writtenAt = lastWriteAt.getOrDefault(uploadId, now);
+                if (now - writtenAt < ORPHAN_MIN_AGE_MILLIS) {
+                    log.debug("暂存目录刚有写入，本轮跳过，uploadId={}", uploadId);
                     continue;
                 }
                 minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
@@ -765,15 +805,18 @@ public class SongUploadServiceImpl implements ISongUploadService {
     }
 
     /**
-     * 解析或创建专辑。<b>必须在外层事务内调用</b>。
+     * 解析或创建专辑。<b>必须在调用方的事务内执行，且本方法不自己开事务</b>。
      *
-     * <p>历史上这里是裸调用：歌曲提交失败时专辑的新建/更新已经写进去了，
-     * 回滚不了，于是库里会留下「没有歌的空专辑」。把事务对象显式传进来，
-     * 让「建专辑 + 建歌曲 + 建歌手关系」三者同生共死。
+     * <p>历史上有两种错误写法，后果都是「没有歌的空专辑」：
+     * <ol>
+     *   <li>裸调用（无事务）：歌曲提交失败时专辑已经写进去了，回滚不了；</li>
+     *   <li>自带 TransactionTemplate：专辑被<b>提前独立提交</b>，随后插歌曲失败回滚、
+     *       catch 里删掉刚转存的正式封面 —— 专辑行留下且 cover_url 指向已删对象。</li>
+     * </ol>
+     * 现在由 {@code commit} 在同一个 {@code songTx} 里调用，让「建专辑 + 插歌曲 + 建歌手关系」同生共死。
      */
     private Long resolveAlbumId(Long artistId, String albumName, Long albumId,
-                                LocalDate releaseDate, String coverUrl,
-                                TransactionTemplate transactionTemplate) {
+                                LocalDate releaseDate, String coverUrl) {
         if (albumId != null) {
             return albumId;
         }
@@ -782,57 +825,55 @@ public class SongUploadServiceImpl implements ISongUploadService {
         }
 
         final String normalizedName = albumName.trim();
-        return transactionTemplate.execute(status -> {
-            Album album = albumMapper.selectOne(new QueryWrapper<Album>()
-                    .eq("artist_id", artistId)
-                    .eq("name", normalizedName)
-                    .last("LIMIT 1"));
-            if (album == null) {
-                album = new Album()
-                        .setArtistId(artistId)
-                        .setAlbumName(normalizedName)
-                        .setReleaseDate(releaseDate)
-                        .setCoverUrl(coverUrl);
-                albumMapper.insert(album);
-                return album.getAlbumId();
-            }
-
-            boolean changed = false;
-            if (album.getCoverUrl() == null && coverUrl != null) {
-                album.setCoverUrl(coverUrl);
-                changed = true;
-            }
-            if (album.getReleaseDate() == null && releaseDate != null) {
-                album.setReleaseDate(releaseDate);
-                changed = true;
-            }
-            if (changed) {
-                albumMapper.updateById(album);
-            }
+        Album album = albumMapper.selectOne(new QueryWrapper<Album>()
+                .eq("artist_id", artistId)
+                .eq("name", normalizedName)
+                .last("LIMIT 1"));
+        if (album == null) {
+            album = new Album()
+                    .setArtistId(artistId)
+                    .setAlbumName(normalizedName)
+                    .setReleaseDate(releaseDate)
+                    .setCoverUrl(coverUrl);
+            albumMapper.insert(album);
             return album.getAlbumId();
-        });
+        }
+
+        boolean changed = false;
+        if (album.getCoverUrl() == null && coverUrl != null) {
+            album.setCoverUrl(coverUrl);
+            changed = true;
+        }
+        if (album.getReleaseDate() == null && releaseDate != null) {
+            album.setReleaseDate(releaseDate);
+            changed = true;
+        }
+        if (changed) {
+            albumMapper.updateById(album);
+        }
+        return album.getAlbumId();
     }
 
     /**
-     * 提交成功、但组装响应失败后的兜底：按歌曲名 + 主歌手重读刚写入的记录。
+     * 提交成功、但组装响应失败后的兜底：用<b>刚插入的那条实体</b>重新组装返回值。
      *
-     * <p>只重读<b>不写</b>，读不到就返回 {@code null} 交给调用方降级处理，
-     * 绝不会为了「修好响应」而回删已经入库的媒体对象。
+     * <p>只读不写，不为了「修好响应」而回删已经入库的媒体对象。
+     *
+     * <p>曾经是按 {@code songName + dto.getArtistId()} 回库重查。多歌手路径下前端走
+     * {@code artistIds}、{@code artistId} 常常是 null，查询条件对不上 → 查不到 → 管理员收到
+     * 「歌曲已保存成功，但返回结果读取失败」，只能自己去曲库确认。而 {@code song} 在事务内
+     * 已拿到自增主键，直接用它组装就够了，不必再查一次。
      */
-    private Result<SongUploadCommitVO> recoverCommittedResult(SongUploadCommitDTO dto) {
+    private Result<SongUploadCommitVO> recoverCommittedResult(Song song, Long primaryArtistId,
+                                                              boolean artistCreated) {
+        if (song == null || song.getSongId() == null) {
+            return null;
+        }
         try {
-            Song saved = songMapper.selectOne(new QueryWrapper<Song>()
-                    .eq("song_name", dto.getSongName() == null ? null : dto.getSongName().trim())
-                    .eq("artist_id", dto.getArtistId())
-                    .orderByDesc("song_id")
-                    .last("LIMIT 1"));
-            if (saved == null) {
-                return null;
-            }
             return Result.success("歌曲上传成功",
-                    buildCommitVO(saved, saved.getArtistId(), false));
+                    buildCommitVO(song, primaryArtistId, artistCreated));
         } catch (Exception e) {
-            log.error("重读已提交歌曲失败，uploadId={}", dto.getUploadId(), e);
+            log.error("用已提交实体重组返回结果失败，songId={}", song.getSongId(), e);
             return null;
         }
     }
@@ -944,17 +985,30 @@ public class SongUploadServiceImpl implements ISongUploadService {
             long now = System.currentTimeMillis();
             session.setLastActivityAt(now);
             String json = objectMapper.writeValueAsString(session);
-            stringRedisTemplate.opsForValue().set(
-                    sessionKey(session.getUploadId()),
-                    json,
-                    UPLOAD_TTL_HOURS,
-                    TimeUnit.HOURS
-            );
+            // 先写索引、再写会话：反过来时若 zadd 失败，会话已存在而索引里没有，
+            // prepare 的 catch 会删掉文件却留下这个 key → 草稿箱里多一条「能打开、一提交就说过期」
+            // 的幽灵条目。现在索引先成功，会话写失败时 catch 一并回滚索引即可。
             stringRedisTemplate.opsForZSet().add(
                     SESSION_INDEX_KEY,
                     session.getUploadId(),
                     now
             );
+            try {
+                stringRedisTemplate.opsForValue().set(
+                        sessionKey(session.getUploadId()),
+                        json,
+                        UPLOAD_TTL_HOURS,
+                        TimeUnit.HOURS
+                );
+            } catch (RuntimeException e) {
+                // 会话没写成功，索引项留着会让 cleanupExpired 反复处理一个不存在的会话
+                try {
+                    stringRedisTemplate.opsForZSet().remove(SESSION_INDEX_KEY, session.getUploadId());
+                } catch (RuntimeException ignored) {
+                    // 清理索引失败也无妨：孤儿清扫会按「无会话 + 目录够旧」把它收掉
+                }
+                throw e;
+            }
         } catch (Exception e) {
             throw new IllegalStateException("上传状态保存失败", e);
         }

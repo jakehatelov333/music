@@ -78,6 +78,7 @@ class AlbumUploadCommitArtistTest {
     private SongMapper songMapper;
     private MinioService minioService;
     private SongArtistService songArtistService;
+    private cn.edu.seig.vibemusic.service.MediaCleanupService mediaCleanupService;
     private IArtistService artistService;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> redisValueOperations;
@@ -98,6 +99,7 @@ class AlbumUploadCommitArtistTest {
         songMapper = mock(SongMapper.class);
         minioService = mock(MinioService.class);
         songArtistService = mock(SongArtistService.class);
+        mediaCleanupService = mock(cn.edu.seig.vibemusic.service.MediaCleanupService.class);
 
         when(artistMapper.selectById(any())).thenAnswer(invocation -> {
             Object id = invocation.getArgument(0);
@@ -147,6 +149,7 @@ class AlbumUploadCommitArtistTest {
         ReflectionTestUtils.setField(service, "songArtistService", songArtistService);
         ReflectionTestUtils.setField(service, "artistNameParser", parser);
         ReflectionTestUtils.setField(service, "artistProvisioningService", provisioningService);
+        ReflectionTestUtils.setField(service, "mediaCleanupService", mediaCleanupService);
         ReflectionTestUtils.setField(service, "stringRedisTemplate", redisTemplate);
         ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
     }
@@ -260,13 +263,32 @@ class AlbumUploadCommitArtistTest {
     @Test
     void cleanupReclaimsStagingFilesOnceRedisSessionIsGone() {
         when(redisTemplate.hasKey(anyString())).thenReturn(false);
-        when(minioService.listObjectNames(anyString()))
-                .thenReturn(List.of("staging/album-upload/" + UPLOAD_ID + "/01 第一首.mp3"));
+        when(minioService.listStagedObjects(anyString()))
+                .thenReturn(List.of(new MinioService.StagedObject(
+                        "staging/album-upload/" + UPLOAD_ID + "/01 第一首.mp3",
+                        java.time.ZonedDateTime.now().minusHours(2))));
 
         int cleaned = service.cleanupOrphanStaging();
 
         assertEquals(1, cleaned);
         verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
+    }
+
+    /**
+     * prepare 的窗口：文件已落盘、会话还没写。只按「无会话」判断会误删正在上传的专辑。
+     */
+    @Test
+    void cleanupSkipsStagingWrittenMomentsAgo() {
+        when(redisTemplate.hasKey(anyString())).thenReturn(false);
+        when(minioService.listStagedObjects(anyString()))
+                .thenReturn(List.of(new MinioService.StagedObject(
+                        "staging/album-upload/" + UPLOAD_ID + "/01 第一首.mp3",
+                        java.time.ZonedDateTime.now().minusSeconds(5))));
+
+        int cleaned = service.cleanupOrphanStaging();
+
+        assertEquals(0, cleaned);
+        verify(minioService, never()).deleteObjectsByPrefix(anyString());
     }
 
     @Test
@@ -330,11 +352,88 @@ class AlbumUploadCommitArtistTest {
         return song;
     }
 
+    /**
+     * 重传同名专辑并带新封面时，被换下的旧封面必须登记清理任务。
+     *
+     * <p>旧实现只把 {@code cover_url} 覆盖掉，旧对象再没有任何行引用它，
+     * 也不在 staging 前缀下（孤儿清扫扫不到），只能永久占着存储。
+     */
+    @Test
+    void replacingAlbumCoverEnqueuesOldCoverForCleanup() {
+        String oldCover = "http://minio.local/vibe-music-data/albumCovers/old-cover.jpg";
+        when(redisValueOperations.get(anyString())).thenReturn(stagingSessionJsonWithCover());
+        Album existing = new Album();
+        existing.setAlbumId(9001L);
+        existing.setCoverUrl(oldCover);
+        when(albumMapper.selectOne(any())).thenReturn(existing);
+        when(minioService.copyObject(anyString(), eq("albumCovers"), anyString()))
+                .thenReturn("http://minio.local/vibe-music-data/albumCovers/new-cover.jpg");
+
+        Result<Object> result = service.commit(commitDTO(true));
+
+        assertEquals(0, result.getCode().intValue(), "提交应成功：" + result.getMessage());
+        verify(mediaCleanupService).enqueueForId(
+                eq(oldCover),
+                eq(cn.edu.seig.vibemusic.constant.MediaCleanupSourceType.ALBUM_COVER_REPLACE),
+                eq(9001L),
+                anyString());
+    }
+
+    /**
+     * 放弃草稿：文件删不掉时<b>必须保留会话并报错</b>，不能谎报「已清理」。
+     *
+     * <p>会话是唯一记录「这次上传还没收尾」的地方；先删会话再删文件、失败了也不吭声，
+     * 管理员会以为删干净了，而文件只能等孤儿清扫兜底。
+     */
+    @Test
+    void abortKeepsSessionWhenStagingDeletionFails() {
+        org.mockito.Mockito.doThrow(new RuntimeException("目录清理失败: 网络超时"))
+                .when(minioService).deleteObjectsByPrefix(anyString());
+
+        Result<Object> result = service.abort(UPLOAD_ID);
+
+        assertNotEquals(0, result.getCode().intValue(), "失败必须显式报错，不能返回成功");
+        verify(redisTemplate, never()).delete(anyString());
+    }
+
+    /** 放弃草稿成功：先删文件、再删会话。 */
+    @Test
+    void abortDeletesStagingThenSession() {
+        Result<Object> result = service.abort(UPLOAD_ID);
+
+        assertEquals(0, result.getCode().intValue(), "应成功：" + result.getMessage());
+        var order = org.mockito.Mockito.inOrder(minioService, redisTemplate);
+        order.verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
+        order.verify(redisTemplate).delete("album-upload:session:" + UPLOAD_ID);
+    }
+
+    /** 会话已过期但文件还在：尽力删一次，不报错（这是正常生命周期终点）。 */
+    @Test
+    void abortStillCleansFilesWhenSessionAlreadyGone() {
+        when(redisValueOperations.get(anyString())).thenReturn(null);
+
+        Result<Object> result = service.abort(UPLOAD_ID);
+
+        assertEquals(0, result.getCode().intValue());
+        verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
+    }
+
     /** 与 {@code AlbumUploadServiceImpl.StagedSong} 的 Jackson 形态一致（Redis 会话里的暂存条目）。 */
     private static String stagingSessionJson() {
         return "["
                 + stagedEntry("01 第一首.mp3") + ","
                 + stagedEntry("02 第二首.mp3")
+                + "]";
+    }
+
+    /** 带一个封面条目的暂存会话：提交时会被转存到 albumCovers。 */
+    private static String stagingSessionJsonWithCover() {
+        return "["
+                + stagedEntry("01 第一首.mp3") + ","
+                + stagedEntry("02 第二首.mp3") + ","
+                + "{\"object\":\"staging/album-upload/" + UPLOAD_ID + "/album-cover.jpg\","
+                + "\"url\":\"\",\"fileName\":\"cover.jpg\",\"size\":2048,"
+                + "\"metadata\":{\"durationSeconds\":null}}"
                 + "]";
     }
 
