@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import Recently from './recently.vue'
+import RecentPlays from './recent-plays.vue'
 
 const emit = defineEmits<{
   openLyrics: []
@@ -70,6 +71,7 @@ const togglePlayMode = () => {
       <Icon :icon="isMuted ? 'ic:round-volume-off' : 'ic:round-volume-up'" class="w-full h-full" />
     </button>
     <el-slider v-model="volume" :show-tooltip="false" @change="setVolume" class="!w-24 mr-4" size="small" :max="100" />
+    <RecentPlays />
     <Recently />
   </div>
 </template>

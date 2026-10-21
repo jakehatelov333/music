@@ -60,7 +60,8 @@ pnpm type-check              # vue-tsc --noEmit
 - JWT（Auth0 java-jwt），密钥 `VIBE_MUSIC`，有效期 6 小时，Token 存 Redis（database 1）。
 - `WebConfig` 注册两个拦截器：`LoginInterceptor`（order 0，`/**`）→ `RateLimitInterceptor`（order 1，`/**`）。**`excludePathPatterns` 只是让请求不经过登录校验，不代表匿名可用** —— 见下条。
 - `LoginInterceptor` 的逻辑是「先查 token，再判路径」：无 token 时若路径命中 `PathConstant` 白名单（歌单列表/详情、歌手详情、歌曲列表/详情、专辑、`/ai/**`）则放行，否则 401。有 token 时校验 Redis 中的 token 存在性 + `RolePermissionManager.hasPermission(role, uri)`，失败返回 403。
-- 角色-路径映射在 `application.yml` 的 `role-path-permissions.permissions`（`ROLE_ADMIN` → `/admin/`；`ROLE_USER` → `/user/ /playlist/ /artist/ /song/ /album/ /favorite/ /comment/ /banner/ /feedback/ /ai/`），由 `RolePathPermissionsConfig` 绑定。
+- 角色-路径映射在 `application.yml` 的 `role-path-permissions.permissions`（`ROLE_ADMIN` → `/admin/`；`ROLE_USER` → `/user/ /playlist/ /artist/ /song/ /album/ /favorite/ /play-history/ /comment/ /banner/ /feedback/ /ai/`），由 `RolePathPermissionsConfig` 绑定。
+  - ⚠️ 匹配用的是 `requestURI.startsWith(prefix)`，前缀带斜杠。因此**不能**设计 `DELETE /play-history` 这种「前缀本身」的路径（会被 403），要写成 `/play-history/clear`。
 - **新增公开端点时必须同步改两处**：`WebConfig` 的 `excludePathPatterns` 和 `PathConstant` 白名单。
 - 身份通过 `ThreadLocalUtil` 传递；`security/PlaylistAccessService.requireUserId()` 取强制登录用户（游客抛 401），`optionalUserId()` 取可选登录用户（用于「匿名可见但登录后个性化」的端点）。
 - 限流在 `security/RedisRateLimiter` + `RateLimitInterceptor`。
@@ -100,7 +101,9 @@ pnpm type-check              # vue-tsc --noEmit
 
 **个性化与记忆**（文档：`vibe-music-server/docs/agent-protocol.md`、`agent-personalization.md`）：
 - 系统提示词 = 基础提示词 + `ChatSummaryService.renderSummaryBlock(chatId)`（滚动摘要，`ai.summary.*`）+ `UserMusicProfileService.renderPreferenceBlock(userId)`（音乐画像，游客只拿摘要、不拿画像）。注入内容**全部来自服务端数据库**，请求路径上不额外调模型。
-- 画像事实来自收藏与自建歌单（暂无播放历史表），TTL 内直接读库；偏好概述用 qwen-flash 生成并按事实指纹缓存。
+- 画像事实来自收藏与自建歌单（**显式信号**）+ 播放历史（**隐式信号**，独立字段），TTL 内直接读库；偏好概述用 qwen-flash 生成并按事实指纹缓存。
+  - **显式与隐式绝不能混**：`top_styles` / `top_artists` 只由收藏与自建歌单产生；播放历史只进 `played_song_count` / `recent_play_artists`，**绝不写入 `top_artists`**，也绝不覆盖用户手动设置的偏好。
+  - 隐式信号门槛：一位歌手至少要有 **2 首不同歌曲**被播放过才进入 `recent_play_artists`（单曲循环 500 次也不算）；SQL 按「播放过的不同歌曲数」排序，而不是总播放次数。没有固定权重、没有衰减算法。
 - 会话结束**异步**整理记忆与画像（`scheduleMemoryMaintenance`，延迟 1 秒），失败只记日志。
 - `GET /ai/profile` 只返回当前登录用户自己的画像（游客 401）。
 - 选曲去重：读取当前用户当前会话最近 N 条歌单预览（`ai.playlist-history.lookback`），在 SQL 层排除已用歌曲，避免连续创建同类歌单时整组重复。
@@ -115,7 +118,8 @@ pnpm type-check              # vue-tsc --noEmit
 - **上传清理**：`task/SongUploadCleanupTask`、`AlbumUploadCleanupTask` 清理未提交的上传；待确认任务过期由 `AgentPendingActionExpiryTask` 扫描。
 - **排序白名单**：列表接口的排序字段必须经 `util/SortWhitelistUtil` 校验，禁止直接拼接前端传入的列名。
 - **MinIO**：`MinioService` 封装；对象名解析对端点迁移做了兼容。另见 `docs/` 下相关记录。
-- **数据库脚本**：`vibe-music-server/sql/`。`vibe_music.sql` 是初始建表，其余为增量迁移（`phase2_*`、`phase3_*`、`phase4_agent_actions.sql`、`phase5_personalization.sql`、`phase6_song_multiple_artists.sql`、`album_migration.sql`、`migration_lyrics.sql`）。**改表结构要同时加迁移脚本**。
+- **数据库脚本**：`vibe-music-server/sql/`。`vibe_music.sql` 是初始建表，其余为增量迁移（`phase2_*`、`phase3_*`、`phase4_agent_actions.sql`、`phase5_personalization.sql`、`phase6_song_multiple_artists.sql`、`phase8_ai_memory_preferences.sql`、`phase12_play_history.sql`、`album_migration.sql`、`migration_lyrics.sql`）。**改表结构要同时加迁移脚本**。
+- **播放历史**：`tb_play_history`，唯一键 `(user_id, song_id)`（每个用户每首歌一行，重复播放是 UPDATE 不是追加）。`song_id` / `user_id` 都是 `ON DELETE CASCADE`，所以删歌 / 删号时历史自动消失；读查询另外 `INNER JOIN tb_song` 兜底，孤儿行永远不会返回。接口在 `PlayHistoryController`（`/play-history/**`，全部要求登录，且**不接受任何 userId 参数**）。
 - MyBatis-Plus 驼峰映射 + `tb_` 前缀；`log-impl` 刻意设为 `NoLoggingImpl` 以免 SQL 参数泄露密码和聊天内容。
 
 ### 测试
@@ -138,8 +142,13 @@ pnpm type-check              # vue-tsc --noEmit
 - **自动导入**：unplugin-auto-import 导入 vue/vue-router/pinia API 及 `src/utils/`、`src/stores/`、`src/hooks/` 导出；unplugin-vue-components 自动注册组件。新增工具函数无需手写 import。
 - **Axios baseURL 硬编码 `http://localhost:8080`**（`src/utils/http.ts`），**但 AI 相关请求走 `VITE_AI_BASE ?? ''` 同源**（`src/api/agent.ts`、`api/ai.ts`）—— 因为游客会话身份在 Cookie 里，跨端口收发不稳定，同源才能保证连续对话。
 - AI 流式必须用**原生 fetch**（axios 不支持 `ReadableStream`）。SSE 事件在 `src/utils/aiConversation.ts` 被组装成**区块模型** `Block[]`（`text` / `tool` / `songs`（分页卡片）/ `confirm`（确认卡片）/ `notice`），Markdown 经 `src/utils/aiMarkdown.ts` 安全渲染。`AiWidget.vue` 是全局浮窗（拖拽、游客模式、刷新后按 taskId 查回确认卡片）。
-- 路由（history 模式）：`/landing`、`/login`、`/` 首页、`/library` 曲库、`/artist` + `/artist/:id`、`/album` + `/album/:id`、`/playlist` + `/playlist/:id`、`/my-playlists/:id?`、`/like`、`/user`。
+- 路由（history 模式）：`/landing`、`/login`、`/` 首页、`/library` 曲库、`/artist` + `/artist/:id`、`/album` + `/album/:id`、`/playlist` + `/playlist/:id`、`/my-playlists/:id?`、`/like`、`/play-history`、`/user`。
 - ArtPlayer 播放器 + `hooks/useAudioPlayer.ts` 管理播放状态；歌词组件在 `components/Lyrics/`。
+- **播放历史**（`utils/playHistory.ts` + `api/playHistory.ts` + `pages/play-history/`）：
+  - **有效播放判定在纯函数 `PlaybackTracker` 里**（不依赖 Vue，可直接 `node --test`）：累计「真正在播」≥ `min(5s, 时长×50%)` **且**位置 ≥ `min(5s, 同一阈值)` 才算一次（阈值 2026-10-20 从 30 秒下调到 5 秒：实测「听十几秒就切歌」才是常见行为，30 秒会让功能体感上等于失效）；**开始播放本身不上报**，所以页面加载 / 误点 / 初始化都不会产生记录。
+  - 每次播放尝试生成一个 `playId` 幂等键，网络重试复用同一个；切歌或重新点播才换新键。后端据此去重。
+  - 上报是 fire-and-forget，失败静默（`X-Silent-Request` 让 `http.ts` 不弹进度条、不弹全局错误）。游客不上报。
+  - `onMounted` 注册的 `ended` 监听是 `onEnded`（不是 `nextTrack`），`onUnmounted` 必须移除**同一个引用**，否则会留下悬挂监听。
 
 ## 管理端架构 (`vibe-music-admin/`)
 

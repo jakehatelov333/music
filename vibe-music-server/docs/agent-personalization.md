@@ -7,7 +7,8 @@
 ## 1. 一句话架构
 
 ```
-收藏 + 自建歌单 ──SQL 聚合──▶ tb_user_music_profile（事实）
+收藏 + 自建歌单 ──SQL 聚合──▶ tb_user_music_profile（显式事实）
+播放历史 ─────────SQL 聚合──▶ 同上（隐式事实，独立字段，绝不混入显式字段）
                                    │ factsHash 指纹
                                    ▼
                             MusicTasteSummaryService（qwen-flash，异步）
@@ -35,23 +36,49 @@
 | 自建歌单歌曲 | `tb_playlist_binding` JOIN `tb_playlist` | 计入 `own_playlist_song_count` |
 | 常听风格 | 上面两类歌曲的 `tb_song.style` | **逗号分隔多值**，见 2.4 |
 | 常听歌手 | 上面两类歌曲的 `tb_song.artist_id` → `tb_artist.name` | TOP N |
-
-**明确不包含**：播放/收听行为。项目暂无 `tb_play_history` 表，
-因此画像不产出任何"听过什么"的结论，字段名一律 `fav_` / `own_` 前缀，防止被误读成播放偏好。
-（`tb_play_history` 落地后只需扩展聚合 SQL 与 `factsHash`，注入层不变。）
+| 播放歌曲数 | `tb_play_history` | 计入 `played_song_count`（**隐式**） |
+| 反复播放的歌手 | `tb_play_history` JOIN `tb_song_artist` | `recent_play_artists`（**隐式**） |
 
 去重口径：收藏歌曲与自建歌单歌曲用 `UNION ALL` 合并后 `COUNT(DISTINCT song_id)` ——
 同一首歌既被收藏又在自建歌单里只算一次。
+
+### 2.1.1 ⚠️ 显式信号 vs 隐式信号（不可混用）
+
+| | 显式信号 | 隐式信号 |
+|---|---|---|
+| 来源 | 收藏、用户自建歌单 | 播放历史 |
+| 语义 | 用户主动说「我要这个」 | 用户「听过」，可能只是好奇/顺带播到 |
+| 字段 | `top_styles` / `top_artists` / `fav_*` / `own_*` | `played_song_count` / `recent_play_artists` |
+| 能否当偏好 | 可以 | **只能当弱参考** |
+
+四条硬规则（`PlayHistoryProfileTest` 逐条断言）：
+
+1. **播放绝不写入 `top_artists` / `top_styles`** —— 那两个字段只由收藏与自建歌单产生。
+   把播放混进去，字段就再也无法区分「用户说的」和「系统猜的」。
+2. **单次播放不算偏好** —— `recent_play_artists` 要求一位歌手至少有
+   **2 首不同歌曲**被播放过（`MIN_DISTINCT_SONGS_FOR_PLAY_PREFERENCE = 2`）。
+   单曲循环 500 次仍然进不去，因为 SQL 按「播放过的**不同歌曲数**」排序，
+   而不是总播放次数 —— 循环一首歌只说明「这首在循环」，不说明偏爱这位歌手。
+3. **不覆盖用户显式设置的偏好** —— 手动排除的歌手，播放再多也不会被自动画像加回
+   （合并逻辑在 `UserMemoryPreferenceService#merge`，排除优先）。
+4. **不引入无依据的权重/衰减** —— 当前只做两件可解释的事：统计不同歌曲数、
+   按不同歌曲数取 TOP N。没有「播放权重 0.3」「30 天衰减」这类无法验证的黑箱。
+
+注入提示词时，隐式信号单独成段并显式降级：
+`播放记录（隐式信号，只能作为弱参考，不能据此断定用户喜欢什么）：播放过 N 首不同的歌；其中反复播放的歌手：…`
+`MusicTasteSummaryService` 的 prompt 也要求「提到播放时用『常播放』这类措辞，不要说成『喜欢』」。
 
 ### 2.2 字段含义
 
 | 字段 | 含义 |
 |---|---|
-| `top_styles` / `top_artists` | JSON 数组 `[{"name":..,"count":..}]`，按计数降序、名称升序，各取 TOP N（`ai.profile.top-n`，默认 5） |
+| `top_styles` / `top_artists` | JSON 数组 `[{"name":..,"count":..}]`，按计数降序、名称升序，各取 TOP N（`ai.profile.top-n`，默认 5）。**只来自显式信号** |
 | `fav_song_count` / `fav_playlist_count` | 收藏歌曲/歌单数 |
 | `own_playlist_count` / `own_playlist_song_count` | 自建歌单数 / 其中歌曲总数 |
+| `played_song_count` | 有过有效播放的**不同歌曲数**（隐式；与 `fav_song_count` 分开统计，不相加） |
+| `recent_play_artists` | 反复播放的歌手 TOP N（隐式；JSON 数组文本）。**不写入** `top_artists` |
 | `pref_summary` | qwen-flash 生成的自然语言概述（≤ `ai.profile.summary-max-chars`） |
-| `summary_source_hash` | 生成 `pref_summary` 时的**事实指纹**（SHA-256，只覆盖事实字段，不含 `pref_summary` 自身以免自指） |
+| `summary_source_hash` | 生成 `pref_summary` 时的**事实指纹**（SHA-256，只覆盖事实字段，不含 `pref_summary` 自身以免自指；隐式信号也纳入） |
 | `version` / `updated_at` | upsert 版本号 / TTL 判断依据 |
 
 ### 2.3 刷新与缓存（`UserMusicProfileService`）
@@ -138,7 +165,9 @@
 
 | 现象 | 查哪里 |
 |---|---|
-| 画像没生效（提示词里没偏好块） | ① 是否登录（游客不注入）；② 用户是否有收藏/自建歌单，零数据返回 `null`；③ `GET /ai/profile` 看行是否存在、`updated_at` 是否超 TTL；④ `SystemMessageInjectionTest` 断言的是同一条链路，先跑它 |
+| 画像没生效（提示词里没偏好块） | ① 是否登录（游客不注入）；② 用户是否有收藏/自建歌单/播放记录，零数据返回 `null`；③ `GET /ai/profile` 看行是否存在、`updated_at` 是否超 TTL；④ `SystemMessageInjectionTest` 断言的是同一条链路，先跑它 |
+| 播放了很多但画像里没有播放块 | ① `SELECT COUNT(DISTINCT song_id) FROM tb_play_history WHERE user_id=?` 是否为 0；② 是否只在同一首歌上循环（`recent_play_artists` 要求 ≥2 首不同歌曲）；③ 画像 TTL 内不会重算，等 `ai.profile.refresh-ttl-minutes` 或调 `refresh()` |
+| 播放记录被当成「喜欢」了 | 检查是否有人把播放聚合写进了 `top_artists`。正确做法只有 `recent_play_artists`；`PlayHistoryProfileTest#repeatedlyPlayedArtistsAreRecordedSeparatelyFromExplicitTaste` 会挂 |
 | 偏好概述一直是空 | ① 后端日志搜「偏好概述生成失败」——DashScope key 未注入会静默失败；② `SELECT user_id, summary_source_hash, LENGTH(pref_summary) FROM tb_user_music_profile`；指纹一致但概述为 NULL = 生成从未成功过 |
 | 摘要没生成 | ① `ai.summary.enabled`；② 未覆盖消息数是否 > `trigger-messages`（数 `chat_messages` 最可靠）；③ `SELECT chat_id, summary_upto_id, summary_updated_at FROM ai_chat_state`；④ 日志搜「会话摘要生成失败」 |
 | 摘要内容不对 | 摘要是有损压缩，以窗口内 20 条原文为准；检查是否把 TOOL 消息也压进去了（`render` 只取 USER/ASSISTANT）；单条超 300 字会被截断 |

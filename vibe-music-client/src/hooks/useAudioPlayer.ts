@@ -3,6 +3,9 @@ import { defaultSong } from '@/mock'
 import { ElNotification } from 'element-plus'
 import { PlayMode } from './interface'
 import { urlV1 } from '@/api'
+import { recordPlay } from '@/api/playHistory'
+import { PlaybackTracker } from '@/utils/playHistory'
+import { UserStore } from '@/stores/modules/user'
 interface AudioPlayer {
   isPlaying: Ref<boolean>
   currentTrack: ComputedRef<trackModel>
@@ -36,6 +39,32 @@ export const AudioPlayer = () => {
   const currentTime = ref(0)
   const duration = ref(0)
 
+  /*
+   * ---------------------------------------------------------------- 播放历史
+   *
+   * 只在「有效播放」时上报一次（判定规则见 utils/playHistory.ts）。
+   *
+   * 三个刻意的约束：
+   * 1. **不阻塞播放**：上报是 fire-and-forget，且失败不弹提示 ——
+   *    用户点播放是为了听歌，不是为了看「记录失败」的红字。
+   * 2. **游客不上报**：后端会 401，前端先判断登录态，省掉一次必然失败的请求。
+   *    游客的「播放列表」仍然留在本地 localStorage（原有行为，未改动）。
+   * 3. **旧事件必须清理**：切歌 / 卸载时 tracker 重置，避免上一首的累计时长
+   *    算到下一首头上。
+   */
+  const userStore = UserStore()
+  const playback = new PlaybackTracker(
+    async (songId, playId, positionSeconds) => {
+      if (!userStore.isLoggedIn) return
+      try {
+        await recordPlay(Number(songId), playId, positionSeconds)
+      } catch {
+        // 网络失败 / 后端 5xx：静默忽略。播放本身不受影响，
+        // 也不做无限重试 —— 播放历史是「锦上添花」，不值得为它堆重试队列。
+      }
+    }
+  )
+
   //   // 用于追踪当前歌词索引
   //   const currentLyricIndex = ref(0)
 
@@ -57,8 +86,19 @@ export const AudioPlayer = () => {
   // 播放音乐
   const play = () => {
     if (audioElement.value) {
-      audioElement.value.play()
+      // 开始/继续播放：tracker 负责判断这是「新的一次」还是「暂停后继续」。
+      // 同一首歌重复点播放不会重置已累计的有效时长（除非明确 restart）。
+      playback.start(String(currentTrack.value.id))
+      const pending = audioElement.value.play()
       isPlaying.value = true
+      // play() 返回 Promise：自动播放策略拦截、音频 404 时都会 reject。
+      // 这类「其实没播起来」的情况必须让 tracker 丢弃本次尝试，
+      // 否则用户看到的是「点了没反应，历史里却多了一条」。
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(() => {
+          playback.fail()
+        })
+      }
     }
   }
   // 跳转到指定时间
@@ -66,6 +106,8 @@ export const AudioPlayer = () => {
     if (audioElement.value) {
       audioElement.value.currentTime = time
       currentTime.value = time
+      // 跳转后同步位置基准，避免把「拖动」的差值算成播放时长
+      playback.tick(time, duration.value, isPlaying.value)
     }
   }
   // 暂停音乐
@@ -73,6 +115,8 @@ export const AudioPlayer = () => {
     if (audioElement.value) {
       audioElement.value.pause()
       isPlaying.value = false
+      // 暂停时同步一次位置（playing=false 不累加时长）
+      playback.tick(currentTime.value, duration.value, false)
     }
   }
 
@@ -147,6 +191,9 @@ export const AudioPlayer = () => {
 
     currentTime.value = 0
     duration.value = 0
+    // 切歌：开一次新的播放尝试。旧歌的累计时长与「已上报」标记必须在这里清掉，
+    // 否则上一首听了 20 秒的进度会被算到新歌头上（甚至直接用旧 playId 上报新歌）。
+    playback.start(String(currentTrack.value.id), true)
 
     if (audioElement.value) {
       audioElement.value.src = currentTrack.value.url
@@ -196,6 +243,12 @@ export const AudioPlayer = () => {
   const updateTime = () => {
     if (audioElement.value) {
       currentTime.value = audioElement.value.currentTime
+      // 有效播放判定入口：只在真正在播时累加时长（isPlaying 为 false 时只同步位置）
+      playback.tick(
+        audioElement.value.currentTime,
+        audioElement.value.duration,
+        !audioElement.value.paused
+      )
     }
   }
 
@@ -204,6 +257,29 @@ export const AudioPlayer = () => {
     if (audioElement.value) {
       duration.value = audioElement.value.duration
     }
+  }
+
+  /**
+   * 播放结束。
+   *
+   * <p>先让 tracker 结算（短歌可能在最后一个 timeupdate 之后才够阈值），
+   * 再走原有的「自动下一首」。**单曲循环不会重复计数** ——
+   * tracker 里已经记录过就不会再记（见 utils/playHistory.ts 的 start 注释）。
+   */
+  const onEnded = () => {
+    playback.ended(audioElement.value?.duration ?? 0)
+    void nextTrack()
+  }
+
+  /**
+   * 播放失败。
+   *
+   * <p>失败**不记历史**，并丢弃本次累计 —— 下次播放同一首歌要重新计时。
+   * 这里只清理 tracker，不打断原有播放流程（原来的实现本来就没有错误处理，
+   * 不因为加了历史而改变播放行为）。
+   */
+  const onError = () => {
+    playback.fail()
   }
 
   // 切换播放/暂停状态
@@ -254,17 +330,24 @@ export const AudioPlayer = () => {
     // checkLyrics()
     // 添加事件监听器
     audioElement.value.addEventListener('timeupdate', updateTime)
-    audioElement.value.addEventListener('ended', nextTrack)
+    audioElement.value.addEventListener('ended', onEnded)
     audioElement.value.addEventListener('loadedmetadata', onLoadedMetadata)
+    // 播放失败（音频 404 / 网络中断 / 格式不支持）：不记历史，也不打断播放流程
+    audioElement.value.addEventListener('error', onError)
   })
 
   // 组件卸载时移除事件监听器
+  // 必须与 onMounted 注册的函数是**同一个引用**，否则移除不掉 —— 旧实现注册的是 nextTrack，
+  // 这里改成 onEnded 后如果还按 nextTrack 移除，会留下一个悬挂监听（组件卸载后仍会触发）。
   onUnmounted(() => {
     if (audioElement.value) {
       audioElement.value.removeEventListener('timeupdate', updateTime)
-      audioElement.value.removeEventListener('ended', nextTrack)
+      audioElement.value.removeEventListener('ended', onEnded)
       audioElement.value.removeEventListener('loadedmetadata', onLoadedMetadata)
+      audioElement.value.removeEventListener('error', onError)
     }
+    // 丢弃未上报的播放状态：卸载后不应该再有上报发生
+    playback.dispose()
   })
 
   const audioPlayer: AudioPlayer = {

@@ -33,6 +33,8 @@ public class MusicTasteSummaryService {
             %s
             请用不超过 120 字的中文，概括这位用户的音乐口味倾向。只描述倾向，不要罗列全部数据，
             不要编造数据里没有的信息（例如不要猜年龄、职业）。直接输出概述正文，不要加标题或前缀。
+            注意：收藏与自建歌单是用户主动表达的行为，可以当作偏好；
+            播放记录只是「听过」，不能等同于喜欢，提到时要用「常播放」这类措辞，不要说成「喜欢」。
             """;
 
     private final UserMusicProfileService profiles;
@@ -62,14 +64,22 @@ public class MusicTasteSummaryService {
         }
     }
 
+    /**
+     * 把事实描述给模型。显式信号与隐式信号分段标注，让模型知道两者强度不同 ——
+     * 否则它会自然地把「播放过」写成「喜欢」。
+     */
     private String describe(UserMusicProfile profile) {
-        return "常听风格=" + nz(profile.getTopStyles())
+        return "【用户主动表达】常听风格=" + nz(profile.getTopStyles())
                 + "; 常听歌手=" + nz(profile.getTopArtists())
                 + "; 收藏歌曲数=" + profile.getFavSongCount()
                 + "; 收藏歌单数=" + profile.getFavPlaylistCount()
                 + "; 自建歌单数=" + profile.getOwnPlaylistCount()
-                + "; 自建歌单歌曲数=" + profile.getOwnPlaylistSongCount();
+                + "; 自建歌单歌曲数=" + profile.getOwnPlaylistSongCount()
+                + "。【播放记录（隐式，仅弱参考）】播放过不同歌曲数=" + nzInt(profile.getPlayedSongCount())
+                + "; 反复播放的歌手=" + nz(profile.getRecentPlayArtists());
     }
 
     private static String nz(String value) { return value == null || value.isBlank() ? "无" : value; }
+
+    private static int nzInt(Integer value) { return value == null ? 0 : value; }
 }

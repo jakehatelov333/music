@@ -29,8 +29,12 @@ public interface UserMusicProfileMapper {
     UserMusicProfile find(@Param("userId") Long userId);
 
     /**
-     * 事实计数（一次往返）。只返回 4 个计数列，TOP N 由另外两条语句单独取，
+     * 事实计数（一次往返）。只返回计数列，TOP N 由另外两条语句单独取，
      * 避免把多行聚合硬塞进一次查询。
+     *
+     * <p><b>{@code played_song_count} 单独一列，不与收藏相加：</b>收藏是用户显式表达，
+     * 播放只是「听过」。两者混在一个数字里，注入提示词时就没法再区分了。
+     * 播放历史表可能为空（新用户 / 从未播过），{@code COUNT} 返回 0 而不是 null。
      */
     @Select("""
             SELECT
@@ -44,7 +48,9 @@ public interface UserMusicProfileMapper {
                     SELECT b.song_id FROM tb_playlist_binding b
                       JOIN tb_playlist p ON p.id = b.playlist_id
                      WHERE p.owner_user_id = #{userId}
-               ) t) AS own_playlist_song_count
+               ) t) AS own_playlist_song_count,
+              (SELECT COUNT(DISTINCT h.song_id) FROM tb_play_history h
+                WHERE h.user_id = #{userId}) AS played_song_count
             """)
     UserMusicProfile aggregateCounts(@Param("userId") Long userId);
 
@@ -115,14 +121,18 @@ public interface UserMusicProfileMapper {
     @Insert("""
             INSERT INTO tb_user_music_profile
                 (user_id, top_styles, top_artists, fav_song_count, fav_playlist_count,
-                 own_playlist_count, own_playlist_song_count, version, updated_at)
+                 own_playlist_count, own_playlist_song_count, played_song_count,
+                 recent_play_artists, version, updated_at)
             VALUES (#{p.userId}, #{p.topStyles}, #{p.topArtists}, #{p.favSongCount}, #{p.favPlaylistCount},
-                    #{p.ownPlaylistCount}, #{p.ownPlaylistSongCount}, 1, #{now})
+                    #{p.ownPlaylistCount}, #{p.ownPlaylistSongCount}, #{p.playedSongCount},
+                    #{p.recentPlayArtists}, 1, #{now})
             ON DUPLICATE KEY UPDATE
                 top_styles = #{p.topStyles}, top_artists = #{p.topArtists},
                 fav_song_count = #{p.favSongCount}, fav_playlist_count = #{p.favPlaylistCount},
                 own_playlist_count = #{p.ownPlaylistCount},
                 own_playlist_song_count = #{p.ownPlaylistSongCount},
+                played_song_count = #{p.playedSongCount},
+                recent_play_artists = #{p.recentPlayArtists},
                 version = version + 1, updated_at = #{now}
             """)
     int upsertFacts(@Param("p") UserMusicProfile profile, @Param("now") LocalDateTime now);

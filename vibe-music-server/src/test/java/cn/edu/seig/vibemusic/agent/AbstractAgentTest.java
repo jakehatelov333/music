@@ -85,6 +85,7 @@ public abstract class AbstractAgentTest {
 
     /** 清空业务数据并写入固定夹具；评测集会在每个用例之间重复调用。 */
     protected void resetData() {
+        jdbc.update("DELETE FROM tb_play_history");
         jdbc.update("DELETE FROM tb_user_memory_preference");
         jdbc.update("DELETE FROM tb_user_ai_memory_setting");
         jdbc.update("DELETE FROM tb_user_music_profile");
@@ -175,13 +176,22 @@ public abstract class AbstractAgentTest {
                 + "output_guarded BOOLEAN NOT NULL DEFAULT FALSE, "
                 + "latency_ms BIGINT NOT NULL DEFAULT 0, playlist_id BIGINT, created_at TIMESTAMP NOT NULL, "
                 + "UNIQUE(task_id))");
-        // 用户音乐画像：事实来自收藏与自建歌单（项目暂无播放历史表）。
+        // 用户音乐画像：显式信号来自收藏与自建歌单，隐式信号来自播放历史（两者分开存）。
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_music_profile(user_id BIGINT PRIMARY KEY, "
                 + "top_styles CLOB, top_artists CLOB, fav_song_count INT NOT NULL DEFAULT 0, "
                 + "fav_playlist_count INT NOT NULL DEFAULT 0, own_playlist_count INT NOT NULL DEFAULT 0, "
-                + "own_playlist_song_count INT NOT NULL DEFAULT 0, pref_summary VARCHAR(500), "
+                + "own_playlist_song_count INT NOT NULL DEFAULT 0, played_song_count INT NOT NULL DEFAULT 0, "
+                + "recent_play_artists CLOB, pref_summary VARCHAR(500), "
                 + "summary_source_hash CHAR(64), version BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMP NOT NULL, "
                 + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
+        // 播放历史（sql/phase12_play_history.sql 对齐）：每个 (user, song) 一行。
+        // 刻意保留真实库的 ON DELETE CASCADE 语义 —— 「删除歌曲后历史怎么办」正是要验证的点之一。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_play_history(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "user_id BIGINT NOT NULL, song_id BIGINT NOT NULL, last_played_at TIMESTAMP NOT NULL, "
+                + "play_count INT NOT NULL DEFAULT 1, last_position_seconds INT, last_play_id VARCHAR(64), "
+                + "UNIQUE(user_id, song_id), "
+                + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE, "
+                + "FOREIGN KEY(song_id) REFERENCES tb_song(id) ON DELETE CASCADE)");
         // 模型窗口 + 租约 + 滚动摘要 + 会话归属
         // （与 sql/phase2_chat_migration.sql、phase5_personalization.sql、phase7_conversations.sql 对齐）。
         jdbc.execute("CREATE TABLE IF NOT EXISTS ai_chat_state(chat_id VARCHAR(255) PRIMARY KEY, "
@@ -297,6 +307,7 @@ public abstract class AbstractAgentTest {
             config.addMapper(AiTaskMetricMapper.class);
             config.addMapper(SearchMapper.class);
             config.addMapper(UserMusicProfileMapper.class);
+            config.addMapper(PlayHistoryMapper.class);
             config.addMapper(SongArtistMapper.class);
             config.addMapper(AgentMemoryMapper.class);
             // AiMapper 是 MyBatis-Plus 的 BaseMapper：滚动摘要记忆与会话消息读写都走它。
@@ -322,6 +333,7 @@ public abstract class AbstractAgentTest {
         @Bean AiTaskMetricMapper metricMapper(SqlSessionTemplate session) { return session.getMapper(AiTaskMetricMapper.class); }
         @Bean SearchMapper search(SqlSessionTemplate session) { return session.getMapper(SearchMapper.class); }
         @Bean UserMusicProfileMapper profiles(SqlSessionTemplate session) { return session.getMapper(UserMusicProfileMapper.class); }
+        @Bean PlayHistoryMapper playHistoryMapper(SqlSessionTemplate session) { return session.getMapper(PlayHistoryMapper.class); }
         @Bean SongArtistMapper songArtistMapper(SqlSessionTemplate session) { return session.getMapper(SongArtistMapper.class); }
         @Bean AiMapper aiMapper(SqlSessionTemplate session) { return session.getMapper(AiMapper.class); }
 
@@ -365,8 +377,8 @@ public abstract class AbstractAgentTest {
         }
 
         @Bean cn.edu.seig.vibemusic.service.agent.UserMusicProfileService profileService(
-                UserMusicProfileMapper mapper, ObjectMapper json) {
-            var service = new cn.edu.seig.vibemusic.service.agent.UserMusicProfileService(mapper, json);
+                UserMusicProfileMapper mapper, PlayHistoryMapper playHistories, ObjectMapper json) {
+            var service = new cn.edu.seig.vibemusic.service.agent.UserMusicProfileService(mapper, playHistories, json);
             // @Value 字段在纯 Java 配置里不会自动注入，这里显式给值（与 PendingActionService 同样的做法）。
             org.springframework.test.util.ReflectionTestUtils.setField(service, "refreshTtlMinutes", 10);
             org.springframework.test.util.ReflectionTestUtils.setField(service, "topN", 5);

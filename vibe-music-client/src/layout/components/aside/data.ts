@@ -29,6 +29,11 @@ export const MenuData = [
     children: [
       { title: '喜欢', icon: 'ri:heart-line', router: '/like' },
       {
+        title: '最近播放',
+        icon: 'ri:history-line',
+        router: '/play-history',
+      },
+      {
         title: '我的歌单',
         icon: 'ri:play-list-add-line',
         router: '/my-playlists',

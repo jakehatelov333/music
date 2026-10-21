@@ -69,6 +69,10 @@ const router = createRouter({
       component: () => import('@/pages/like/index.vue'),
     },
     {
+      path: '/play-history',
+      component: () => import('@/pages/play-history/index.vue'),
+    },
+    {
       path: '/user',
       component: () => import('@/pages/user/index.vue'),
       children: [

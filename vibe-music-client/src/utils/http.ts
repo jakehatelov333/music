@@ -23,8 +23,16 @@ const instance: AxiosInstance = axios.create({
 // 请求拦截器
 instance.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // 开启进度条
-    NProgress.start()
+    // 后台行为（播放上报等）用 X-Silent-Request 标记：不弹顶部进度条。
+    // 否则每切一首歌都会闪一下进度条，而用户并没有在等任何东西。
+    // 这个头只是给本拦截器看的，发出前会删掉，不进入实际请求。
+    const silent = config.headers?.['X-Silent-Request'] === '1'
+    if (silent) {
+      delete config.headers['X-Silent-Request']
+    } else {
+      // 开启进度条
+      NProgress.start()
+    }
 
     // 只有登录请求不需要添加token
     if (config.url?.includes('/user/login')) {
@@ -67,6 +75,17 @@ instance.interceptors.response.use(
     NProgress.done()
 
     if (axios.isCancel(error)) return Promise.reject(error)
+
+    // 静默请求（播放历史上报）失败时不弹全局错误提示：
+    // 它不阻塞播放，用户也不该因为「记录失败」被打断。
+    // 这里只记一条 warn，便于排查；具体错误由调用方自行决定是否展示。
+    const silent =
+      error.config?.headers?.['X-Silent-Request'] === '1' ||
+      error.config?.url?.includes('/play-history/record')
+    if (silent) {
+      console.warn('后台请求失败（已忽略）:', error.config?.url, error.message)
+      return Promise.reject(error)
+    }
 
     if (error.response) {
       switch (error.response.status) {

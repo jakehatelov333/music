@@ -282,3 +282,17 @@
 | 2026-10-19 | P1-1 统一账号删除服务 | 新增 `AccountDeletionService`（单删/批删/自助注销唯一实现）、`MediaCleanupSourceType.ACCOUNT_DELETE`、`sql/phaseD_account_cleanup.sql`（唯一键改 `(user_id, resource_type, resource_ref)`）。修复：有反馈账号可删、管理员路径补齐无外键表与封面清理、批删整批回滚、封面走媒体清理管线保留共享对象。新增 `AccountDeletionServiceTest`（12 例），改造 `UserDeleteAccountTest` 装配与头像语义断言。全量回归 **337 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 325）。浏览器实测：落地页、曲库、播放（红玫瑰 00:20 正常推进）无回归，控制台无报错。 |
 | 2026-10-19 | 歌词搜索（上传页按元数据） | 新增 `POST /admin/song/lyrics/search` 与 `LyricsSearchDTO`；复用 `fetchFromProviders`（QQ 主源 + LRCLIB 兜底 + 打分阈值），歌手展示串拆成候选链，时长参与消歧。上传页加「搜索歌词」按钮与结果预览。新增 `LyricsSearchByMetaTest`（6 例）。全量回归 **343 通过 / 0 失败 / 0 错误 / 1 跳过**（改动前 337）。真实端到端：《淘金小镇》→ 命中 QQ_MUSIC、匹配度 0.9、返回完整 LRC；临时管理员与 staging 已清理。 |
 | 2026-10-19 | P1-4 封面搜索（4 个 commit） | ①`refactor(lyrics)` 抽取 `QqMusicCatalog`/`QqSongHit`，保留 `albummid`，歌词与封面共用同一份检索结果；②`fix(upload)` 统一 TTL 为 12h 且清理改按「最后活动时间」，修掉「界面说还在、文件已没」的缺陷；③`feat(cover)` 新增 `CoverSearchService`（自动过滤+去重 ≤4 / 手动原样检索 ≤8）、`CoverNameNormalizer`（剥离版本后缀、歌手交集）、`QqCoverUrl`（拼地址+白名单防 SSRF）、`CoverDownloader`（流式 5 MB 截断、Content-Type 校验）与两个端点；④`feat(admin)` 上传页封面区拆出「搜索封面」，含手动搜索模式与尺寸切换。新增 47 例测试，全量 **396 通过 / 0 失败 / 0 错误**。真实端到端：自动模式「青花瓷」→ 3 个候选（稻香/七里香/兰亭序 被正确过滤）；手动模式「淘金小镇 周杰伦」→ 目标专辑《太阳之子》排第一；下载 500px → 真实 JPEG 107 KB；尺寸 300/800 → 60 KB/203 KB；SSRF 四种非法输入全部拦截；提交后封面转存 `songCovers/`、staging 清理；删歌后两条清理任务均 `SUCCEEDED`；`tb_song` 540 行、`tb_admin` 81 行与验证前一致。 |
+| 2026-10-20 | 播放历史（`future_plan.md` 的「播放历史 P0」） | 新增 `tb_play_history`（唯一键 `(user_id, song_id)`，两级联删）+ `phase12_play_history.sql`；后端 `PlayHistoryController`（`/play-history/**`，全部要求登录、不接受 userId）、`PlayHistoryService`、`PlayHistoryMapper`、DTO/VO/实体；前端 `utils/playHistory.ts`（`PlaybackTracker` 有效播放判定）、`api/playHistory.ts`、`pages/play-history/`、播放器 `useAudioPlayer` 接入、播放器右侧「刚刚听过」浮层；画像按**独立字段**接入（`played_song_count` / `recent_play_artists`，绝不写入 `top_artists`，≥2 首不同歌曲才算偏好）。新增后端 36 例 + 前端 27 例，全量 **565 通过 / 0 失败 / 0 错误**；`pnpm type-check`、`pnpm build` 通过。详见 `docs/phase12-play-history.md`。 |
+
+## 已消化：`future_plan.md` 中的「播放历史」项
+
+`future_plan.md` 的 P0 清单里列了「**播放历史** | 新增 `tb_play_history` 表，记录每首歌的播放时间/进度」。
+2026-10-20 已完成，实现与计划的两处**有意偏离**：
+
+1. **不是流水账**：表结构是「每个用户每首歌一行」（唯一键 `(user_id, song_id)`），
+   重复播放是 UPDATE 而非追加。产品要的是「最近播放 + 次数」，流水账会无限增长且需要独立保留策略。
+2. **不记录每一次播放时间**：只保留 `last_played_at`（最近一次）。完整时间线没有展示需求，
+   却是最敏感的细粒度行为数据。
+3. **进度存了但不下发**：`last_position_seconds` 只用于留痕，等真正要做「续播」时再暴露。
+
+其余计划项（排行榜、数据统计仪表盘等）仍未开始。

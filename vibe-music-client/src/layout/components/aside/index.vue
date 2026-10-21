@@ -19,7 +19,10 @@ const authVisible = ref(false)
 
 // 处理需要登录的路由
 const handleProtectedRoute = (path: string) => {
-  if (!user.isLoggedIn && ['/like', '/user', '/my-playlists'].includes(path)) {
+  if (
+    !user.isLoggedIn &&
+    ['/like', '/user', '/my-playlists', '/play-history'].includes(path)
+  ) {
     ElMessage.warning('请先登录')
     authVisible.value = true
     return false

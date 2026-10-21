@@ -77,6 +77,7 @@ role-path-permissions:
       - "/song/"
       - "/album/"
       - "/favorite/"
+      - "/play-history/"
       - "/comment/"
       - "/banner/"
       - "/feedback/"
