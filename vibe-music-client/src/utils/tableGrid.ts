@@ -22,15 +22,15 @@ export const tableGridColumns = (
 ): string => {
   if (variant === 'owned') {
     return showAlbum
-      ? 'grid-cols-[auto_4fr_3fr_3fr_2fr_1fr]'
-      : 'grid-cols-[auto_4fr_3fr_2fr_1fr]'
+      ? 'grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_4fr_3fr_3fr_2fr_1fr]'
+      : 'grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_4fr_3fr_2fr_1fr]'
   }
   if (showTrackNumber) {
     return showAlbum
-      ? 'grid-cols-[2.5rem_auto_4fr_3fr_3fr_1fr_2fr_1fr]'
-      : 'grid-cols-[2.5rem_auto_4fr_3fr_1fr_2fr_1fr]'
+      ? 'grid-cols-[2rem_auto_minmax(0,1fr)_auto_auto] md:grid-cols-[2.5rem_auto_4fr_3fr_3fr_1fr_2fr_1fr]'
+      : 'grid-cols-[2rem_auto_minmax(0,1fr)_auto_auto] md:grid-cols-[2.5rem_auto_4fr_3fr_1fr_2fr_1fr]'
   }
   return showAlbum
-    ? 'grid-cols-[auto_4fr_3fr_3fr_1fr_2fr_1fr]'
+    ? 'grid-cols-[auto_minmax(0,1fr)_auto_auto] md:grid-cols-[auto_4fr_3fr_3fr_1fr_2fr_1fr]'
     : 'grid-cols-[auto_4fr_3fr_1fr_2fr_1fr]'
 }

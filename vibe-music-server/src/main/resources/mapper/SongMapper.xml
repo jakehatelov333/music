@@ -95,6 +95,12 @@
         <if test="album != null and album.trim() != ''">
             AND COALESCE(al.name, s.album) LIKE CONCAT('%', #{album}, '%')
         </if>
+        <if test="keyword != null and keyword.trim() != ''">
+            AND (
+                s.name LIKE CONCAT('%', #{keyword}, '%')
+                OR s.artist_names LIKE CONCAT('%', #{keyword}, '%')
+            )
+        </if>
         <!-- 排除涉及停用歌手的歌（含合作歌）；收藏列表同样不可见 -->
         AND NOT EXISTS (
               SELECT 1 FROM tb_song_artist sa

@@ -9,6 +9,7 @@ import default_album from '@/assets/default_album.jpg'
 import { collectSong, cancelCollectSong } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import { UserStore } from '@/stores/modules/user'
+import { downloadMedia } from '@/utils/download'
 
 const audio = AudioStore()
 const userStore = UserStore()
@@ -181,14 +182,14 @@ const handleLike = async (row: Song, e: Event) => {
   }
 }
 
-const downLoadMusic = (row: Song, e: Event) => {
+const downLoadMusic = async (row: Song, e: Event) => {
   e.stopPropagation() // 阻止事件冒泡
-  const link = document.createElement('a')
-  link.href = row.audioUrl
-  link.setAttribute('download', `${row.songName} - ${row.artistName}`)
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
+  try {
+    await downloadMedia(row.audioUrl, `${row.songName} - ${row.artistName}.mp3`)
+    ElMessage.success('已开始下载')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '下载失败')
+  }
 }
 
 // 判断是否是当前播放的歌曲
@@ -215,14 +216,14 @@ const isCurrentPlaying = (songId: number) => {
       </template>
       <template #default="{ row }">
         <div
-          class="grid items-center gap-6 w-full group transition duration-300 rounded-2xl p-2"
+          class="grid w-full items-center gap-3 rounded-2xl p-2 transition duration-300 group md:gap-6"
           :class="[
             gridColumns,
             isCurrentPlaying(row.songId) ? 'bg-[hsl(var(--hover-menu-bg))]' : 'hover:bg-[hsl(var(--hover-menu-bg))]',
             'cursor-pointer'
           ]"
           @click="handlePlay(row)">
-          <div v-if="showTrackNumber" class="min-w-0 text-center text-sm text-muted-foreground">
+          <div v-if="showTrackNumber" class="min-w-0 text-center text-xs text-muted-foreground md:text-sm">
             {{ row.trackNumber ?? '-' }}
           </div>
           <!-- 封面：必须始终渲染占位，否则无封面的行会少一列导致整行错位 -->
@@ -235,9 +236,12 @@ const isCurrentPlaying = (songId: number) => {
             </div>
           </div>
 
-          <!-- 歌曲名称 -->
+          <!-- 移动端把歌手放在标题下方，桌面端仍是独立列 -->
           <div class="min-w-0 text-left">
             <div class="line-clamp-1">{{ row.songName }}</div>
+            <div class="mt-0.5 line-clamp-1 text-xs text-muted-foreground md:hidden">
+              {{ row.artistName }}
+            </div>
           </div>
 
           <!--
@@ -245,7 +249,7 @@ const isCurrentPlaying = (songId: number) => {
             归属用结构化 artists（带真实 artistId）；老接口没有该字段时退化为纯文本展示串。
             @click.stop 阻止冒泡，否则点歌手名会同时触发行点击（开始播放）。
           -->
-          <div class="min-w-0 text-left">
+          <div class="hidden min-w-0 text-left md:block">
             <div class="line-clamp-1">
               <template v-if="row.artists?.length">
                 <template v-for="(artist, index) in row.artists" :key="artist.artistId">
@@ -266,7 +270,7 @@ const isCurrentPlaying = (songId: number) => {
             专辑：与歌手名同一套交互（悬停变绿、点击进入专辑页）。
             没有 albumId 的歌曲（单曲等）退化为纯文本，不做成「点了没反应」的假链接。
           -->
-          <div v-if="showAlbum" class="min-w-0 text-left">
+          <div v-if="showAlbum" class="hidden min-w-0 text-left md:block">
             <div class="line-clamp-1">
               <RouterLink
                 v-if="row.albumId"
@@ -289,7 +293,7 @@ const isCurrentPlaying = (songId: number) => {
             </div>
 
             <!-- 时长 -->
-            <div class="min-w-0 text-left">
+            <div class="hidden min-w-0 text-left md:block">
               <span>{{ formatMillisecondsToTime(Number(row.duration) * 1000) }}</span>
             </div>
 
@@ -303,7 +307,7 @@ const isCurrentPlaying = (songId: number) => {
 
           <template v-else>
             <!-- 时长 -->
-            <div class="min-w-0 text-left">
+            <div class="hidden min-w-0 text-left md:block">
               <span>{{ formatMillisecondsToTime(Number(row.duration) * 1000) }}</span>
             </div>
 
@@ -369,6 +373,13 @@ const isCurrentPlaying = (songId: number) => {
 .row-remove.el-button:hover {
   color: #ef4444 !important;
   background-color: rgb(239 68 68 / 0.12) !important;
+}
+
+@media (max-width: 767px) {
+  :deep(.el-button) {
+    min-width: 40px;
+    min-height: 40px;
+  }
 }
 
 :deep(.el-table.album-table-page-scroll),

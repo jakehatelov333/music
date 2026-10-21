@@ -35,22 +35,22 @@ const gridColumns = computed(() =>
 
 <template>
   <div
-    class="grid w-full items-center gap-6 p-2 text-left text-sm text-muted-foreground"
+    class="hidden w-full items-center gap-3 p-2 text-left text-sm text-muted-foreground md:grid md:gap-6"
     :class="gridColumns"
   >
     <div v-if="showTrackNumber" class="min-w-0 text-center">曲序</div>
     <!-- 封面列占位：与表体封面单元格同宽，否则 auto 列宽度不一致 -->
     <div class="h-10 w-10"></div>
     <div class="min-w-0">标题</div>
-    <div class="min-w-0">歌手</div>
-    <div v-if="showAlbum" class="min-w-0">专辑</div>
+    <div class="hidden min-w-0 md:block">歌手</div>
+    <div v-if="showAlbum" class="hidden min-w-0 md:block">专辑</div>
     <template v-if="variant === 'library'">
       <div class="min-w-0 text-center">喜欢</div>
-      <div class="min-w-0">时长</div>
+      <div class="hidden min-w-0 md:block">时长</div>
       <div class="min-w-0 text-center">下载</div>
     </template>
     <template v-else>
-      <div class="min-w-0">时长</div>
+      <div class="hidden min-w-0 md:block">时长</div>
       <div class="min-w-0 text-center">操作</div>
     </template>
   </div>

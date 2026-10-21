@@ -11,17 +11,17 @@ const { currentTrack } = useAudioPlayer()
 <template>
   <button
     type="button"
-    class="footer-track-button flex min-w-0 items-center gap-2 cursor-pointer select-none hover:bg-hoverMenuBg transition-colors rounded-lg p-1 text-left"
+    class="footer-track-button flex min-w-0 cursor-pointer select-none items-center gap-2 rounded-lg p-1 text-left transition-colors hover:bg-hoverMenuBg"
     @click="emit('open')"
   >
-    <div class="min-w-12 max-w-12 h-full">
+    <div class="h-10 w-10 shrink-0">
       <img
         :src="currentTrack.cover + '?param=90y90'"
         :alt="currentTrack.title"
-        class="w-full h-full object-cover rounded-lg m-1"
+        class="h-full w-full rounded-lg object-cover"
       />
     </div>
-    <div class="min-w-0">
+    <div class="hidden min-w-0 sm:block">
       <div
         class="text-base text-primary-foreground line-clamp-1 mb-0.5 mx-2"
         :title="currentTrack.title"
@@ -38,5 +38,12 @@ const { currentTrack } = useAudioPlayer()
 <style scoped>
 .footer-track-button {
   width: clamp(11rem, 15vw, 16rem);
+}
+
+@media (max-width: 639px) {
+  .footer-track-button {
+    width: auto;
+    flex-shrink: 0;
+  }
 }
 </style>

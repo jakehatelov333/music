@@ -80,7 +80,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex-1 h-full flex flex-col overflow-hidden">
+  <div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
     <Table :data="tableData?.items" class="flex-1 overflow-x-hidden" />
     <nav class="mx-auto flex w-full justify-center mt-3">
       <el-pagination

@@ -19,6 +19,25 @@ html.dark {
     margin-left: 0px;
 }
 
+/*
+ * 移动端分页只保留核心翻页控件。
+ * total / sizes / jumper 在 375px 下会把翻页按钮挤出屏幕，
+ * 但 Element Plus 的布局段仍会渲染，因此按段隐藏。
+ */
+@media (max-width: 767px) {
+  .el-pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .el-pagination .el-pagination__total,
+  .el-pagination .el-pagination__sizes,
+  .el-pagination .el-pagination__jump {
+    display: none;
+  }
+}
+
 .drawer-bg {
     position: relative;
     overflow: hidden;

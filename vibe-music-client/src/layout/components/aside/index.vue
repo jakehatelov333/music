@@ -8,6 +8,9 @@ import { ElMessage } from 'element-plus'
 import AuthTabs from '@/components/Auth/AuthTabs.vue'
 import { useFavoriteStore } from '@/stores/modules/favorite'
 
+const props = withDefaults(defineProps<{ mobile?: boolean }>(), {
+  mobile: false,
+})
 const route = useRoute()
 const router = useRouter()
 const emit = defineEmits<{
@@ -57,7 +60,8 @@ watch(
 
 <template>
   <aside
-    class="app-sidebar w-64 hidden h-full min-h-0 overflow-hidden md:block border-r shadow-2xl shadow-blue-500/50"
+    class="app-sidebar w-64 h-full min-h-0 overflow-hidden border-r shadow-2xl shadow-blue-500/50"
+    :class="props.mobile ? 'block' : 'hidden md:block'"
   >
     <nav
       class="flex flex-col p-4 space-y-4 flex-1 h-full box-border overflow-hidden"

@@ -42,8 +42,8 @@ async function search(reset = false) {
     if (current !== request) return
     if (res.code !== 0 || !res.data)
       throw new Error(res.message || '暂时无法搜索歌曲')
-    songs.value = res.data.items
-    total.value = res.data.total
+    songs.value = Array.isArray(res.data.items) ? res.data.items : []
+    total.value = Number(res.data.total) || 0
   } catch (error) {
     if (current !== request) return
     searchError.value =

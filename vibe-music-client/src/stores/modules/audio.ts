@@ -46,9 +46,24 @@ export const AudioStore = defineStore({
     },
     // 删除指定歌曲
     deleteTrack(id: number | string) {
+      const removedIndex = this.trackList.findIndex(
+        (track: { id: string | number }) => track.id === id
+      )
+      if (removedIndex < 0) return
+
       this.trackList = this.trackList.filter(
         (track: { id: string | number }) => track.id !== id
       )
+      if (!this.trackList.length) {
+        this.currentSongIndex = 0
+      } else if (removedIndex < this.currentSongIndex) {
+        this.currentSongIndex -= 1
+      } else if (removedIndex === this.currentSongIndex) {
+        this.currentSongIndex = Math.min(
+          removedIndex,
+          this.trackList.length - 1
+        )
+      }
     },
     // 设置当前页面的歌曲列表
     setCurrentPageSongs(songs: Song[]) {

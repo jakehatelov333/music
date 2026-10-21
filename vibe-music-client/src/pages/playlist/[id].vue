@@ -279,15 +279,15 @@ const handlePlayAll = async () => {
 <template>
   <div class="flex flex-col h-full bg-background flex-1 md:overflow-hidden">
     <p v-if="detailError" class="p-6" role="alert">{{ detailError }}</p>
-    <div class="flex flex-col md:flex-row p-6 gap-6">
-      <div class="flex-shrink-0 w-60 h-60">
+    <div class="flex flex-col gap-5 p-4 md:flex-row md:gap-6 md:p-6">
+      <div class="h-44 w-44 flex-shrink-0 md:h-60 md:w-60">
         <img
           :alt="playlist?.name"
           class="w-full h-full object-cover rounded-lg shadow-lg"
           :src="(playlist?.coverImgUrl || coverImg) + '?param=500y500'"
         />
       </div>
-      <div class="flex flex-col justify-between">
+      <div class="flex min-w-0 flex-1 flex-col justify-between">
         <div>
           <h1 class="text-3xl font-bold mb-2">{{ playlist?.name }}</h1>
           <p

@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { getArtistDetail } from '@/api/system'
 import Table from '@/components/Table.vue'
 import defaultAlbum from '@/assets/default_album.jpg'
 import { useArtistStore } from '@/stores/modules/artist'
 import { ElMessage } from 'element-plus'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 interface ArtistDetailResponse {
     artistId: number
@@ -18,17 +19,23 @@ interface ArtistDetailResponse {
 }
 
 const route = useRoute()
+const router = useRouter()
 const artistStore = useArtistStore()
 // 歌手数据
 const artistInfo = computed(() => artistStore.artistInfo)
+let requestId = 0
 
 const fetchArtistDetail = async () => {
-    const id = route.params.id
-    const numericId = parseInt(id.toString())
+    // keep-alive 会保留本组件；离开歌手页后 route.params.id 会变成
+    // 专辑/歌单 id，若不校验路径会把 243 当成歌手 id 请求。
+    if (!/^\/artist\/\d+\/?$/.test(route.path)) return
+    const numericId = Number(route.params.id)
+    if (!Number.isInteger(numericId) || numericId <= 0) return
+    const current = ++requestId
 
     try {
-        artistStore.setArtistInfo(null) // 清空之前的数据
         const res = await getArtistDetail(numericId)
+        if (current !== requestId) return
 
         if (res.code === 0 && res.data) {
             const artistData = res.data as ArtistDetailResponse
@@ -43,21 +50,33 @@ const fetchArtistDetail = async () => {
                 albums: artistData.albums || []
             })
         } else {
-            ElMessage.error(res.message || '获取歌手信息失败')
+            artistStore.setArtistInfo(null)
+            if (res.code !== 404) {
+                ElMessage.error(res.message || '获取歌手信息失败')
+            }
         }
     } catch (error) {
+        if (current !== requestId) return
         console.error('获取歌手详情失败:', error)
-        ElMessage.error('获取歌手信息失败，请稍后重试')
+        artistStore.setArtistInfo(null)
     }
 }
 
 watch(
-    () => route.params.id,
-    () => {
-        fetchArtistDetail()
+    () => route.path,
+    (path) => {
+        requestId++
+        if (/^\/artist\/\d+\/?$/.test(path)) {
+            artistStore.setArtistInfo(null)
+            fetchArtistDetail()
+        }
     },
     { immediate: true }
 )
+
+onBeforeUnmount(() => {
+    requestId++
+})
 
 // 格式化生日
 const formatBirth = (birth: string) => {
@@ -103,7 +122,7 @@ const formatBirth = (birth: string) => {
                     :key="album.albumId"
                     type="button"
                     class="min-w-0 rounded-xl border bg-card p-2 text-left shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-lg"
-                    @click="$router.push(`/album/${album.albumId}`)"
+                    @click="router.push(`/album/${album.albumId}`)"
                 >
                     <el-image
                         lazy

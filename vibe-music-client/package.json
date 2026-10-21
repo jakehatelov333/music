@@ -14,8 +14,8 @@
     "preview": "vite preview",
     "build:test": "vite build --mode test",
     "preview:test": "vite preview --mode test",
-    "lint": "eslint --ext .ts,.vue src",
-    "lint:fix": "eslint --ext .ts,.vue src --fix",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "format": "prettier --write src/",
     "type-check": "vue-tsc --noEmit",
     "test": "node --test \"tests/*.test.mjs\""

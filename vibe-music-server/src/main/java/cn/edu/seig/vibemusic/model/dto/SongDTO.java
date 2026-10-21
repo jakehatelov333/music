@@ -49,4 +49,14 @@ public class SongDTO implements Serializable {
     @Size(max = 200)
     private String album;
 
+    /**
+     * 统一关键词：同时匹配歌曲名或歌手名。
+     *
+     * <p>收藏页的搜索框只有一个输入框，用户输入“周杰伦”时既可能是歌名，
+     * 也可能是歌手名。这个字段与 songName / artistName 的“同时满足”语义
+     * 分开，避免把两个条件拼成 AND。
+     */
+    @Size(max = 200)
+    private String keyword;
+
 }

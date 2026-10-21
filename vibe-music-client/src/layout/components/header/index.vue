@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import Avatar from './components/avatar.vue'
+import Aside from '@/layout/components/aside/index.vue'
 import { globalSearch } from '@/api/system'
 import type { Album, GlobalSearchResult, Song } from '@/api/interface'
 import default_album from '@/assets/default_album.jpg'
@@ -15,6 +16,7 @@ const audio = AudioStore()
 const { loadTrack, play } = useAudioPlayer()
 
 const searchText = ref('')
+const mobileMenuOpen = ref(false)
 const isSearchFocused = ref(false)
 const isSearchLoading = ref(false)
 const searchResults = ref<GlobalSearchResult>({
@@ -183,18 +185,39 @@ const toggleMode = () => {
   theme.setDark(!isDark.value)
   toggleDark()
 }
+
+const handleMobileNavigate = (path: string) => {
+  mobileMenuOpen.value = false
+  router.push(path)
+}
 </script>
 <template>
-  <header class="shrink-0 px-4 py-2 border-b flex items-center z-30 bg-themeBgColor">
-    <button class="flex relative w-60" @click="router.push('/')">
-      <img src="\logo.svg" alt="logo" class="w-10 h-10 ml-2" />
-      <span class="ml-3 text-2xl font-bold flex justify-center items-center"
+  <header
+    class="relative z-30 flex shrink-0 items-center gap-2 border-b bg-themeBgColor px-3 py-2 md:gap-3 md:px-4"
+  >
+    <button
+      type="button"
+      class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-hoverMenuBg md:hidden"
+      aria-label="打开导航菜单"
+      @click="mobileMenuOpen = true"
+    >
+      <Icon icon="mdi:menu" class="text-2xl" />
+    </button>
+    <button
+      type="button"
+      class="flex shrink-0 items-center md:w-60"
+      aria-label="返回首页"
+      @click="router.push('/')"
+    >
+      <img src="/logo.svg" alt="logo" class="h-10 w-10 md:ml-2" />
+      <span
+        class="ml-2 hidden items-center justify-center text-2xl font-bold md:flex md:ml-3"
         >Vibe Music</span
       >
     </button>
     <!-- 输入框和头像 -->
-    <div class="flex items-center gap-3">
-      <div class="relative mr-6">
+    <div class="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
+      <div class="relative min-w-0 flex-1 md:mr-6 md:flex-none">
         <Icon
           icon="mdi:magnify"
           class="absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-500 text-xl z-10"
@@ -202,7 +225,7 @@ const toggleMode = () => {
         <input
           v-model="searchText"
           type="text"
-          class="mt-0.5 w-64 text-sm pl-8 pr-2 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary transition-all duration-300 focus:w-80 search-bg"
+          class="mt-0.5 w-full min-w-0 rounded-lg py-2 pl-8 pr-2 text-sm transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary md:w-64 md:focus:w-80 search-bg"
           placeholder="搜索歌曲、歌手、专辑、歌单..."
           @focus="handleSearchFocus"
           @input="handleSearchFocus"
@@ -212,7 +235,7 @@ const toggleMode = () => {
 
         <div
           v-if="showDropdown"
-          class="absolute left-0 top-full mt-2 w-[30rem] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+          class="absolute right-0 top-full mt-2 max-h-[70vh] w-[30rem] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl md:left-0 md:right-auto"
         >
           <div
             v-if="isSearchLoading"
@@ -381,16 +404,35 @@ const toggleMode = () => {
           </template>
         </div>
       </div>
-      <button @click="toggleMode">
+      <button
+        type="button"
+        class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-hoverMenuBg"
+        aria-label="切换深浅色"
+        @click="toggleMode"
+      >
         <Icon class="text-xl" :icon="currentIcon" />
       </button>
     </div>
-    <div class="ml-auto flex items-center gap-3"><Avatar /></div>
+    <div class="ml-auto flex shrink-0 items-center gap-3"><Avatar /></div>
   </header>
+
+  <el-drawer
+    v-model="mobileMenuOpen"
+    direction="ltr"
+    size="min(82vw, 300px)"
+    :with-header="false"
+    class="mobile-nav-drawer"
+  >
+    <Aside mobile @navigate="handleMobileNavigate" />
+  </el-drawer>
 </template>
 
 <style scoped>
 .search-bg {
   background-color: #e3e3e3;
+}
+
+:deep(.mobile-nav-drawer .el-drawer__body) {
+  padding: 0;
 }
 </style>

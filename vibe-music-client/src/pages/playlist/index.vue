@@ -141,20 +141,20 @@ onMounted(() => {
 <template>
   <div class="flex flex-col h-full flex-1 overflow-hidden bg-background px-4 py-2">
     <div class="py-4">
-      <div class="flex flex-col sm:flex-row gap-4">
-        <div class="relative flex-grow">
+      <div class="flex flex-col gap-3 sm:flex-row sm:gap-4">
+        <div class="relative min-w-0 flex-1">
           <icon-mdi:magnify
             class="lucide lucide-search absolute left-2 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
           <input v-model="searchKeyword" @keydown="handleKeyPress"
-            class="flex h-10 rounded-lg border border-input transform duration-300 bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-0 pl-10 w-72"
+            class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 pl-10 text-sm ring-offset-background transition duration-300 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-0 sm:w-72"
             placeholder="搜索歌单..." type="search" />
         </div>
-        <el-select class="w-48" v-model="selectedTag" @change="getPlaylists">
+        <el-select class="w-full sm:w-48" v-model="selectedTag" @change="getPlaylists">
           <el-option v-for="item in playTags" :key="item.name" :label="item.name" :value="item.name" />
         </el-select>
       </div>
     </div>
-    <div class="flex-grow flex flex-col overflow-x-hidden cursor-pointer">
+    <div class="flex min-h-0 flex-grow cursor-pointer flex-col overflow-x-hidden">
       <div class="border-b pb-1">
         <div
           class="inline-flex h-10 items-center rounded-lg bg-muted/70 p-1 text-muted-foreground w-full justify-start mb-2 overflow-x-auto">
@@ -168,8 +168,8 @@ onMounted(() => {
           </button>
         </div>
       </div>
-      <div class="flex-1 overflow-x-hidden my-2">
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-6">
+      <div class="my-2 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4 2xl:grid-cols-5">
           <div v-for="playlist in playlists" :key="playlist.id" @click="router.push('/playlist/' + playlist.id)"
             class="rounded-lg hover:bg-background transition duration-300 border bg-card text-card-foreground shadow-sm overflow-hidden hover:shadow-lg">
             <div class="flex flex-col space-y-1.5 p-0">
@@ -197,7 +197,7 @@ onMounted(() => {
                 </button>
               </div>
             </div>
-            <div class="px-4 pb-2">
+            <div class="px-3 pb-3 sm:px-4">
               <h3 class="font-semibold tracking-tight text-base mb-2 line-clamp-1">
                 {{ playlist.name }}
               </h3>

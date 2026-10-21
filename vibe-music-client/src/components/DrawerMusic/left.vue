@@ -8,6 +8,7 @@ import { AudioStore } from '@/stores/modules/audio'
 import { UserStore } from '@/stores/modules/user'
 import { collectSong, cancelCollectSong } from '@/api/system'
 import { formatTime } from '@/utils'
+import { copyText, downloadMedia } from '@/utils/download'
 import Recently from '@/layout/components/footer/components/recently.vue'
 
 const props = withDefaults(
@@ -127,36 +128,42 @@ const handleLike = async () => {
   }
 }
 
-const handleDownload = () => {
+const handleDownload = async () => {
   const audioUrl = props.songDetail?.audioUrl || currentTrack.value.url
   if (!audioUrl) return
 
-  const link = document.createElement('a')
-  link.href = audioUrl
-  link.setAttribute('download', `${title.value} - ${artist.value}.mp3`)
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
+  try {
+    await downloadMedia(audioUrl, `${title.value} - ${artist.value}.mp3`)
+    ElMessage.success('已开始下载')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '下载失败')
+  }
 }
 
 const handleShare = async () => {
   const url = window.location.href
+  const text = `正在听 ${title.value} - ${artist.value}`
   const shareData = {
     title: `${title.value} - ${artist.value}`,
-    text: `正在听 ${title.value} - ${artist.value}`,
+    text,
     url,
   }
 
   try {
     if (navigator.share) {
       await navigator.share(shareData)
-    } else {
-      await navigator.clipboard.writeText(`${shareData.text}\n${url}`)
-      ElMessage.success('分享链接已复制')
+      ElMessage.success('已打开分享')
+      return
     }
+    await copyText(`${text}\n${url}`)
+    ElMessage.success('分享链接已复制')
   } catch (error) {
-    if ((error as DOMException)?.name !== 'AbortError') {
-      ElMessage.error('分享失败')
+    if ((error as DOMException)?.name === 'AbortError') return
+    try {
+      await copyText(`${text}\n${url}`)
+      ElMessage.success('系统分享不可用，链接已复制')
+    } catch {
+      ElMessage.error('分享失败，请复制浏览器地址')
     }
   }
 }

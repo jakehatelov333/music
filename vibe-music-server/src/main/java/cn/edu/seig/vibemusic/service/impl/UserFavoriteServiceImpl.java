@@ -91,7 +91,8 @@ public class UserFavoriteServiceImpl extends ServiceImpl<UserFavoriteMapper, Use
                 favoriteSongIds,
                 songDTO.getSongName(),
                 songDTO.getArtistName(),
-                songDTO.getAlbum()
+                songDTO.getAlbum(),
+                songDTO.getKeyword()
         );
 
         // 遍历结果，设置 likeStatus

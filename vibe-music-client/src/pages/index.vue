@@ -148,8 +148,8 @@ const isCurrentPlaying = (songId: number) => {
 }
 </script>
 <template>
-  <div class="flex gap-6 p-4 w-full">
-    <div class="flex-1">
+  <div class="flex w-full min-w-0 gap-6 p-3 md:p-4">
+    <div class="min-w-0 flex-1">
       <div class="w-full flex flex-col overflow-hidden mb-8">
         <!-- banner -->
         <el-carousel :interval="4000" type="card" height="260px">
@@ -159,7 +159,7 @@ const isCurrentPlaying = (songId: number) => {
         </el-carousel>
 
         <!-- 推荐 -->
-        <button class="mt-6">
+        <div class="mt-6 min-w-0">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold">今日为你推荐</h2>
             <button @click="router.push('/playlist')"
@@ -168,15 +168,20 @@ const isCurrentPlaying = (songId: number) => {
               更多
             </button>
           </div>
-          <div class="grid grid-cols-4 md:grid-cols-7 gap-4">
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-7 md:gap-4">
             <div
               class="rounded-2xl transition duration-300 hover:bg-hoverMenuBg bg-card text-card-foreground border-0 shadow-nonec cursor-pointer"
               v-for="i in recommendedPlaylist.slice(0, 7)" :key="i.playlistId"
               @click="router.push(`/playlist/${i.playlistId}`)">
               <div class="p-0">
                 <div class="aspect-square rounded-t-2xl overflow-hidden">
-                  <img :alt="i.title" loading="lazy" width="200" height="200" class="w-full h-full object-cover" :src="replaceUrlParams(i.coverUrl ?? coverImg, 'param=350y350')
-                    " />
+                  <img
+                    :alt="i.title"
+                    loading="lazy"
+                    width="200"
+                    height="200"
+                    class="h-full w-full object-cover"
+                    :src="replaceUrlParams(i.coverUrl ?? coverImg, 'param=350y350')"
                   />
                 </div>
                 <div class="flex flex-col p-2">
@@ -187,7 +192,7 @@ const isCurrentPlaying = (songId: number) => {
               </div>
             </div>
           </div>
-        </button>
+        </div>
       </div>
 
       <!-- 歌曲 -->

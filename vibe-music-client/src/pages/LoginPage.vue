@@ -63,9 +63,15 @@ watch(
 <style scoped>
 .login-page {
   --login-bg: #070b18;
+  height: 100vh;
   min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   color: #f8fbff;
   background: var(--login-bg);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;

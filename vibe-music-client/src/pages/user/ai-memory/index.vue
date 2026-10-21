@@ -151,21 +151,44 @@ const loadStyles = async (signal: AbortSignal) => {
   }
 }
 
-const loadArtists = async () => {
+const loadArtists = async (signal: AbortSignal) => {
   try {
-    const res = await getAllArtists({
-      pageNum: 1,
-      pageSize: 500,
-      name: null,
-      gender: null,
-      area: null,
-    })
-    if (res.code === 0 && res.data?.items) {
-      artistOptions.value = res.data.items
-        .filter((item: any) => item?.artistId && item?.artistName)
-        .map((item: any) => ({ artistId: item.artistId, artistName: item.artistName }))
+    const artists: { artistId: number; artistName: string }[] = []
+    let pageNum = 1
+    let total = 0
+    do {
+      const res = await getAllArtists(
+        {
+          pageNum,
+          pageSize: 100,
+          artistName: null,
+          gender: null,
+          area: null,
+        },
+        signal
+      )
+      if (signal.aborted) return
+      if (res.code !== 0 || !res.data) break
+      const items = Array.isArray(res.data.items) ? res.data.items : []
+      artists.push(
+        ...items
+          .filter((item: any) => item?.artistId && item?.artistName)
+          .map((item: any) => ({
+            artistId: item.artistId,
+            artistName: item.artistName,
+          }))
+      )
+      total = Number(res.data.total) || artists.length
+      if (!items.length) break
+      pageNum += 1
+    } while (artists.length < total)
+
+    if (!signal.aborted) {
+      const unique = new Map(artists.map((artist) => [artist.artistId, artist]))
+      artistOptions.value = [...unique.values()]
     }
-  } catch {
+  } catch (error) {
+    if (signal.aborted) return
     /* 歌手列表失败不阻塞页面 */
   }
 }
@@ -181,7 +204,7 @@ const loadAll = async () => {
     loadProfile(signal),
     loadOverview(signal),
     loadStyles(signal),
-    loadArtists(),
+    loadArtists(signal),
   ])
   if (!signal.aborted) loading.value = false
 }
@@ -1335,5 +1358,65 @@ onBeforeUnmount(() => {
 
 :deep(.el-dialog) {
   border-radius: 12px;
+}
+
+@media (max-width: 767px) {
+  .memory-container {
+    margin: 16px 12px;
+    padding: 20px 16px;
+    border-radius: 10px;
+  }
+
+  .card {
+    padding: 16px 14px;
+  }
+
+  .card-head {
+    flex-wrap: wrap;
+  }
+
+  .card-head-left,
+  .card-head-left > div {
+    min-width: 0;
+  }
+
+  .updated-at {
+    width: 100%;
+    padding-left: 46px;
+  }
+
+  .profile-body,
+  .exclude-grid,
+  .explain-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .add-row,
+  .control-row,
+  .effective-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .add-row--note {
+    align-items: stretch;
+  }
+
+  .add-select {
+    width: 100%;
+  }
+
+  .effective-label {
+    width: auto;
+  }
+
+  .control-row :deep(.el-switch),
+  .control-row :deep(.el-button) {
+    align-self: flex-start;
+  }
+
+  :deep(.el-dialog) {
+    width: calc(100vw - 24px) !important;
+  }
 }
 </style>

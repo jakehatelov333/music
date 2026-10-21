@@ -119,8 +119,8 @@ const handleLike = async () => {
 </script>
 
 <template>
-  <div class="flex items-center flex-1">
-    <div class="flex items-center mr-2">
+  <div class="flex min-w-0 flex-1 items-center justify-center md:justify-start">
+    <div class="mr-0 flex shrink-0 items-center md:mr-2">
       <button
         @click="prevTrack"
         class="p-2 rounded-full hover:bg-hoverMenuBg transition"
@@ -145,12 +145,12 @@ const handleLike = async () => {
       >
         <icon-solar:skip-previous-bold class="transform scale-x-[-1] text-lg" />
       </button>
-      <button class="p-2 rounded-full hover:bg-hoverMenuBg transition" @click="handleLike">
+      <button class="hidden rounded-full p-2 transition hover:bg-hoverMenuBg sm:inline-flex" @click="handleLike">
         <icon-mdi:cards-heart-outline v-if="currentSongLikeStatus === 0" class="text-lg" />
         <icon-mdi:cards-heart v-else class="text-lg text-red-500" />
       </button>
     </div>
-    <div class="w-full flex items-center space-x-2">
+    <div class="hidden w-full items-center space-x-2 md:flex">
       <el-slider
         v-model="currentTime"
         :step="1"

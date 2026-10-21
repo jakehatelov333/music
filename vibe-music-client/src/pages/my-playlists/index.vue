@@ -454,7 +454,7 @@ onBeforeUnmount(() => {
         <el-button @click="load">重新加载</el-button>
       </div>
       <template v-else-if="detail">
-        <header class="flex flex-col sm:flex-row gap-6 mb-8">
+        <header class="mb-8 flex flex-col gap-5 sm:flex-row sm:gap-6">
           <div class="relative w-40 h-40 md:w-48 md:h-48 shrink-0 group">
             <img
               :src="detail.coverUrl || coverImg"
@@ -523,7 +523,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </header>
-        <div class="flex items-center justify-between gap-3 border-b pb-4 mb-3">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b pb-4">
           <h2 class="text-lg font-semibold">歌单歌曲</h2>
           <button
             v-if="canEdit"

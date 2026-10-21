@@ -15,13 +15,21 @@ const playMusic = async (song: trackModel) => {
 
 const handleClearAll = () => {
   audio.setAudioStore('trackList', [])
+  audio.setAudioStore('currentSongIndex', 0)
   if (audioElement.value) {
+    audioElement.value.pause()
     audioElement.value.src = ''
   }
 }
 </script>
 <template>
-  <el-popover :width="450" trigger="click" placement="top-end" popper-class="!rounded-lg !p-0">
+  <el-popover
+    :width="450"
+    :popper-style="{ width: 'min(450px, calc(100vw - 24px))' }"
+    trigger="click"
+    placement="top-end"
+    popper-class="!rounded-lg !p-0"
+  >
     <template #reference>
       <div class="flex items-center">
         <button class="p-2 rounded-full hover:bg-hoverMenuBg transition w-9">
@@ -42,7 +50,7 @@ const handleClearAll = () => {
             @mouseover="mouseOverIndex = index" @mouseleave="mouseOverIndex = -1"
             class="flex items-center gap-2 p-2 my-1 rounded-lg transition group cursor-pointer"
             :class="`hover:bg-gray-300 ${audio.currentSongIndex == index ? 'bg-gray-300 dark:bg-[#414243]' : ''} dark:hover:bg-[#414243] `">
-            <div class="w-10 h-auto rounded-lg overflow-hidden relative">
+            <div class="w-10 h-10 shrink-0 rounded-lg overflow-hidden relative">
               <img :src="item.cover" alt="" />
               <!-- Play 按钮，使用 group-hover 控制透明度 -->
               <div
@@ -50,14 +58,21 @@ const handleClearAll = () => {
                 <icon-tabler:player-play-filled class="text-lg" />
               </div>
             </div>
-            <div class="flex-1">
-              <div class="text-sm">{{ item.title }}</div>
-              <div class="text-xs text-gray-400">{{ item.artist }}</div>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm">{{ item.title }}</div>
+              <div class="truncate text-xs text-gray-400">{{ item.artist }}</div>
             </div>
             <div class="text-xs text-gray-400">
               {{ formatMillisecondsToTime(Number(item.duration) * 1000) }}
             </div>
-            <el-button v-show="mouseOverIndex == index" type="primary" text circle @click="audio.deleteTrack(item.id)">
+            <el-button
+              type="primary"
+              text
+              circle
+              class="queue-delete"
+              :class="{ 'queue-delete--visible': mouseOverIndex === index }"
+              @click.stop="audio.deleteTrack(item.id)"
+            >
               <icon-material-symbols:delete-outline-rounded class="text-lg text-gray-500" />
             </el-button>
           </div>
@@ -66,3 +81,22 @@ const handleClearAll = () => {
     </div>
   </el-popover>
 </template>
+
+<style scoped>
+/* 触屏设备没有 hover，删除按钮必须始终可点。 */
+.queue-delete {
+  flex-shrink: 0;
+}
+
+@media (hover: hover) {
+  .queue-delete {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .queue-delete--visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+</style>

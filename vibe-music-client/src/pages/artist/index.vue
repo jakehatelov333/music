@@ -55,7 +55,7 @@ const handleGetArtistList = () => {
   const params = {
     pageNum: currentPage.value,
     pageSize: pageSize.value,
-    name: null,
+    artistName: null,
     gender: selectedGender.value === '-1' ? null : categories.value[0].subCategories.find(item => item.id === selectedGender.value)?.value,
     area: selectedArea.value === '-1' ? null : categories.value[1].subCategories.find(item => item.id === selectedArea.value)?.value
   }
@@ -81,6 +81,7 @@ const handleGetArtistList = () => {
 }
 
 const handleSearch = () => {
+  currentPage.value = 1
   const params = {
     pageNum: currentPage.value,
     pageSize: pageSize.value,
@@ -122,8 +123,8 @@ onMounted(() => {
 })
 </script>
 <template>
-  <div class="flex h-full">
-    <div class="w-64 bg-background p-4">
+  <div class="flex min-h-full flex-col md:h-full md:min-h-0 md:flex-row">
+    <div class="w-full shrink-0 bg-background p-4 md:h-full md:w-64 md:overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">歌手分类</h2>
         <button @click="handleReset"
@@ -138,7 +139,7 @@ onMounted(() => {
           <icon-akar-icons:search
             class="lucide lucide-search absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
           <input v-model="searchKeyword" @keyup.enter="handleSearch"
-            class="flex h-10 rounded-lg border border-input transform duration-300 bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-0 pl-10 w-56"
+            class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 pl-10 text-sm ring-offset-background transition duration-300 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-0 md:w-56"
             placeholder="搜索歌手" />
         </div>
 
@@ -155,7 +156,7 @@ onMounted(() => {
           <div v-show="categories[0].isOpen" class="ml-4 mt-1 space-y-1">
             <button v-for="(subCategory, subIndex) in categories[0].subCategories" :key="subIndex"
               @click="handleSubCategoryClick(subCategory.id, 0)"
-              class="inline-flex items-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 hover:text-accent-foreground h-9 rounded-md px-3 w-48 justify-start"
+              class="inline-flex h-9 w-full items-center justify-start gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium ring-offset-background transition-colors hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 md:w-48"
               :class="selectedGender === subCategory.id ? 'bg-activeMenuBg text-accent-foreground' : 'hover:bg-hoverMenuBg text-foreground'">
               {{ subCategory.label }}
             </button>
@@ -174,7 +175,7 @@ onMounted(() => {
           <div v-show="categories[1].isOpen" class="ml-4 mt-1 space-y-1">
             <button v-for="(subCategory, subIndex) in categories[1].subCategories" :key="subIndex"
               @click="handleSubCategoryClick(subCategory.id, 1)"
-              class="inline-flex items-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 hover:text-accent-foreground h-9 rounded-md px-3 w-48 justify-start"
+              class="inline-flex h-9 w-full items-center justify-start gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium ring-offset-background transition-colors hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 md:w-48"
               :class="selectedArea === subCategory.id ? 'bg-activeMenuBg text-accent-foreground' : 'hover:bg-hoverMenuBg text-foreground'">
               {{ subCategory.label }}
             </button>
@@ -182,14 +183,14 @@ onMounted(() => {
         </div>
       </nav>
     </div>
-    <main class="flex-1">
+    <main class="min-w-0 flex-1 md:min-h-0 md:overflow-y-auto">
       <div class="p-2 md:p-4 lg:p-6">
-        <div class="w-[86%] mx-auto">
-          <div class="grid grid-cols-4 gap-x-16 gap-y-8">
+        <div class="mx-auto w-full md:w-[86%]">
+          <div class="grid grid-cols-2 gap-x-5 gap-y-6 sm:grid-cols-3 md:grid-cols-4 md:gap-x-10 md:gap-y-8 xl:gap-x-16">
             <div v-for="(artist, index) in artistList" :key="index"
               class="group relative rounded-full text-card-foreground shadow-md hover:shadow-xl">
-              <button @click="router.push(`/artist/${artist.artistId}`)" class="w-full h-full overflow-hidden rounded-full">
-                <div class="w-full h-full relative">
+              <button @click="router.push(`/artist/${artist.artistId}`)" class="w-full overflow-hidden rounded-full">
+                <div class="relative aspect-square w-full">
                   <el-image lazy :alt="artist.name"
                     class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-110"
                     :src="artist.picUrl + '?param=230y230'" />
@@ -197,8 +198,8 @@ onMounted(() => {
                     class="absolute inset-0 bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
                   </div>
                   <div
-                    class="absolute bottom-0 left-0 right-0 px-4 py-3 text-white opacity-0 transition-opacity duration-300 group-hover:opacity-100 z-10">
-                    <h2 class="mb-1 text-xl font-semibold">{{ artist.name }}</h2>
+                    class="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/75 to-transparent px-3 py-3 text-white md:px-4">
+                    <h2 class="line-clamp-1 text-sm font-semibold md:text-lg">{{ artist.name }}</h2>
                     <p class="mb-2 text-sm" v-if="artist.alias && artist.alias.length > 0">
                       {{ artist.alias.join() }}
                     </p>

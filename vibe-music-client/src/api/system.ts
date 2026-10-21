@@ -144,8 +144,8 @@ export const getSongDetail = (id: number) => {
 }
 
 /** 获取所有歌手 */
-export const getAllArtists = (data: object) => {
-  return http<ResultTable>('post', '/artist/getAllArtists', { data })
+export const getAllArtists = (data: object, signal?: AbortSignal) => {
+  return http<ResultTable>('post', '/artist/getAllArtists', { data, signal })
 }
 
 /** 获取歌手详情 */
