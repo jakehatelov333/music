@@ -254,6 +254,40 @@ public interface AgentSongMapper {
                                          @Param("limit") int limit);
 
     /**
+     * 与 {@link #findSongsExcluding} <b>同一套筛选条件</b>，但只数数量、不做任何排除。
+     *
+     * <p>筛选表达式必须与上面那条保持一致（风格子串、关键词 OR、歌手 {@code EXISTS}、
+     * 以及排除非 ACTIVE 歌手的兜底），否则「诊断说有 N 首、实际却挑不出来」会自相矛盾。
+     * 之所以单独写一条而不是复用分页 COUNT：{@code findSongsExcluding} 还带
+     * 会话历史与偏好排除，那是「这次能挑几首」，不是「曲库里有没有」。
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+            FROM tb_song s
+                     LEFT JOIN tb_album al ON s.album_id = al.id
+            WHERE (#{style} IS NULL OR TRIM(#{style}) = '' OR s.style LIKE CONCAT('%', TRIM(#{style}), '%'))
+              AND (#{keyword} IS NULL OR TRIM(#{keyword}) = ''
+                   OR s.name LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR s.artist_names LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR COALESCE(al.name, s.album) LIKE CONCAT('%', TRIM(#{keyword}), '%')
+                   OR s.style LIKE CONCAT('%', TRIM(#{keyword}), '%'))
+            <if test="artistIds != null and artistIds.size() > 0">
+              AND EXISTS (SELECT 1 FROM tb_song_artist sa
+                          WHERE sa.song_id = s.id AND sa.artist_id IN
+                          <foreach collection="artistIds" item="aid" open="(" separator="," close=")">#{aid}</foreach>)
+            </if>
+              AND NOT EXISTS (
+                    SELECT 1 FROM tb_song_artist sa2
+                    JOIN tb_artist a2 ON a2.id = sa2.artist_id
+                    WHERE sa2.song_id = s.id AND a2.status &lt;&gt; 'ACTIVE')
+            </script>
+            """)
+    long countMatching(@Param("keyword") String keyword,
+                       @Param("artistIds") List<Long> artistIds,
+                       @Param("style") String style);
+
+    /**
      * 随机推荐；仅用于“随便来点歌”这类无明确条件的请求。
      *
      * <p>排除语义与 {@link #findSongsExcluding} 完全一致（同一套 {@code EXISTS} + token 精确比对），

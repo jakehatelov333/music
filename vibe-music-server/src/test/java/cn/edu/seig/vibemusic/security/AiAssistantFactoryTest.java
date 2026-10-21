@@ -198,7 +198,7 @@ class AiAssistantFactoryTest {
         when(model.generate(anyList(), anyList()))
                 .thenReturn(Response.from(AiMessage.from(tool), new TokenUsage(10, 2)), answer("找到了"),
                         Response.from(AiMessage.from(tool), new TokenUsage(10, 2)), answer("找到了"));
-        when(tools.searchSongs("轻音乐")).thenReturn("歌曲");
+        when(tools.searchSongs("轻音乐", null)).thenReturn("歌曲");
         chat("u1", "搜歌");
         chat("u1", "再搜歌");
         List<ChatMessage> rows = history.get("u1");
@@ -214,9 +214,9 @@ class AiAssistantFactoryTest {
         ToolExecutionRequest tool = ToolExecutionRequest.builder().id("search").name("searchSongs")
                 .arguments("{\"keyword\":\"轻音乐\"}").build();
         when(model.generate(anyList(), anyList())).thenReturn(Response.from(AiMessage.from(tool), new TokenUsage(10, 2)));
-        when(tools.searchSongs("轻音乐")).thenReturn("没有找到");
+        when(tools.searchSongs("轻音乐", null)).thenReturn("没有找到");
         assertThrows(RuntimeException.class, () -> chat("user_chat_id_1", "搜歌"));
-        verify(tools, times(2)).searchSongs("轻音乐");
+        verify(tools, times(2)).searchSongs("轻音乐", null);
         assertTrue(leases.isEmpty());
     }
 

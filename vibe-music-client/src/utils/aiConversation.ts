@@ -22,9 +22,18 @@ export type Block =
       message: string
       page: number
       total: number
+      /**
+       * 曲库里符合当前筛选条件的<b>总数</b>，由一次探测请求得到；未知时为 null。
+       *
+       * <p>它与 {@link total} 是两件事：`total` 是「当前这份结果集有多大」，
+       * 卡片未展开时等于工具返回的条数（推荐 5 首就是 5）；`libraryTotal` 是
+       * 「按这个条件还能翻出多少」。两者混用会让人以为推荐了 57 首，实际只给了 5 首。
+       */
+      libraryTotal: number | null
       search: SongSearch | null
       busy: boolean
       error: string | null
+      /** 已展开为服务端翻页浏览（此时 `songs` 是某一页，`total` 是曲库总数）。 */
       remote: boolean
     }
   | {
@@ -53,6 +62,7 @@ export const songBlock = (
   search: search || null,
   page: 1,
   total: songs.length,
+  libraryTotal: null,
   busy: false,
   error: null,
   remote: false,
@@ -60,6 +70,19 @@ export const songBlock = (
 
 export const songPageCount = (block: Extract<Block, { kind: 'songs' }>) =>
   Math.max(1, Math.ceil(block.total / SONGS_PAGE_SIZE))
+
+/**
+ * 卡片是否还有「查看更多」可点。
+ *
+ * <p>判据是曲库总数比工具返回的更多 —— 用户看到 5 首，曲库里却有 57 首，才有得看。
+ * `libraryTotal` 未知（探测请求失败、或历史记录里没有该信息）时按「没有更多」处理：
+ * 与其给一个点了没反应的入口，不如不给。已经展开过（`remote`）的卡片自然也不再提示。
+ */
+export const hasMoreSongs = (block: Extract<Block, { kind: 'songs' }>) =>
+  !block.remote &&
+  !!block.search &&
+  block.libraryTotal != null &&
+  block.libraryTotal > block.songs.length
 
 export const visibleSongs = (block: Extract<Block, { kind: 'songs' }>) =>
   block.remote

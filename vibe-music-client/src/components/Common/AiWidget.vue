@@ -20,6 +20,7 @@ import {
   songBlock,
   songPageCount,
   visibleSongs,
+  hasMoreSongs,
   SONGS_PAGE_SIZE,
 } from '@/utils/aiConversation'
 import type { Block, ChatMessage } from '@/utils/aiConversation'
@@ -349,6 +350,36 @@ const openPlaylist = (playlistId: number) => {
 
 // ---------------------------------------------------------------- 会话
 
+/**
+ * 探测「按这个条件曲库里一共有多少首」，<b>不改动卡片上已有的歌曲</b>。
+ *
+ * <p>只用来决定要不要显示「查看更多」以及括号里的数字。工具返回的就是按 id 排序的第一页，
+ * 所以这里拿到的 `total` 必然 ≥ 已有条数；请求失败只是让入口不出现，卡片照常显示。
+ */
+const probeLibraryTotal = async (block: Extract<Block, { kind: 'songs' }>) => {
+  if (!block.search || block.remote) return
+  const epoch = identityEpoch
+  try {
+    const result = await aiSongPage(block.search, 1, SONGS_PAGE_SIZE)
+    if (epoch !== identityEpoch || block.remote) return
+    block.libraryTotal = result.total
+  } catch {
+    // 探测失败不影响推荐卡片本身：保持 libraryTotal = null，即不显示「查看更多」。
+  }
+}
+
+/**
+ * 把卡片展开成服务端翻页浏览。
+ *
+ * <p>展开之后 `songs` 变成「当前页」，`total` 变成曲库总数 —— 此时卡片不再是「为你挑的几首」，
+ * 而是「按这个条件的全部结果」。这个语义切换必须在用户主动点击之后发生，不能自动。
+ */
+const expandSongs = async (block: Extract<Block, { kind: 'songs' }>) => {
+  if (block.busy || !block.search) return
+  block.remote = true
+  await changeSongPage(block, 1)
+}
+
 const changeSongPage = async (
   block: Extract<Block, { kind: 'songs' }>,
   page: number
@@ -369,6 +400,7 @@ const changeSongPage = async (
     if (epoch !== identityEpoch) return
     block.songs = result.songs
     block.total = result.total
+    block.libraryTotal = result.total
     block.page = result.page
     block.remote = true
   } catch {
@@ -458,7 +490,7 @@ const loadConversation = async (chatId: string | null): Promise<boolean> => {
           (b): b is Extract<Block, { kind: 'songs' }> =>
             b.kind === 'songs' && !!b.search
         )
-        .map((b) => changeSongPage(b, 1))
+        .map((b) => probeLibraryTotal(b))
     )
     if (epoch !== identityEpoch) return false
     await restorePending()
@@ -717,7 +749,7 @@ const send = () => {
           Block,
           { kind: 'songs' }
         >
-        if (block.search) void changeSongPage(block, 1)
+        if (block.search) void probeLibraryTotal(block)
       },
       onConfirm: (action: PendingAction) => {
         if (controller.signal.aborted) return
@@ -761,9 +793,7 @@ const send = () => {
     },
     controller.signal,
     // 新对话用 newConversation 标志（chatId 还不存在）；否则带上当前会话。
-    isNewConversation
-      ? { newConversation: true }
-      : { chatId: targetChatId }
+    isNewConversation ? { newConversation: true } : { chatId: targetChatId }
   )
 }
 
@@ -868,11 +898,20 @@ defineExpose({ open, close })
       >
         正在加载…
       </p>
-      <div v-else-if="conversationsError" role="alert" class="p-3 text-xs text-red-500">
+      <div
+        v-else-if="conversationsError"
+        role="alert"
+        class="p-3 text-xs text-red-500"
+      >
         {{ conversationsError }}
-        <button class="ml-1 underline" @click="refreshConversations">重试</button>
+        <button class="ml-1 underline" @click="refreshConversations">
+          重试
+        </button>
       </div>
-      <p v-else-if="!conversations.length" class="p-3 text-xs text-muted-foreground">
+      <p
+        v-else-if="!conversations.length"
+        class="p-3 text-xs text-muted-foreground"
+      >
         还没有历史对话。发送第一条消息后就会出现在这里。
       </p>
       <ul v-else class="flex-1 min-h-0 overflow-auto divide-y">
@@ -912,7 +951,9 @@ defineExpose({ open, close })
       </p>
       <div v-if="historyError" role="alert" class="text-xs text-red-500">
         {{ historyError }}
-        <button class="ml-2 underline min-h-11" @click="retryHistory">重新加载</button>
+        <button class="ml-2 underline min-h-11" @click="retryHistory">
+          重新加载
+        </button>
       </div>
       <p
         v-if="!historyLoading && !historyError && !messages.length"
@@ -975,11 +1016,21 @@ defineExpose({ open, close })
                 class="px-2 py-1.5 text-xs text-muted-foreground bg-muted/40 flex items-center justify-between"
               >
                 <span class="font-semibold">{{
-                  b.search ? '歌曲搜索结果' : b.message
+                  b.remote ? '歌曲搜索结果' : b.message
                 }}</span>
-                <span class="shrink-0"
-                  >共 <strong>{{ b.total }}</strong> 首</span
-                >
+                <!--
+                  「为你挑的 N 首」与「曲库共 M 首」是两件事，必须分开显示：
+                  展开前 N 是工具实际返回的条数（推荐默认 5），展开后才是筛选结果总数。
+                  曾经把曲库总数直接写在这里，导致只推荐了 5 首却显示「共 57 首」。
+                -->
+                <span class="shrink-0">
+                  <template v-if="b.remote"
+                    >共 <strong>{{ b.total }}</strong> 首</template
+                  >
+                  <template v-else
+                    >为你挑的 <strong>{{ b.songs.length }}</strong> 首</template
+                  >
+                </span>
               </div>
               <div
                 v-for="song in visibleSongs(b)"
@@ -1028,8 +1079,20 @@ defineExpose({ open, close })
               >
                 暂无匹配歌曲
               </p>
+              <!--
+                「查看更多」只在曲库里确实还有更多时才出现（hasMoreSongs 依赖探测到的 libraryTotal）。
+                它是把推荐卡片切换成检索结果浏览的唯一入口 —— 不点就永远只看到模型挑的那几首。
+              -->
+              <button
+                v-if="hasMoreSongs(b)"
+                class="w-full min-h-11 px-2 text-xs text-primary hover:bg-muted/40"
+                :disabled="b.busy"
+                @click="expandSongs(b)"
+              >
+                查看更多（曲库共 {{ b.libraryTotal }} 首）
+              </button>
               <nav
-                v-if="b.total > SONGS_PAGE_SIZE || b.search"
+                v-if="b.remote || b.total > SONGS_PAGE_SIZE"
                 aria-label="歌曲搜索分页"
                 class="px-2 flex items-center justify-between gap-2 text-xs"
               >

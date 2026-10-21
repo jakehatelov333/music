@@ -205,10 +205,10 @@ class PlaylistSelectionDiversityTest extends AbstractAgentTest {
         RecordingSink sink = new RecordingSink();
         var tools = readTools(sink, 1L, CHAT, new AgentMetrics("t", 1L, CHAT, "m"));
 
-        assertTrue(songIdsOfJson(tools.searchSongs("夜色")).contains(10L), "普通搜索不得被历史过滤");
-        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A")).containsAll(ids(10, 11)));
-        assertTrue(songIdsOfJson(tools.getSongsByStyle("流行")).containsAll(ids(10, 11)));
-        assertTrue(songIdsOfJson(tools.searchSongs("测试专辑A")).containsAll(ids(10, 11, 12)));
+        assertTrue(songIdsOfJson(tools.searchSongs("夜色", null)).contains(10L), "普通搜索不得被历史过滤");
+        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A", null)).containsAll(ids(10, 11)));
+        assertTrue(songIdsOfJson(tools.getSongsByStyle("流行", null)).containsAll(ids(10, 11)));
+        assertTrue(songIdsOfJson(tools.searchSongs("测试专辑A", null)).containsAll(ids(10, 11, 12)));
 
         // 对照：候选检索则确实排除了它们。
         assertFalse(candidateIds(1L, CHAT, "测试歌手A").contains(10L));

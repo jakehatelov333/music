@@ -197,10 +197,10 @@ class PreferenceExclusionEnforcementTest extends AbstractAgentTest {
 
         MusicTools tools = readTools(new RecordingSink(), 1L, CHAT, new AgentMetrics("t", 1L, CHAT, "m"));
 
-        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A")).containsAll(List.of(10L, 11L, 12L)),
+        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A", null)).containsAll(List.of(10L, 11L, 12L)),
                 "用户明确要听某位歌手时，长期排除项不生效");
-        assertTrue(songIdsOfJson(tools.getSongsByStyle("摇滚")).contains(12L));
-        assertTrue(songIdsOfJson(tools.searchSongs("摇滚")).contains(12L));
+        assertTrue(songIdsOfJson(tools.getSongsByStyle("摇滚", null)).contains(12L));
+        assertTrue(songIdsOfJson(tools.searchSongs("摇滚", null)).contains(12L));
 
         // 对照：服务端替用户挑歌的候选检索确实排除了。
         assertTrue(candidateIds(1L, "测试歌手A", "", "", "20").isEmpty());
@@ -239,7 +239,7 @@ class PreferenceExclusionEnforcementTest extends AbstractAgentTest {
 
         // 关闭个性化也不影响「当前请求本身」：用户这次明确要的歌手照样搜得到。
         MusicTools tools = readTools(new RecordingSink(), 1L, CHAT, new AgentMetrics("t", 1L, CHAT, "m"));
-        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A")).containsAll(List.of(10L, 11L, 12L)));
+        assertTrue(songIdsOfJson(tools.searchSongsByArtist("测试歌手A", null)).containsAll(List.of(10L, 11L, 12L)));
     }
 
     // ================================================================ helpers
@@ -267,7 +267,7 @@ class PreferenceExclusionEnforcementTest extends AbstractAgentTest {
 
     private List<Long> randomIds(Long userId) throws Exception {
         RecordingSink sink = new RecordingSink();
-        String raw = readTools(sink, userId, CHAT, new AgentMetrics("t", userId, CHAT, "m")).getRandomSongs();
+        String raw = readTools(sink, userId, CHAT, new AgentMetrics("t", userId, CHAT, "m")).getRandomSongs(null);
         ToolResult<List<SongRef>> result = AgentJson.MAPPER.readValue(raw,
                 new TypeReference<ToolResult<List<SongRef>>>() { });
         return songIdsOf(result.data());

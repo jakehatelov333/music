@@ -76,15 +76,20 @@ LangChain4j 0.36.2 在 `DefaultToolExecutor` 里对非 `String` 返回值会走�
 
 | 工具 | 参数 | kind |
 |---|---|---|
-| `searchSongs` | `keyword` | SONG_LIST |
-| `searchSongsByArtist` | `artistName` | SONG_LIST |
-| `getSongsByStyle` | `styleName` | SONG_LIST |
-| `searchPlaylistCandidates` | `artistName` / `keyword` / `style`（至少一个）+ `limit` | SONG_LIST（排除本会话已用歌曲与长期偏好排除项） |
-| `getRandomSongs` | — | SONG_LIST |
+| `searchSongs` | `keyword` + `limit`（留空 5，最大 20） | SONG_LIST |
+| `searchSongsByArtist` | `artistName` + `limit`（留空 5，最大 20） | SONG_LIST |
+| `getSongsByStyle` | `styleName` + `limit`（留空 5，最大 20） | SONG_LIST |
+| `searchPlaylistCandidates` | `artistName` / `keyword` / `style`（至少一个）+ `limit`（留空 10，最大 20） | SONG_LIST（排除本会话已用歌曲与长期偏好排除项） |
+| `getRandomSongs` | `limit`（留空 5，最大 20） | SONG_LIST |
 | `searchArtists` | `keyword` | ARTIST_LIST |
 | `getArtistDetail` | `artistName` | ARTIST_DETAIL |
 | `searchPlaylists` | `keyword` | PLAYLIST_LIST |
 | `getRecentPlayedSongs` | `limit`（留空 10，最大 20） | SONG_LIST |
+
+**推荐类工具默认 5 首**（`searchSongs` / `searchSongsByArtist` / `getSongsByStyle` / `getRandomSongs`）：
+用户说「推荐几首」「来点类似的」时要的是一个能听完的短列表，10 首会让模型倾向于整份复述、界面也要翻页。
+用户明确说了数量（「来 10 首」「全部」）时由模型自己把 `limit` 调大，上限 20（`AgentSongQueryService.MAX_RESULTS`）。
+`searchPlaylistCandidates` 保持默认 10：建歌单需要更大的候选池供挑选，预览里的歌数由模型决定而非默认值。
 
 `getRecentPlayedSongs` 读的是「当前用户」的播放历史明细（`tb_play_history ⋈ tb_song`），
 返回真实歌名/歌手/封面/播放地址：画像里的 `played_song_count` / `recent_play_artists` 只是聚合信号，
@@ -119,7 +124,7 @@ LangChain4j 0.36.2 在 `DefaultToolExecutor` 里对非 `String` 返回值会走�
 
 | 事件 | 载荷 | 含义 |
 |---|---|---|
-| `start` | `{taskId, model}` | Agent 开始处理 |
+| `start` | `{type, taskId, message, data:{model, chatId}}` | Agent 开始处理 |
 | `tool` | `{taskId, toolCallId, tool, phase:"start"\|"end", ok, code, message, total, kind, durationMs}` | 工具开始/结束 |
 | `songs` | `{taskId, toolCallId, kind, total, data:[SongRef]}` | 结构化歌曲数据 |
 | `confirm` | `{data: PendingActionVO}` | 等待用户确认 |
@@ -130,6 +135,13 @@ LangChain4j 0.36.2 在 `DefaultToolExecutor` 里对非 `String` 返回值会走�
 
 同一任务的多个事件通过 `taskId` 关联；同一次工具调用的 `start` / `end` / 结构化数据
 通过 `toolCallId` 关联。
+
+> ⚠️ **`start` 的 `chatId` 在 `data` 里，不在顶层。** 服务端发的是完整的 `AgentEvent` record，
+> 所有结构化载荷（`model` / `chatId`）都在 `data` 下。前端曾按顶层 `payload.chatId` 读取，
+> 拿到 `undefined` 后「新对话」标志永远清不掉 —— 每条消息都带 `newConversation:true`，
+> 每轮新建一段对话，用户看到的是「聊到第三轮模型突然失忆」，实际是三轮落在三个 chatId 上。
+> 前端 `src/api/ai.ts#parseStartEvent` 负责归一化成扁平的 `{taskId, model, chatId}`，
+> 回调方不必关心嵌套；`tests/ai-widget.test.mjs` 有「连续三条只建一段会话」的回归用例。
 
 ### 输出护栏（重要契约）
 
@@ -143,9 +155,32 @@ LangChain4j 0.36.2 在 `DefaultToolExecutor` 里对非 `String` 返回值会走�
 |---|---|---|
 | 有待确认卡片（含「确认卡片」「待确认」） | 本轮真的产生过待确认任务（`pendingTaskId != null`） | `done` 替换为如实说明 |
 | 已创建成功 | 本轮真的写入过歌单（`playlistId != null`） | `done` 替换为如实说明 |
+| 已按播放历史过滤/排除 | 本轮真的上报过 `playedHistoryFiltered`（**当前没有任何工具会上报**） | `done` 替换为如实说明 |
+
+**第三类（播放历史过滤）的由来**：真实会话里，工具返回 5 首（其中 3 首已在播放记录中），
+模型自行挑掉 3 首后回复「已为您过滤掉播放历史中已听过的歌曲，以下是推荐的 2 首新曲」。
+推理是对的、归属是错的，而且与界面上仍是 5 首的歌曲卡片直接矛盾。
+
+关键点：
+
+- **服务端确实没有这个能力**——`searchPlaylistCandidates` 排除的是「本会话近期歌单已用过的歌」，
+  与 `tb_play_history` 无关；`getRecentPlayedSongs` 只读不筛。所以这类说法描述的必然不是服务端行为。
+- 判定**依赖事实而非"我记得没有这个能力"**：`AgentMetrics.playedHistoryFiltered` 默认 `false`，
+  将来真加了按播放历史排除的工具参数，只要在工具里调 `markPlayedHistoryFiltered()`，
+  护栏会自动放行，不需要改护栏代码。
+- 正则要求**完成态标记**（已/系统已/已自动），因此不会误伤
+  「你是想让我去掉听过的歌吗」「我可以按播放历史过滤，需要吗」这类复述与建议。
+- 护栏只改**话术**，不碰数据：不会因此产生或取消任何待确认任务。
 
 命中时 `task` 事件的 `data.outputGuarded` 为 `true`，并落库到 `tb_ai_task_metric.output_guarded`
 （这是衡量「模型有没有真的执行工具」的直接信号）。
+
+**护栏必须在结算之前跑。** `AgentMetrics` 是在 `StreamSession.settle()` 里落库的，
+而 `outputGuarded` 由护栏置位。早先的写法是「先 `settle()`（内部已落库）再跑护栏」，
+结果 2026-10-21 那次「已为您过滤掉播放历史中已听过的歌曲」的事故里，
+护栏即使生效，库里 `output_guarded` 也仍然是 `0` —— 指标成了查不出问题的摆设。
+现在 `settle(..., beforeRecord)` 提供前置钩子，护栏在其中执行；
+`AgentSseProtocolTest#playedHistoryFilterClaimIsCorrectedEndToEnd` 同时断言事件与落库值。
 
 **客户端要求**：必须用 `done` 的文本覆盖已累积的 `token` 文本，
 不能只依赖流式片段，否则会看到未校正的中间态。
@@ -302,6 +337,80 @@ PENDING ──claim──▶ EXECUTING ──成功──▶ SUCCEEDED
   回归手段：`SystemMessageInjectionTest` 直接断言模型收到的第一条消息。
 
 详细防线、阈值、CAS 幂等与排查手册见 `agent-personalization.md`。
+
+### 6.1.1 基础提示词的设计约束（歌名只能来自曲库 + 诚实归属）
+
+基础提示词按**场景分组的原则**组织，不再是一长串编号禁令。旧版 18 条编号规则里，
+模型只稳定执行了「调工具」和「复述 message」两条最容易的，其余被稀释——
+表现就是回答退化成「把工具 JSON 改写成项目符号列表」，也就是用户感受到的"传统风格"。
+
+**第 0 条（最优先）：歌名只能来自曲库。** 任何要说出歌名的回答都必须先调用检索工具，
+且只工具结果里出现过的歌名。模型关于歌手/专辑/代表作的知识**不能**作为推荐依据——
+曲库只有几百首，绝大多数歌手的经典作品并不在里面。
+
+这条来自 2026-10-21 的真实事故：用户问「推荐下历史播放列表类似的歌」，
+工具如实返回 3 首（西西里 / 乡间的路 / 爱琴海），模型却回答「推荐《晴天》《安静》《星晴》」，
+三首**一首都不在曲库里**；指标显示那一轮只有 1 次工具调用（取播放记录），推荐部分零检索。
+更早一轮甚至凭空写了「我刚查了下，目前有 10 首候选歌曲」，而 `tool_calls=0`。
+
+根因不是模型不听话，而是旧提示词只枚举了「工具结果 / 创建歌单 / 播放记录」三类场景，
+「推荐」根本不在覆盖范围内，模型于是把它当闲聊、用预训练知识作答；
+旧的「绝对不要编造歌曲」也只约束 `songId`，对说出口的歌名没有约束力。
+由 `PersonalizedSystemPromptTest#basePromptRequiresToolLookupBeforeNamingAnySong` 锁定。
+
+另外三条原则由 `basePromptKeepsHonestAttributionRules` 锁定：
+
+1. **允许自行推理**——对话里已出现的信息可以直接拿来筛选、比较、取舍，不必每一步都回工具；
+2. **如实归属**——"我自己挑掉的"必须说成"我按你刚才那份记录挑掉了"，
+   不能写成"系统已为你过滤掉"；工具没做过的事不得记在工具头上；
+3. **与界面一致**——文字必须和歌曲卡片显示的条数一致，除非真的重新检索产生了新卡片。
+
+另由 `basePromptStaysCompact` 限制编号规则条数（≤10），防止又长回一长串禁令。
+
+### 6.1.2 空结果：给事实，不给指令
+
+**工具返回的 `message` 里不得出现「不要改用其它工具」这类停止信号。** 助手跑的是
+LangChain4j `AiServices` 的 ReAct 循环（模型决策 → 调工具 → 观察 → 再决策），
+一次检索为空本该是「换一条路」的信号；一旦工具直接下指令禁止探索，
+循环里唯一有价值的动作就被掐断了，模型只能把「没找到」原样转述给用户。
+
+真实事故（2026-10-21 21:40）：用户问「推荐最近播放歌曲类似风格的歌」，模型正确归纳出
+「周杰伦 + 华语流行」并调用候选检索，工具返回「…可能曲库中没有…**不要改用其它工具**绕过
+排除条件」，模型于是回答「很抱歉，目前曲库里暂时没有适合的推荐歌曲」。
+而数据库里该歌手有 7 首、该风格有 57 首 —— 只是那 7 首**没有风格标注**，交集才为 0。
+
+现在 `MusicTools#emptyDiagnosis` 只陈述可观察的事实：
+
+| 情形 | 返回的事实 |
+|---|---|
+| 完整条件与逐项放宽都是 0 | 「未找到…曲库里确实没有这类歌」 |
+| 完整条件为 0、单项放宽有结果 | 「只按歌手有 N 首；只按风格有 M 首 → 条件交集过窄」 |
+| 曲库里有但被会话历史挡掉 | 「本会话已用过 N 首，不会重复出现」+ 复用出路 |
+| 用户偏好排除生效 | 排除的歌手/风格数量 + 「最终推荐不得违反」 |
+
+最后一条是关键区别：**约束是对结果的要求，不是对手段的限制**。模型可以用任何工具探索，
+只是最终推荐不能违反用户设定的排除条件。这与「禁止换工具」是两回事。
+
+配套改动：
+
+- `AgentSongMapper#countMatching` 提供只读诊断计数，筛选条件与 `findSongsExcluding` 完全一致，
+  但**不应用**会话历史与偏好排除 —— 回答的是「曲库里有没有」，不是「这次还剩几首」。
+- `UserMusicProfileService` 删掉了「最多再调用 1~2 次检索工具」。那条约束压住了检索扇出，
+  但也把模型换路径的预算提前花光；扇出是**预算太小**的症状，应靠放开预算解决。
+- `ai.max-tool-calls` 从 6 提到 10：每次「换条路试试」至少花 1 次工具调用，6 次只够走一条直线。
+
+回归：`EmptyResultDiagnosisTest`（4 条，含事故复现）与
+`PersonalizedSystemPromptTest#basePromptTreatsEmptyResultAsSignalToAdapt`。
+
+采样温度固定为 `ai.temperature`（默认 `0.3`）而不是供应商默认值：助手的工作是
+"如实转述服务端事实 + 简短判断"，不需要创作性发散。实测同一段对话里，
+同样的工具返回（一字不差）两轮给出了两种语气，其中一轮把"模型自行筛选"说成了"系统已过滤"。
+**要更活泼的文案请改提示词，不要靠提高温度碰运气。**
+
+摘要（`ChatSummaryService.MERGE_PROMPT`）**刻意不记录具体歌曲清单**：
+推荐过哪几首、歌单里放了哪几首、哪几首"已听过"都不进摘要。那是一次性的对话产物，
+会过期、会与曲库变化不一致，而且会被后续对话当成事实复用——实测出现过
+摘要把已播放的歌写成"推荐了未听过的歌"，再被下一轮照抄的情况。
 
 ### 6.2 画像查询接口
 

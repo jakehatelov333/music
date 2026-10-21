@@ -100,7 +100,7 @@ class AgentArtistPrecisionTest extends AbstractAgentTest {
 
         RecordingSink sink = new RecordingSink();
         String result = readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "test"))
-                .searchSongsByArtist("测试歌手B");
+                .searchSongsByArtist("测试歌手B", null);
 
         var tree = new ObjectMapper().readTree(result);
         assertTrue(tree.path("ok").asBoolean());

@@ -49,6 +49,21 @@ import java.util.function.Supplier;
 @Component
 public class MusicTools {
 
+    /**
+     * 推荐 / 找歌类工具的默认返回数量。
+     *
+     * <p><b>为什么是 5 而不是 10：</b>用户说「推荐几首」「来点类似的」，真正要的是一个能听完的短列表；
+     * 10 首会让模型倾向于把整份结果复述一遍，界面上也是两页卡片。5 首刚好一屏，且符合「几首」的语感。
+     * 用户明确说「多来几首」「全部」「20 首」时由模型自己把 limit 调大（上限 {@code MAX_RESULTS}）。
+     *
+     * <p><b>为什么不改 {@link #searchPlaylistCandidates}：</b>建歌单的候选集需要足够多以支撑挑选，
+     * 沿用默认 10（见 {@link #DEFAULT_PLAYLIST_LIMIT}）—— 预览里的歌数由模型决定，不由默认值决定。
+     */
+    private static final int DEFAULT_RECOMMEND_LIMIT = 5;
+
+    /** 歌单候选检索的默认数量：建歌单需要比「推荐几首」更大的候选池。 */
+    private static final int DEFAULT_PLAYLIST_LIMIT = 10;
+
     private final AgentSongQueryService songQuery;
     private final ArtistMapper artistMapper;
     private final PlaylistMapper playlistMapper;
@@ -87,11 +102,13 @@ public class MusicTools {
     @Tool("搜索歌曲。支持按歌名、歌手名、专辑名、风格的模糊关键词查找，"
             + "返回带 songId、歌手、专辑、封面和播放地址的结构化歌曲列表。"
             + "当用户想找歌、想按条件挑歌、或需要拿到歌曲 ID 以便后续创建歌单时使用。"
-            + "参数 keyword 为关键词；返回结果里没有歌曲表示没有命中，不代表调用失败。")
-    public String searchSongs(String keyword) {
+            + "参数 keyword 为关键词；limit 留空默认 5，最大 20。"
+            + "返回结果里没有歌曲表示没有命中，不代表调用失败。")
+    public String searchSongs(String keyword,
+                              @P(value = "期望返回的歌曲数量，留空默认 5，最大 20", required = false) String limit) {
         return invoke("searchSongs", "正在搜索歌曲…", () -> {
             if (keyword == null || keyword.isBlank()) return ToolResult.invalid("请提供搜索关键词");
-            List<SongRef> songs = songQuery.searchByKeyword(keyword, 10);
+            List<SongRef> songs = songQuery.searchByKeyword(keyword, parseLimit(limit, DEFAULT_RECOMMEND_LIMIT));
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到与「" + keyword + "」相关的歌曲，可以换个关键词试试")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST, "找到 " + songs.size() + " 首与「" + keyword + "」相关的歌曲",
@@ -103,11 +120,13 @@ public class MusicTools {
     @Tool("按歌手搜索该歌手演唱的歌曲（包含与其他歌手合作演唱的歌曲），"
             + "返回结构化歌曲列表（含 songId 与播放地址）。"
             + "当用户指定了歌手、想听某位歌手的歌时使用。参数 artistName 传单个歌手名即可，例如「银临」。"
+            + "limit 留空默认 5，最大 20；用户明确要「多来几首」「全部」时才调大。"
             + "返回结果里没有歌曲表示这位歌手没有作品，不代表调用失败。")
-    public String searchSongsByArtist(String artistName) {
+    public String searchSongsByArtist(String artistName,
+                                      @P(value = "期望返回的歌曲数量，留空默认 5，最大 20", required = false) String limit) {
         return invoke("searchSongsByArtist", "正在搜索该歌手的歌曲…", () -> {
             if (artistName == null || artistName.isBlank()) return ToolResult.invalid("请提供歌手名");
-            List<SongRef> songs = songQuery.searchByArtistName(artistName, 20);
+            List<SongRef> songs = songQuery.searchByArtistName(artistName, parseLimit(limit, DEFAULT_RECOMMEND_LIMIT));
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到歌手「" + artistName + "」的歌曲")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST,
@@ -117,11 +136,13 @@ public class MusicTools {
     }
 
     /** 按风格查找。<b>不应用排除规则</b>：用户当前明确点某风格时，长期偏好里的排除项不生效。 */
-    @Tool("按音乐风格查找歌曲，返回结构化歌曲列表。参数 styleName 为风格名，例如「流行」「摇滚」「民谣」。")
-    public String getSongsByStyle(String styleName) {
+    @Tool("按音乐风格查找歌曲，返回结构化歌曲列表。参数 styleName 为风格名，例如「流行」「摇滚」「民谣」。"
+            + "limit 留空默认 5，最大 20；用户明确要「多来几首」「全部」时才调大。")
+    public String getSongsByStyle(String styleName,
+                                  @P(value = "期望返回的歌曲数量，留空默认 5，最大 20", required = false) String limit) {
         return invoke("getSongsByStyle", "正在按风格查找歌曲…", () -> {
             if (styleName == null || styleName.isBlank()) return ToolResult.invalid("请提供音乐风格");
-            List<SongRef> songs = songQuery.search(null, null, null, styleName, 20);
+            List<SongRef> songs = songQuery.search(null, null, null, styleName, parseLimit(limit, DEFAULT_RECOMMEND_LIMIT));
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "未找到风格为「" + styleName + "」的歌曲")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST,
@@ -177,18 +198,9 @@ public class MusicTools {
                                 + describeScope(artist, word, styleName) + "歌曲",
                         fresh, fresh.size()).withSearch(criteria);
             }
-            // 没有新候选：先区分「曲库里本来就没有（含被偏好排除）」与「符合条件但都用过了」。
-            boolean anyExists = !songQuery.searchExcluding(word, artist, styleName, List.of(), exclusions, 1).isEmpty();
-            if (!anyExists) {
-                return ToolResult.empty(AgentToolKinds.SONG_LIST,
-                        "未找到" + describeScope(artist, word, styleName) + "的可推荐歌曲（可能曲库中没有，"
-                                + "或已被你设置的排除条件过滤掉）。不要改用其它工具绕过排除条件去推荐这些歌曲。")
-                        .withSearch(criteria);
-            }
+            // 空结果时只给事实，不下指令：让模型自己判断是按歌手推荐、放宽条件、还是如实说明。
             return ToolResult.empty(AgentToolKinds.SONG_LIST,
-                    describeScope(artist, word, styleName) + "的歌曲在近期歌单里已经全部用过了，没有可用的新歌。"
-                            + "请如实告诉用户当前没有新的候选，并询问是否接受复用旧歌；"
-                            + "用户明确同意后，再用普通搜索工具检索，并让 preparePlaylistCreation 带上 allowReuse=true。")
+                    emptyDiagnosis(artist, word, styleName, used, exclusions))
                     .withSearch(criteria);
         });
     }
@@ -198,12 +210,14 @@ public class MusicTools {
      * 因此必须应用与候选检索相同的结构化排除约束（SQL 层，{@code LIMIT} 之前）。
      */
     @Tool("随机获取推荐歌曲，用于音乐发现。用户说「随便来点歌」「推荐一些歌」且没有明确条件时使用。"
-            + "会自动避开用户长期偏好里排除的歌手与风格。")
-    public String getRandomSongs() {
+            + "会自动避开用户长期偏好里排除的歌手与风格。"
+            + "limit 留空默认 5，最大 20；用户明确要「多来几首」时才调大。")
+    public String getRandomSongs(
+            @P(value = "期望返回的歌曲数量，留空默认 5，最大 20", required = false) String limit) {
         return invoke("getRandomSongs", "正在挑选歌曲…", () -> {
             UserMemoryPreferenceService.ExclusionConstraints exclusions =
                     memoryPreferences.exclusionConstraints(context.userId());
-            List<SongRef> songs = songQuery.random(10, exclusions);
+            List<SongRef> songs = songQuery.random(parseLimit(limit, DEFAULT_RECOMMEND_LIMIT), exclusions);
             return songs.isEmpty()
                     ? ToolResult.empty(AgentToolKinds.SONG_LIST, "曲库中暂无歌曲数据")
                     : ToolResult.ok(AgentToolKinds.SONG_LIST, "为你随机挑选了 " + songs.size() + " 首歌", songs, songs.size());
@@ -322,15 +336,19 @@ public class MusicTools {
         return json(result);
     }
 
-    /** 候选检索的返回数量：留空取默认值，非法值同样回落，避免模型传错就整次调用失败。 */
-    private static int parseLimit(String raw) {
-        if (raw == null || raw.isBlank()) return 10;
+    /** 返回数量：留空取调用方给的默认值，非法值同样回落，避免模型传错就整次调用失败。 */
+    private static int parseLimit(String raw, int fallback) {
+        if (raw == null || raw.isBlank()) return fallback;
         try {
             int value = Integer.parseInt(raw.trim());
             return Math.max(1, Math.min(value, AgentSongQueryService.MAX_RESULTS));
         } catch (NumberFormatException e) {
-            return 10;
+            return fallback;
         }
+    }
+
+    private static int parseLimit(String raw) {
+        return parseLimit(raw, DEFAULT_PLAYLIST_LIMIT);
     }
 
     /** 把生效的筛选条件拼成一句人话，用于工具消息（模型据此向用户解释为什么没有新歌）。 */
@@ -340,6 +358,95 @@ public class MusicTools {
         if (keyword != null) parts.add("关键词「" + keyword + "」");
         if (style != null) parts.add("「" + style + "」风格");
         return parts.isEmpty() ? "" : String.join("、", parts);
+    }
+
+    /**
+     * 候选检索为空时的<b>诊断事实</b>。
+     *
+     * <p><b>这里刻意只陈述事实，不下行动指令。</b>旧版返回「…可能曲库中没有…不要改用其它工具
+     * 绕过排除条件」，其中「不要改用其它工具」是一条停止信号：模型拿到 EMPTY 后没有可走的路，
+     * 只能把「曲库没有」转述给用户。真实事故里用户问「推荐最近播放歌曲类似风格的歌」，
+     * 工具返回的正是这句，模型于是回答「很抱歉，曲库里暂时没有适合的推荐歌曲」——
+     * 而实际上该歌手有 7 首，只是没有风格标注，两个条件取交集才为 0。
+     *
+     * <p>现在改为逐项给出<b>可观察的事实</b>：
+     * <ul>
+     *     <li>完整条件命中多少首（区分「曲库确实没有」与「条件太窄」）；</li>
+     *     <li>分别放宽歌手 / 风格 / 关键词后各有多少首（模型可据此判断是哪一项卡住了）；</li>
+     *     <li>其中有多少首被本会话历史或用户偏好排除（这是业务约束，必须让模型知道，
+     *         但由它自己决定如何向用户表达）。</li>
+     * </ul>
+     *
+     * <p><b>「用户排除条件不得绕过」这条业务约束仍然保留</b>，但表述为对<b>结果</b>的要求
+     * （推荐里不能出现被排除的歌手/风格），而不是对<b>手段</b>的禁止 ——
+     * 模型可以用任何工具探索，只是最终推荐必须满足约束。
+     */
+    private String emptyDiagnosis(String artist, String keyword, String style,
+                                  Set<Long> used,
+                                  UserMemoryPreferenceService.ExclusionConstraints exclusions) {
+        StringBuilder sb = new StringBuilder();
+
+        // ① 先把事实算全，再决定措辞。顺序很重要：曾在这里「exact==0 就提前返回」，
+        //    结果恰恰吞掉了最需要说明的场景 —— 歌手有 7 首、风格有 57 首，但交集为 0
+        //    （因为那 7 首没有风格标注）。那不是「曲库没有」，是「条件交集过窄」。
+        long exact = songQuery.countMatching(keyword, artist, style);
+
+        // ② 逐项放宽，指出是哪一项把结果压到了 0（单条件时无需放宽，自身就是答案）。
+        List<String> relaxed = new java.util.ArrayList<>(2);
+        long bestRelaxed = 0L;
+        if (artist != null && style != null) {
+            long byArtist = songQuery.countMatching(null, artist, null);
+            long byStyle = songQuery.countMatching(null, null, style);
+            relaxed.add("只按歌手「" + artist + "」有 " + byArtist + " 首");
+            relaxed.add("只按风格「" + style + "」有 " + byStyle + " 首");
+            bestRelaxed = Math.max(byArtist, byStyle);
+        } else if (artist != null && keyword != null) {
+            long byArtist = songQuery.countMatching(null, artist, null);
+            long byKeyword = songQuery.countMatching(keyword, null, null);
+            relaxed.add("只按歌手「" + artist + "」有 " + byArtist + " 首");
+            relaxed.add("只按关键词「" + keyword + "」有 " + byKeyword + " 首");
+            bestRelaxed = Math.max(byArtist, byKeyword);
+        } else if (style != null && keyword != null) {
+            long byStyle = songQuery.countMatching(null, null, style);
+            long byKeyword = songQuery.countMatching(keyword, null, null);
+            relaxed.add("只按风格「" + style + "」有 " + byStyle + " 首");
+            relaxed.add("只按关键词「" + keyword + "」有 " + byKeyword + " 首");
+            bestRelaxed = Math.max(byStyle, byKeyword);
+        }
+
+        // ③ 完整条件与放宽后都是 0：曲库里确实没有这类歌，这是「未找到」。
+        if (exact == 0 && bestRelaxed == 0) {
+            sb.append("未找到符合 ").append(describeScope(artist, keyword, style)).append(" 的歌曲。");
+            sb.append("\n诊断：完整条件与逐项放宽后在曲库中都命中 0 首（不含任何排除），")
+                    .append("说明曲库里确实没有这类歌。可以如实告诉用户没有，")
+                    .append("或换个条件/关键词再查；不要用曲库外的歌名充数。");
+            return sb.toString();
+        }
+
+        sb.append("没有找到同时满足 ").append(describeScope(artist, keyword, style)).append(" 的歌曲。");
+        sb.append("\n诊断：完整条件在曲库中命中 ").append(exact).append(" 首（不含任何排除）。");
+        if (!relaxed.isEmpty()) {
+            sb.append("\n放宽条件后：").append(String.join("；", relaxed)).append("。");
+            if (exact == 0) {
+                sb.append("两个条件同时成立才为 0，说明是条件交集过窄，而不是曲库没有这类歌。")
+                        .append("可以放宽一个条件重新检索，或直接按另一项条件推荐。");
+            }
+        }
+
+        // ⑤ 排除项：会话历史与用户偏好。这是业务约束，必须让模型知道，但由它自己决定怎么讲。
+        if (used != null && !used.isEmpty()) {
+            sb.append("\n本会话近期歌单已用过 ").append(used.size()).append(" 首，这些歌不会重复出现。")
+                    .append("如果用户接受复用旧歌，可以让他明确说「沿用刚才那些」，")
+                    .append("再用 preparePlaylistCreation 并带上 allowReuse=true。");
+        }
+        if (exclusions != null && !exclusions.isEmpty()) {
+            sb.append("\n另有用户偏好排除生效：").append(exclusions.excludedArtistIds().size())
+                    .append(" 位歌手与 ").append(exclusions.excludedStyleNames().size()).append(" 种风格。")
+                    .append("这些是用户设定的约束，最终推荐结果不得违反；")
+                    .append("但你可以用其它方式探索（例如换一个条件、按歌手推荐），不必局限在当前条件里。");
+        }
+        sb.append("\n以上都是服务端查到的真实数量，你可以据此决定怎么回答用户。");
+        return sb.toString();
     }
 
     private static String blankToNull(String value) {

@@ -141,6 +141,33 @@ public class AgentSongQueryService {
                 clamp(limit)));
     }
 
+    /**
+     * 只回答「这个条件组合有多少首歌」的只读诊断，<b>不返回歌曲本身，也不做任何排除</b>。
+     *
+     * <p><b>为什么需要它：</b>候选检索返回 EMPTY 时，模型和用户都需要知道「到底是曲库没有，
+     * 还是条件太窄」。早先的做法是让工具直接下指令（「不要改用其它工具」），
+     * 等于把一条固定降级路线写死在 Java 里；这里改为只提供<b>事实</b>，
+     * 由模型自己决定按歌手推荐、放宽条件、还是如实说明没有。
+     *
+     * <p>刻意<b>不</b>应用 {@code excludeIds} 与用户偏好排除：要回答的是
+     * 「曲库里有没有这类歌」这个客观问题，而不是「这次挑歌还剩几首」。
+     * 用户偏好是否生效由调用方另行说明，两者不能混在一个数字里。
+     *
+     * @return 命中数量；歌手名解析不到启用歌手时返回 0
+     */
+    public long countMatching(String keyword, String artistName, String style) {
+        String word = blankToNull(keyword);
+        String styleName = blankToNull(style);
+        List<Long> artistIds = resolveArtistFilter(blankToNull(artistName));
+        if (artistIds != null && artistIds.isEmpty()) {
+            return 0L;
+        }
+        if (word == null && styleName == null && artistIds == null) {
+            return 0L;
+        }
+        return songs.countMatching(word, artistIds, styleName);
+    }
+
     private static UserMemoryPreferenceService.ExclusionConstraints safe(
             UserMemoryPreferenceService.ExclusionConstraints exclusions) {
         return exclusions == null ? UserMemoryPreferenceService.ExclusionConstraints.none() : exclusions;

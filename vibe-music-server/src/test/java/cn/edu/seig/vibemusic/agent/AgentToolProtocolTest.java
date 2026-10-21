@@ -32,7 +32,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     void searchToolReturnsStructuredJsonWithRealSongData() throws Exception {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", 1L, "c1", "test-model");
-        String raw = readTools(sink, 1L, "c1", metrics).searchSongs("夜色");
+        String raw = readTools(sink, 1L, "c1", metrics).searchSongs("夜色", null);
 
         ToolResult<List<SongRef>> result = json.readValue(raw, new TypeReference<>() { });
         assertTrue(result.ok());
@@ -58,7 +58,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     void emptySearchIsSuccessNotFailure() throws Exception {
         RecordingSink sink = new RecordingSink();
         String raw = readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m"))
-                .searchSongs("完全不存在的曲目名");
+                .searchSongs("完全不存在的曲目名", null);
 
         ToolResult<?> result = parse(raw);
         assertTrue(result.ok(), "没搜到结果不是失败");
@@ -73,7 +73,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     void invalidArgumentIsCorrectableFailure() throws Exception {
         RecordingSink sink = new RecordingSink();
         AgentMetrics metrics = new AgentMetrics("t1", 1L, "c1", "m");
-        ToolResult<?> result = parse(readTools(sink, 1L, "c1", metrics).searchSongs("   "));
+        ToolResult<?> result = parse(readTools(sink, 1L, "c1", metrics).searchSongs("   ", null));
         assertFalse(result.ok());
         assertEquals(AgentToolCodes.INVALID_ARGUMENT, result.code());
         assertEquals(1, metrics.toolFailures());
@@ -83,7 +83,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     @DisplayName("工具开始/结束/结构化数据三类事件通过同一个 toolCallId 关联，且带真实耗时")
     void toolEventsShareOneCorrelatedId() {
         RecordingSink sink = new RecordingSink();
-        readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m")).searchSongs("夜色");
+        readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m")).searchSongs("夜色", null);
 
         List<AgentEvent> tools = sink.ofType(AgentEvent.TOOL);
         assertEquals(2, tools.size(), "一次调用应产生 start 与 end 两个事件");
@@ -106,7 +106,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
     @DisplayName("空结果不推送 songs 事件，避免前端渲染空卡片")
     void emptyResultDoesNotEmitSongsEvent() {
         RecordingSink sink = new RecordingSink();
-        readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m")).searchSongs("不存在的曲目");
+        readTools(sink, 1L, "c1", new AgentMetrics("t1", 1L, "c1", "m")).searchSongs("不存在的曲目", null);
         assertNull(sink.firstOfType(AgentEvent.SONGS));
         assertEquals(2, sink.ofType(AgentEvent.TOOL).size());
     }
@@ -219,7 +219,7 @@ class AgentToolProtocolTest extends AbstractAgentTest {
         MusicTools tools = new MusicTools(broken, artistMapper, playlists, selectionHistory,
                 memoryPreferenceService, context);
 
-        ToolResult<?> result = parse(tools.searchSongs("夜色"));
+        ToolResult<?> result = parse(tools.searchSongs("夜色", null));
         assertFalse(result.ok());
         assertEquals(AgentToolCodes.ERROR, result.code());
         assertEquals(1, metrics.toolFailures());
