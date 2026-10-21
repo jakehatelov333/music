@@ -259,6 +259,33 @@ class AgentSseProtocolTest extends AbstractAgentTest {
         assertEquals(1, count("tb_agent_pending_action"));
     }
 
+    @Test
+    @DisplayName("模型自称「已为您过滤掉播放历史中已听过的歌曲」时，done 事件被校正且任务标记护栏命中")
+    void playedHistoryFilterClaimIsCorrectedEndToEnd() throws Exception {
+        login(1L);
+        // 复现真实事故：只调用候选检索（它排除的是"本会话近期歌单用过的歌"，与播放历史无关），
+        // 模型却在回复里把"自己挑掉了几首"说成"系统过滤了播放历史"。
+        rebuildWithScript(List.of(
+                tool("searchPlaylistCandidates", Map.of("artistName", "Ariana Grande",
+                        "keyword", "", "style", "", "limit", "5")),
+                text("已为您过滤掉播放历史中已听过的歌曲，以下是推荐的周杰伦新曲：那天下雨了、湘女多情")), false);
+        String body = stream("去除我播放历史已有的歌曲");
+
+        String done = donePayload(body);
+        assertFalse(done.contains("已为您过滤掉播放历史"),
+                "服务端没做过按播放历史的过滤，这句话不得作为最终文本透给用户：" + done);
+        assertTrue(done.contains("并没有真的按播放历史做过滤"), "应替换为如实说明：" + done);
+        assertTrue(body.contains("\"outputGuarded\":true"), "task 事件应标记护栏命中：\n" + body);
+        // 指标里也必须记到。曾经这里是 0：护栏在 settle()（内部已落库）之后才跑，
+        // 于是 output_guarded 永远是 false，指标变成查不出问题的摆设。
+        Integer guarded = jdbc.queryForObject(
+                "SELECT output_guarded FROM tb_ai_task_metric ORDER BY id DESC LIMIT 1", Integer.class);
+        assertEquals(1, guarded, "output_guarded 必须落库为 1");
+        // 护栏只改话术，不碰数据：不应产生任何待确认任务或歌单。
+        assertEquals(0, count("tb_agent_pending_action"));
+        assertEquals(0, count("tb_playlist"));
+    }
+
     /** 取出 SSE 流里 done 事件的 data（权威最终文本）。 */
     private static String donePayload(String body) {
         for (String block : body.split("\n\n")) {
@@ -293,6 +320,69 @@ class AgentSseProtocolTest extends AbstractAgentTest {
         assertEquals("已生成预览，请在下方确认卡片中确认",
                 cn.edu.seig.vibemusic.controller.AiController.guardFinalText(
                         "已生成预览，请在下方确认卡片中确认", empty), "有真实待确认任务时应放行");
+    }
+
+    /**
+     * 第三类护栏：模型声称「已按播放历史过滤」。
+     *
+     * <p>事故原文来自真实会话（{@code user_chat_id_148}，2026-10-21 18:47）：
+     * 工具返回 5 首（其中 3 首已在播放记录里），模型自行挑掉 3 首后回复
+     * 「已为您过滤掉播放历史中已听过的歌曲，以下是推荐的周杰伦新曲：那天下雨了、湘女多情」。
+     * 推理是对的、归属是错的，而且与界面上仍是 5 首的歌曲卡片直接矛盾。
+     */
+    @Test
+    @DisplayName("模型声称「已按播放历史过滤」但服务端没做过时，被校正为如实说明")
+    void playedHistoryFilterClaimIsCorrected() {
+        cn.edu.seig.vibemusic.service.agent.AgentMetrics empty =
+                new cn.edu.seig.vibemusic.service.agent.AgentMetrics("t", 1L, "c", "m");
+
+        // 真实事故原句：必须被拦下
+        assertTrue(cn.edu.seig.vibemusic.controller.AiController.guardFinalText(
+                        "已为您过滤掉播放历史中已听过的歌曲，以下是推荐的周杰伦新曲：那天下雨了、湘女多情", empty)
+                .contains("并没有真的按播放历史做过滤"), "事故原句应被校正");
+
+        // 其它等价说法（含两种语序）
+        for (String claim : List.of(
+                "系统已排除你听过的歌，剩下这些",
+                "已自动剔除播放记录里的歌曲",
+                "我已经帮你过滤掉已听过的歌曲了",
+                "已从播放历史中移除这几首",
+                "已按播放记录筛掉了听过的歌")) {
+            assertTrue(cn.edu.seig.vibemusic.controller.AiController.guardFinalText(claim, empty)
+                    .contains("并没有真的按播放历史做过滤"), "应被校正：" + claim);
+        }
+        assertTrue(empty.outputGuarded(), "命中后必须置 outputGuarded，便于统计");
+
+        // 服务端真的做了排除时（未来加了能力并上报事实），同一句话应放行
+        cn.edu.seig.vibemusic.service.agent.AgentMetrics real =
+                new cn.edu.seig.vibemusic.service.agent.AgentMetrics("t", 1L, "c", "m");
+        real.markPlayedHistoryFiltered();
+        assertEquals("已为您过滤掉播放历史中已听过的歌曲",
+                cn.edu.seig.vibemusic.controller.AiController.guardFinalText(
+                        "已为您过滤掉播放历史中已听过的歌曲", real), "有服务端事实时应放行");
+    }
+
+    @Test
+    @DisplayName("护栏不误伤：用户原话复述、建议、否定句都不该被当成虚构声明")
+    void playedHistoryGuardDoesNotOverTrigger() {
+        cn.edu.seig.vibemusic.service.agent.AgentMetrics empty =
+                new cn.edu.seig.vibemusic.service.agent.AgentMetrics("t", 1L, "c", "m");
+
+        for (String text : List.of(
+                // 复述用户要求（没有完成态）
+                "你是想让我去掉播放历史里听过的歌吗？",
+                // 给建议 / 提议
+                "我可以按播放历史过滤，只留你没听过的，需要吗？",
+                // 否定句
+                "这一轮没有按播放历史过滤，卡片里仍是这 5 首。",
+                // 自己做的筛选（这是被允许且应当鼓励的归属方式）
+                "我按你刚才那份播放记录挑掉了 3 首，剩下 2 首没听过。",
+                // 无关内容
+                "今天天气不错")) {
+            assertEquals(text, cn.edu.seig.vibemusic.controller.AiController.guardFinalText(text, empty),
+                    "不应误伤：" + text);
+        }
+        assertFalse(empty.outputGuarded(), "未命中时不应置 outputGuarded");
     }
 
     private AiTaskMetric latestMetricRow() {

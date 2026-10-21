@@ -96,7 +96,7 @@ workflow 只在 `main` / `master` / `develop` 的 push 和所有 PR 上触发，
 `taskId` 关联同一任务的多个事件，`toolCallId` 关联同一次工具调用的 start/end/结构化数据。
 `token`/`done`/`error` 沿用旧格式，新增事件是叠加的（旧前端不会报错）。
 
-**输出护栏（重要契约）**：`done` 是权威最终文本，`token` 只是渐进预览。模型有概率跳过写工具却声称「已生成预览，请在下方确认卡片中确认」——用服务端事实校正：声称有待确认卡片必须真的产生过 `pendingTaskId`，声称已创建必须真的有 `playlistId`，否则替换为如实说明并置 `outputGuarded=true`（落库到 `tb_ai_task_metric.output_guarded`）。**前端必须用 `done` 覆盖已累积的 `token` 文本**。
+**输出护栏（重要契约）**：`done` 是权威最终文本，`token` 只是渐进预览。模型有概率跳过写工具却声称「已生成预览，请在下方确认卡片中确认」——用服务端事实校正：声称有待确认卡片必须真的产生过 `pendingTaskId`，声称已创建必须真的有 `playlistId`，否则替换为如实说明并置 `outputGuarded=true`（落库到 `tb_ai_task_metric.output_guarded`）。第三类是**声称「已按播放历史过滤」**：当前没有任何工具具备该能力（`searchPlaylistCandidates` 排除的是「本会话近期歌单用过的歌」，与 `tb_play_history` 无关），故一律校正；判定依赖 `AgentMetrics.playedHistoryFiltered` 这个事实位（默认 false），将来真加了能力只需在工具里调 `markPlayedHistoryFiltered()` 即可放行。正则要求完成态标记，不误伤「你是想让我去掉听过的歌吗」这类复述与建议。**前端必须用 `done` 覆盖已累积的 `token` 文本**。
 
 **异常结算**：`AiController.StreamSession.settle()` 用 CAS 保证「写指标 + 释放会话租约 + 关闭通道」只执行一次；成功/失败/超时/客户端断开都走同一路径（断开时 `failureCategory=INTERRUPTED`），页面不会永久停在加载态。
 

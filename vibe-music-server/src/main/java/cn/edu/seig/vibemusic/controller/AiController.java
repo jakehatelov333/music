@@ -73,7 +73,8 @@ public class AiController {
      * <p>判定依据是<b>服务端事实</b>而不是模型措辞：
      * <ul>
      *     <li>声称「有待确认卡片」→ 必须本轮真的产生过待确认任务（{@code pendingTaskId != null}）；</li>
-     *     <li>声称「已创建成功」→ 必须本轮真的写入过歌单（{@code playlistId != null}）。</li>
+     *     <li>声称「已创建成功」→ 必须本轮真的写入过歌单（{@code playlistId != null}）；</li>
+     *     <li>声称「已按播放历史过滤」→ 当前<b>没有任何工具具备这个能力</b>，一律视为虚构服务端行为。</li>
      * </ul>
      * 不满足就把话术换成如实说明。这样即使模型说错，用户也不会被误导。
      */
@@ -81,12 +82,46 @@ public class AiController {
             java.util.regex.Pattern.compile("确认卡片|待确认");
     private static final java.util.regex.Pattern CREATED_CLAIM =
             java.util.regex.Pattern.compile("已创建成功|已为你创建|创建成功了|已成功创建");
+
+    /**
+     * 第三类护栏：模型声称<b>服务端按播放历史做了过滤/排除</b>。
+     *
+     * <p><b>为什么这类说法一定是假的：</b>当前没有任何工具能按播放历史排除歌曲 ——
+     * {@code searchPlaylistCandidates} 排除的是「本会话近期歌单已用过的歌」，
+     * 与 {@code tb_play_history} 无关；{@code getRecentPlayedSongs} 只读不筛。
+     * 因此只要模型说「已为您过滤掉播放历史里听过的歌」，它描述的就不是服务端行为。
+     *
+     * <p><b>真实事故：</b>工具返回 5 首（其中 3 首已在播放记录里），模型自行挑掉 3 首，
+     * 回复「已为您过滤掉播放历史中已听过的歌曲，以下是推荐的 2 首新曲」。推理正确、归属错误，
+     * 且与界面上的歌曲卡片（仍是 5 首）直接矛盾。旧护栏只认「卡片」与「创建」两类断言，
+     * 这句话原样透传给了用户。
+     *
+     * <p><b>两种语序都要覆盖：</b>「已为您<u>过滤</u>掉播放历史里<u>听过</u>的歌」与
+     * 「已从<u>播放历史</u>中<u>移除</u>这几首」是同一种虚构，只是动词在前还是在后。
+     *
+     * <p><b>为什么必须带完成态标记（已/系统/自动）：</b>判定要确定性，不能误伤
+     * 「你是想让我去掉听过的歌吗」「我可以按播放历史过滤，需要吗」这类复述与建议 ——
+     * 它们没有完成态，不构成"声称服务端做过"。
+     */
+    private static final java.util.regex.Pattern PLAYED_FILTER_CLAIM =
+            java.util.regex.Pattern.compile(
+                    "(?:已(?:经)?(?:为您|帮你|替你)?|系统已|已自动)[^。；\\n]{0,8}"
+                            + "(?:过滤|排除|剔除|筛掉|移除|去掉|挑掉|删掉)[^。；\\n]{0,12}"
+                            + "(?:播放历史|听过|已听|播放记录)"
+                            + "|"
+                            + "(?:已(?:经)?|系统已|已自动)[^。；\\n]{0,8}"
+                            + "(?:播放历史|播放记录)[^。；\\n]{0,12}"
+                            + "(?:过滤|排除|剔除|筛掉|移除|去掉|挑掉|删掉)");
     private static final String NO_CARD_CORRECTION =
             "抱歉，我这一轮没有真正生成待确认卡片，所以下方不会有卡片可以确认。"
                     + "请再说一次，例如「帮我创建歌单：夜间驾驶，选 3 首周杰伦的歌」，我会先生成预览再请你确认。";
     private static final String NO_CREATE_CORRECTION =
             "需要说明一下：歌单只有在你在确认卡片上点击「确认创建」之后才会真正创建。"
                     + "请以上方卡片的真实状态为准。";
+    private static final String NO_PLAYED_FILTER_CORRECTION =
+            "需要澄清一下：我这一轮并没有真的按播放历史做过滤。"
+                    + "上面卡片里的歌不会因为「你已经听过」而减少——卡片显示的就是服务端返回的全部结果。"
+                    + "如果你要的是只保留没听过的歌，请让我重新检索一遍，那样卡片里才会真的只剩没听过的。";
 
     private final IAiService aiService;
     private final AiSessionService sessions;
@@ -181,13 +216,17 @@ public class AiController {
                     run.assistant().chatStream(chatId, body.query())
                             .onNext(token -> channel.send("token", token))
                             .onComplete(result -> {
-                                if (session.settle(true, AgentFailureCategory.NONE, null)) {
-                                    // 先做输出护栏，再生成 task 汇总，保证 outputGuarded 出现在事件里。
-                                    String text = guardFinalText(result.content().text() == null ? ""
-                                            : result.content().text(), run.metrics());
+                                String raw = result.content().text() == null ? "" : result.content().text();
+                                // 护栏在结算**之前**跑：它会置 outputGuarded，
+                                // 而指标是在 settle 里落库的。顺序反了，指标就永远记不到护栏命中。
+                                java.util.concurrent.atomic.AtomicReference<String> finalText =
+                                        new java.util.concurrent.atomic.AtomicReference<>(raw);
+                                boolean first = session.settle(true, AgentFailureCategory.NONE, null,
+                                        () -> finalText.set(guardFinalText(raw, run.metrics())));
+                                if (first) {
                                     channel.send("task", json(AgentEvent.task(run.taskId(), true,
                                             AgentFailureCategory.NONE, "任务完成", run.metrics().summary())));
-                                    channel.send("done", text);
+                                    channel.send("done", finalText.get());
                                 }
                                 channel.close();
                                 emitter.complete();
@@ -346,7 +385,29 @@ public class AiController {
         }
 
         boolean settle(boolean success, String category, String message) {
+            return settle(success, category, message, null);
+        }
+
+        /**
+         * 结算，并在写指标<b>之前</b>执行一个动作（输出护栏就是它唯一的调用方）。
+         *
+         * <p><b>为什么必须留这个钩子：</b>护栏会置 {@code outputGuarded} 这个事实位，
+         * 而指标是在结算里落库的。早先的写法是「先 settle（内部已落库）再跑护栏」，
+         * 结果 2026-10-21 那次「已为您过滤掉播放历史中已听过的歌曲」的真实事故里，
+         * 护栏即使生效了，{@code tb_ai_task_metric.output_guarded} 也仍然是 0 ——
+         * 指标变成了永远查不出问题的摆设。
+         *
+         * <p>钩子里的异常一律吞掉：护栏是附加保障，不能让它的 bug 反过来吞掉一次正常的回复。
+         */
+        boolean settle(boolean success, String category, String message, Runnable beforeRecord) {
             if (!settled.compareAndSet(false, true)) return false;
+            if (beforeRecord != null) {
+                try {
+                    beforeRecord.run();
+                } catch (RuntimeException e) {
+                    log.warn("结算前置动作失败，已跳过，类型={}", e.getClass().getSimpleName());
+                }
+            }
             run.metrics().finish(success, category, message);
             ScheduledFuture<?> scheduled = timer.get();
             if (scheduled != null) scheduled.cancel(false);
@@ -403,6 +464,9 @@ public class AiController {
     /**
      * 用服务端事实校正模型的最终话术（见 {@link #CARD_CLAIM} 的说明）。
      * 纯函数，便于单测；{@code metrics} 为空时不做校正（无法判定）。
+     *
+     * <p>顺序有讲究：先判「卡片」「创建」这两类会导致<b>误操作</b>的断言，
+     * 再判「按播放历史过滤」这类<b>误描述</b>的断言。前者是安全问题，后者是一致性问题。
      */
     public static String guardFinalText(String text, AgentMetrics metrics) {
         if (text == null || text.isBlank() || metrics == null) return text;
@@ -415,6 +479,11 @@ public class AiController {
             log.info("输出护栏命中：模型声称已创建歌单，但本轮没有真实写入");
             metrics.markOutputGuarded();
             return NO_CREATE_CORRECTION;
+        }
+        if (PLAYED_FILTER_CLAIM.matcher(text).find() && !metrics.playedHistoryFiltered()) {
+            log.info("输出护栏命中：模型声称已按播放历史过滤，但本轮没有对应的服务端排除");
+            metrics.markOutputGuarded();
+            return NO_PLAYED_FILTER_CORRECTION;
         }
         return text;
     }

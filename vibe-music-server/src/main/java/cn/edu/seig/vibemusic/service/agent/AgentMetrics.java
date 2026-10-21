@@ -44,6 +44,7 @@ public final class AgentMetrics implements AgentContext.AgentMetricsHolder {
     private volatile Long playlistId;
     private volatile String pendingTaskId;
     private volatile boolean outputGuarded;
+    private volatile boolean playedHistoryFiltered;
     private volatile long latencyMillis;
 
     public AgentMetrics(String taskId, Long userId, String chatId, String model) {
@@ -96,6 +97,24 @@ public final class AgentMetrics implements AgentContext.AgentMetricsHolder {
 
     public boolean outputGuarded() {
         return outputGuarded;
+    }
+
+    /**
+     * 本轮是否真的按播放历史做过排除。
+     *
+     * <p><b>当前没有任何工具会上报 true</b>：候选检索排除的是「本会话近期歌单已用过的歌」，
+     * 与 {@code tb_play_history} 无关。这个标志位的存在是为了让输出护栏
+     * <b>依赖事实而不是依赖"我记得没有这个能力"</b>——将来真的加了按播放历史排除的
+     * 工具参数，只要在工具里调用本方法，护栏就会自动放行，不需要再改护栏代码。
+     *
+     * <p>默认 false 是保守选择：宁可多校正一次措辞，也不要把虚构的服务端行为放给用户。
+     */
+    public void markPlayedHistoryFiltered() {
+        this.playedHistoryFiltered = true;
+    }
+
+    public boolean playedHistoryFiltered() {
+        return playedHistoryFiltered;
     }
 
     public void finish(boolean success, String failureCategory, String failureMessage) {
@@ -174,6 +193,7 @@ public final class AgentMetrics implements AgentContext.AgentMetricsHolder {
         // 便于从「对话任务」一路追到「待确认任务 → 真实歌单」。
         map.put("pendingTaskId", pendingTaskId);
         map.put("outputGuarded", outputGuarded);
+        map.put("playedHistoryFiltered", playedHistoryFiltered);
         return map;
     }
 }
