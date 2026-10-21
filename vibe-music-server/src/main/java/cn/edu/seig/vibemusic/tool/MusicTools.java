@@ -210,6 +210,33 @@ public class MusicTools {
         });
     }
 
+    /**
+     * 最近播放明细。
+     *
+     * <p>之所以做成工具而不是塞进画像：画像里的播放信号只有「播过几首」「反复播放的歌手」，
+     * 是<b>弱隐式偏好</b>；用户问「我最近听了什么」要的是<b>明细</b>（歌名/歌手/封面）。
+     * 两者语义不同，混在一起会让画像变成一份变相的播放列表缓存。
+     */
+    @Tool("获取当前登录用户最近播放的歌曲（按最近一次有效播放时间倒序），"
+            + "返回带 songId、歌名、歌手、专辑、封面和播放地址的结构化歌曲列表。"
+            + "当用户问「我最近听了什么歌」「我的播放记录」「最近在循环哪几首」时使用。"
+            + "limit 留空默认 10，最大 20。播放记录只对本人可见，工具不接受任何用户参数。")
+    public String getRecentPlayedSongs(@P(value = "返回数量，留空默认 10，最大 20", required = false) String limit) {
+        return invoke("getRecentPlayedSongs", "正在读取最近的播放记录…", () -> {
+            if (!context.authenticated()) {
+                return ToolResult.unauthorized("播放记录需要登录后查看，请先登录再问这个问题");
+            }
+            List<SongRef> songs = songQuery.recentlyPlayed(context.userId(), parseLimit(limit));
+            return songs.isEmpty()
+                    ? ToolResult.empty(AgentToolKinds.SONG_LIST,
+                            "当前用户还没有播放记录。请如实告诉用户暂时没有记录（只有真正听够一定时长才会记一次），"
+                                    + "不要猜歌名，也不要说系统不记录歌名。")
+                    : ToolResult.ok(AgentToolKinds.SONG_LIST,
+                            "用户最近播放过的 " + songs.size() + " 首歌（按最近播放时间倒序）",
+                            songs, songs.size());
+        });
+    }
+
     @Tool("搜索歌手，按歌手名或地区模糊匹配，返回歌手列表。当用户想了解某位歌手时先调用本工具确认歌手是否存在。")
     public String searchArtists(String keyword) {
         return invoke("searchArtists", "正在搜索歌手…", () -> {

@@ -200,6 +200,11 @@ H2 在这种情况下返回 0，所以当时 565 个测试全绿，问题只在�
 - 注入提示词时隐式信号单独成段，显式标注「只能作为弱参考，不能据此断定用户喜欢什么」。
 - 手动偏好优先级不变：用户显式排除的歌手不会被播放数据加回。
 - 没有引入任何固定权重或衰减算法。
+- **明细与画像分离**：画像只保留聚合信号（播过几首、反复播放的歌手）；
+  用户问「我最近听了什么」时走只读工具 `getRecentPlayedSongs`
+  （`AgentSongQueryService#recentlyPlayed` → `PlayHistoryMapper.recentByUser`），
+  返回真实歌名/歌手/封面/播放地址。**不能因为画像里没有歌名就回答「系统不提供歌名」**，
+  那是错误描述系统能力（端到端复现后新增此工具的直接原因）。
 
 ## 8. 测试
 
@@ -208,6 +213,7 @@ H2 在这种情况下返回 0，所以当时 565 个测试全绿，问题只在�
 | `playhistory/PlayHistoryServiceTest`（25 例） | 查询自己的历史、用户隔离、未登录 401、非 USER 角色 401、重复播放不重复建行、playId 幂等、**重复播放必须真的累加计数**、已有行走累加分支、并发 16 次只留一行且计数不丢、无效输入、删除只能删自己的、清空不影响他人、空结果、分页无重叠且可重复、非法分页、歌名筛选、删歌级联、孤儿行不返回、recent 边界、删号级联 |
 | `playhistory/PlayHistoryEndpointSecurityTest`（2 例） | 用真实 `WebConfig` + `LoginInterceptor` 跑 MockMvc：游客 5 个端点全 401；有效 token 能进且身份正确；token 失效 401；管理员 403 |
 | `agent/PlayHistoryProfileTest`（9 例） | 播放不写入 top_artists、单曲循环不成偏好、无历史时行为不变、提示词弱参考措辞、只有播放也注入、播放不覆盖手动排除、用户间不串、指纹随播放变化、删歌后统计下降 |
+| `agent/RecentPlayedSongsToolTest`（6 例） | 返回真实歌名且按最近播放倒序、只返回本人历史、游客 UNAUTHORIZED 且不推卡片、空历史 ok/EMPTY、limit 收敛、工具签名无用户标识参数 |
 | `vibe-music-client/tests/play-history.test.mjs`（27 例） | 阈值、开始不记录、越阈值只记一次、拖进度条、回拖、暂停累计、暂停不累计、后台跳变、短歌、切歌隔离、连续切歌、重播新键、单曲循环、失败丢弃、失败后重新计时、dispose、上报失败不重复、每尝试独立 playId、5 个 API 的路径与载荷 |
 
 ## 9. 已知限制 / 后续

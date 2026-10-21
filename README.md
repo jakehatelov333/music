@@ -261,7 +261,7 @@ graph LR
     end
 
     subgraph AI["ai / tool"]
-        MT[MusicTools - 8 个只读工具]
+        MT[MusicTools - 9 个只读工具]
         PA[PlaylistActionTools - 1 个写工具]
         MA[MusicAssistant]
         MAN[MusicAssistantNoTools]

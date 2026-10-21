@@ -85,7 +85,7 @@ workflow 只在 `main` / `master` / `develop` 的 push 和所有 PR 上触发，
 3. **事件出口**：`AgentEventSink` 让工具层直接上报工具开始/结束/结构化结果/等待确认。
 4. **系统提示词**：由 `AgentSystemPrompt#build(userId, chatId)` 运行时组装。⚠️ **`MusicAssistant` 上的 `@SystemMessage` 必须保持删除状态** —— LangChain4j 0.36.2 的注解优先会让 `systemMessageProvider` **静默失效**（不报错，个性化悄悄不生效）。回归手段：`SystemMessageInjectionTest`。
 
-**工具返回协议**（`tool/MusicTools.java` 8 个只读工具 + `tool/PlaylistActionTools.java` 1 个写工具）：
+**工具返回协议**（`tool/MusicTools.java` 9 个只读工具 + `tool/PlaylistActionTools.java` 1 个写工具）：
 统一返回 `ToolResult` 的 **JSON 文本**（不是让框架序列化对象 —— LangChain4j 对非 String 返回值会走自己的 `Json.toJson`，字段不可控）。序列化统一走 `model/agent/AgentJson`（注册 JSR-310 模块；曾因裸 `ObjectMapper` 导致 `confirm` 事件里的 `LocalDateTime` 退化成 `{}`）。
 `code` 语义：`OK` / `EMPTY`（查询成功但无命中，**不是失败**）/ `INVALID_ARGUMENT` / `UNAUTHORIZED` / `REJECTED` / `NOT_FOUND` / `ERROR`。
 `kind` 决定前端渲染组件：`SONG_LIST` / `ARTIST_LIST` / `ARTIST_DETAIL` / `PLAYLIST_LIST` / `PLAYLIST_PREVIEW`（确认卡片）/ `PLAYLIST_CREATED` / `TEXT`。前端只依据 `kind` 选组件，不解析 `message`。

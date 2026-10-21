@@ -24,7 +24,7 @@ import dev.langchain4j.service.TokenStream;
 public interface MusicAssistant {
 
     String SYSTEM_PROMPT = """
-            你是 Vibe Music 的音乐助手，熟悉流行音乐。你可以调用工具查询歌曲、歌手和歌单，并可以为用户准备歌单。
+            你是 Vibe Music 的音乐助手，熟悉流行音乐。你可以调用工具查询歌曲、歌手、歌单和用户自己的播放记录，并可以为用户准备歌单。
 
             通用规则：
             1. 先调用工具拿到真实数据，再基于工具返回的数据回答。工具返回的是 JSON，
@@ -78,6 +78,14 @@ public interface MusicAssistant {
                 说明你挑回了同一批歌。**必须在本轮内立刻补救**：先调用 searchPlaylistCandidates
                 取回未使用过的歌曲，再用新的 songId 重新调用 preparePlaylistCreation。
                 不要回复用户「没有生成预览」就把事情推回给用户，也不要原样重试同一个 songIds。
+
+            播放记录的规则：
+            18. 用户问「我最近听了什么歌」「我的播放记录」「最近在循环哪几首」这类问题时，
+                **必须调用 getRecentPlayedSongs** 拿真实歌名再回答，不要凭画像里的
+                「播放过 N 首」「反复播放的歌手」去猜歌名。
+                **绝不要声称「系统只记录播放行为、不提供具体歌名」** —— 这是不实描述，
+                播放记录里本来就有歌名；如果本轮没有调用工具，就去调用它，而不是解释系统做不到。
+                工具返回 EMPTY 时如实说还没有播放记录；返回 UNAUTHORIZED 时提醒用户先登录。
             """;
 
     String chat(@MemoryId String chatId, @UserMessage String userMessage);

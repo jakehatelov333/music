@@ -1,9 +1,11 @@
 package cn.edu.seig.vibemusic.service.agent;
 
 import cn.edu.seig.vibemusic.mapper.AgentSongMapper;
+import cn.edu.seig.vibemusic.mapper.PlayHistoryMapper;
 import cn.edu.seig.vibemusic.model.agent.SongRef;
 import cn.edu.seig.vibemusic.model.vo.AgentSongVO;
 import cn.edu.seig.vibemusic.model.vo.ArtistNameVO;
+import cn.edu.seig.vibemusic.model.vo.PlayHistoryVO;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -37,6 +39,15 @@ public class AgentSongQueryService {
     private final AgentSongMapper songs;
     private final SongArtistService songArtists;
     private final AgentArtistResolver artistResolver;
+    /**
+     * 播放历史明细（Agent 的「我最近听了什么」工具）。
+     *
+     * <p>刻意直接依赖 mapper 而不是 {@code PlayHistoryService}：后者的每个方法都走
+     * {@code requireUserId()}（ThreadLocal），而 Agent 的流式请求在独立线程里跑，
+     * 身份只存在于 {@link cn.edu.seig.vibemusic.model.agent.AgentContext}。
+     * 这里由工具层把可信的 userId 传进来，语义与写操作确认时一致。
+     */
+    private final PlayHistoryMapper playHistories;
 
     public record SongPage(List<SongRef> songs, long total, int page, int size) {}
 
@@ -138,6 +149,37 @@ public class AgentSongQueryService {
     public List<SongRef> byIds(List<Long> ids) {
         if (ids == null || ids.isEmpty()) return List.of();
         return toRefs(songs.findSongsByIds(ids.stream().filter(java.util.Objects::nonNull).distinct().toList()));
+    }
+
+    /**
+     * 当前用户最近播放的歌曲（按最近一次有效播放时间倒序）。
+     *
+     * <p><b>为什么必须有这个方法：</b>画像里的播放信号只有计数与歌手名
+     * （{@code playedSongCount} / {@code recentPlayArtists}），模型拿不到具体歌名，
+     * 被问到「我最近听了什么」时只能凭空描述系统能力 —— 实测会编出
+     * 「系统仅记录播放行为、不提供歌名」这种不实回答。歌名本来就在
+     * {@code tb_play_history ⋈ tb_song} 里，缺的是把它交给模型的只读工具。
+     *
+     * <p><b>身份边界：</b>{@code userId} 由工具层从可信的 AgentContext 传入，
+     * 模型参数里没有任何用户标识；为 null（游客）时返回空列表，由工具层转成 UNAUTHORIZED，
+     * 而不是回落到「全部用户的历史」。
+     *
+     * <p><b>不外泄播放进度：</b>只映射列表展示需要的字段，
+     * {@code last_position_seconds} 不进 {@link SongRef}。
+     */
+    public List<SongRef> recentlyPlayed(Long userId, int limit) {
+        if (userId == null) return List.of();
+        List<PlayHistoryVO> rows = playHistories.recentByUser(userId, clamp(limit));
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<ArtistNameVO>> grouped = songArtists.findArtistsBySongIds(
+                rows.stream().map(PlayHistoryVO::getSongId).toList());
+        return rows.stream()
+                .map(row -> new SongRef(row.getSongId(), row.getSongName(), row.getArtistName(), row.getAlbum(),
+                        null, row.getDuration(), row.getCoverUrl(), row.getAudioUrl(),
+                        grouped.getOrDefault(row.getSongId(), List.of())))
+                .toList();
     }
 
     /** 把一批投影转成 {@link SongRef}，顺带一次性装配每首歌的结构化歌手列表。 */

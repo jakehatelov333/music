@@ -79,10 +79,17 @@ LangChain4j 0.36.2 在 `DefaultToolExecutor` 里对非 `String` 返回值会走�
 | `searchSongs` | `keyword` | SONG_LIST |
 | `searchSongsByArtist` | `artistName` | SONG_LIST |
 | `getSongsByStyle` | `styleName` | SONG_LIST |
+| `searchPlaylistCandidates` | `artistName` / `keyword` / `style`（至少一个）+ `limit` | SONG_LIST（排除本会话已用歌曲与长期偏好排除项） |
 | `getRandomSongs` | — | SONG_LIST |
 | `searchArtists` | `keyword` | ARTIST_LIST |
 | `getArtistDetail` | `artistName` | ARTIST_DETAIL |
 | `searchPlaylists` | `keyword` | PLAYLIST_LIST |
+| `getRecentPlayedSongs` | `limit`（留空 10，最大 20） | SONG_LIST |
+
+`getRecentPlayedSongs` 读的是「当前用户」的播放历史明细（`tb_play_history ⋈ tb_song`），
+返回真实歌名/歌手/封面/播放地址：画像里的 `played_song_count` / `recent_play_artists` 只是聚合信号，
+**没有歌名**。游客调用返回 `UNAUTHORIZED`，没有历史返回 `EMPTY`；两者都不能让模型去猜歌名。
+不返回 `last_position_seconds`（进度不属于列表契约）。
 
 写工具（**不直接写库**）：
 

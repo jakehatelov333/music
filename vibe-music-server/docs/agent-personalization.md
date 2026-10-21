@@ -168,6 +168,7 @@
 | 画像没生效（提示词里没偏好块） | ① 是否登录（游客不注入）；② 用户是否有收藏/自建歌单/播放记录，零数据返回 `null`；③ `GET /ai/profile` 看行是否存在、`updated_at` 是否超 TTL；④ `SystemMessageInjectionTest` 断言的是同一条链路，先跑它 |
 | 播放了很多但画像里没有播放块 | ① `SELECT COUNT(DISTINCT song_id) FROM tb_play_history WHERE user_id=?` 是否为 0；② 是否只在同一首歌上循环（`recent_play_artists` 要求 ≥2 首不同歌曲）；③ 画像 TTL 内不会重算，等 `ai.profile.refresh-ttl-minutes` 或调 `refresh()` |
 | 播放记录被当成「喜欢」了 | 检查是否有人把播放聚合写进了 `top_artists`。正确做法只有 `recent_play_artists`；`PlayHistoryProfileTest#repeatedlyPlayedArtistsAreRecordedSeparatelyFromExplicitTaste` 会挂 |
+| 问「我最近听了什么」时 AI 说「系统不记录歌名」 | 这是**错误描述系统能力**，不是画像问题：① 看 SSE `tool` 事件里有没有 `getRecentPlayedSongs`（0 次调用 = 提示词/工具注册问题）；② 游客会得到 `UNAUTHORIZED`，属预期；③ `agent/RecentPlayedSongsToolTest` 覆盖工具本身 |
 | 偏好概述一直是空 | ① 后端日志搜「偏好概述生成失败」——DashScope key 未注入会静默失败；② `SELECT user_id, summary_source_hash, LENGTH(pref_summary) FROM tb_user_music_profile`；指纹一致但概述为 NULL = 生成从未成功过 |
 | 摘要没生成 | ① `ai.summary.enabled`；② 未覆盖消息数是否 > `trigger-messages`（数 `chat_messages` 最可靠）；③ `SELECT chat_id, summary_upto_id, summary_updated_at FROM ai_chat_state`；④ 日志搜「会话摘要生成失败」 |
 | 摘要内容不对 | 摘要是有损压缩，以窗口内 20 条原文为准；检查是否把 TOOL 消息也压进去了（`render` 只取 USER/ASSISTANT）；单条超 300 字会被截断 |

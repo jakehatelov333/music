@@ -364,8 +364,9 @@ public abstract class AbstractAgentTest {
         }
 
         @Bean AgentSongQueryService songQuery(AgentSongMapper mapper, SongArtistService songArtists,
-                                             cn.edu.seig.vibemusic.service.agent.AgentArtistResolver artistResolver) {
-            return new AgentSongQueryService(mapper, songArtists, artistResolver);
+                                             cn.edu.seig.vibemusic.service.agent.AgentArtistResolver artistResolver,
+                                             PlayHistoryMapper playHistories) {
+            return new AgentSongQueryService(mapper, songArtists, artistResolver, playHistories);
         }
 
         @Bean cn.edu.seig.vibemusic.service.agent.PlaylistSelectionHistoryService selectionHistory(
