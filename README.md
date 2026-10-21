@@ -11,7 +11,7 @@
 | `vibe-music-server/` | Spring Boot 3 后端 | 8080 | Java 17, Maven, MyBatis-Plus, MySQL, Redis, MinIO, LangChain4j |
 | `vibe-music-admin/` | 管理端 SPA | 8089 | Vue 3, Vite 6, Pinia, Element Plus, vue-pure-admin |
 | `vibe-music-client/` | 用户端 SPA | 8090 | Vue 3, Vite 6, Pinia, Element Plus, ArtPlayer |
-| `.github/workflows/ci.yml` | CI | — | 后端构建 + 全量测试 + Agent 离线评测；双前端生产构建 |
+| `.github/workflows/ci.yml` | CI | — | 后端构建 + 全量测试 + Agent 离线评测；用户端类型检查 + 构建；管理端构建 |
 
 > 后端默认监听 `8080`，两个前端通过 `vite.config` 代理或直连访问；开发机需自行准备 MySQL / Redis / MinIO。
 
@@ -20,7 +20,7 @@
 ```mermaid
 graph TB
     subgraph 用户端["🎧 用户端 (port 8090)"]
-        U_Pages[页面: 首页 / 曲库 / 歌手 / 专辑 / 歌单 / 我的歌单 / 我的喜欢 / 用户中心]
+        U_Pages[页面: 首页 / 曲库 / 歌手 / 专辑 / 歌单 / 我的歌单 / 我的喜欢 / 最近播放 / 用户中心]
         U_Components[组件: ArtPlayer / AiWidget / 抽屉歌单]
         U_Stores[状态管理: audio / user / playlist / theme / favorite / library]
         U_Axios[HTTP: Axios → localhost:8080]
@@ -38,7 +38,7 @@ graph TB
         JWT[LoginInterceptor JWT 拦截]
         Rate[RateLimitInterceptor 限流]
         Role[RolePermissionManager 角色权限]
-        Ctrl[23 个 REST Controller]
+        Ctrl[27 个 REST Controller]
         Service[Service 层]
         Clean[MediaCleanupService 媒体清理管线]
         Mapper[MyBatis-Plus Mapper + XML]
@@ -53,7 +53,7 @@ graph TB
 
     subgraph 外部服务["☁️ 外部服务"]
         QQ_Email[QQ 邮箱 SMTP]
-        DashScope[阿里云 DashScope qwen-max]
+        DashScope[阿里云 DashScope qwen-flash]
     end
 
     用户端 -->|直连 HTTP| 后端
@@ -78,13 +78,14 @@ graph TB
 - 管理端列表列头排序、拼音排序、歌手状态筛选；停用歌手的内容全站隐藏
 
 ### 🤖 AI 音乐助手
-- 基于 LangChain4j + 阿里云 DashScope（qwen-max）的智能对话
-- **8 个工具函数**：歌曲搜索、按歌手检索、按风格检索、歌单候选检索（带近期去重）、随机推荐、歌手搜索、歌手详情、歌单搜索
-- 流式 SSE 输出，前端逐字渲染
+- 基于 LangChain4j + 阿里云 DashScope（qwen-flash）的智能对话
+- **9 个工具**：8 个只读检索（歌曲搜索、按歌手检索、按风格检索、歌单候选检索（带近期去重）、随机推荐、歌手搜索、歌手详情、歌单搜索）+ 1 个「准备创建歌单」写工具
+- **两段式建歌单**：模型只生成待确认预览，用户在确认卡片点击后才真正写入；确认时重新鉴权并校验归属、状态、版本与歌曲有效性
+- 流式 SSE 输出（`start → tool/songs/confirm → token → task → done`），前端按区块渲染
 - **多会话支持**：新建会话、历史列表、会话切换，会话归属校验
 - 对话历史持久化（MySQL + 20 条消息窗口）
-- **AI 记忆与偏好**：个性化记忆、摘要记忆、偏好纠正与确定性排除
-- 支持登录用户和游客两种模式
+- **AI 记忆与偏好**：画像、摘要记忆、手动偏好、显式/隐式信号分离
+- 支持登录用户和游客两种模式（画像只对登录用户生效）
 
 ### 🔐 认证与权限
 - JWT 令牌认证（有效期 6 小时，Redis db1 白名单）
@@ -96,13 +97,15 @@ graph TB
 
 ### 🖥️ 管理端
 - 用户管理、歌曲管理、歌手管理、专辑管理、歌单管理
-- 反馈管理、Banner 管理、上传工作台
-- 数据看板
+- 反馈管理、Banner 管理、数据看板
+- 上传工作台：专辑/单曲两段式建库、Redis 草稿箱（12h）、歌词与封面检索
+- 歌手资料可从 QQ 音乐搜索填充；歌曲封面可按专辑搜索候选
 
 ### 🎧 用户端
 - 音乐播放器（ArtPlayer）
 - 曲库浏览、歌单收藏、专辑详情
 - 歌手详情、我的歌单
+- 最近播放：有效播放判定（累计 ≥ min(5s, 时长×50%) 且位置达标），幂等上报
 - 用户中心（嵌套路由）：AI 记忆管理、隐私与安全中心
 - AI 聊天浮窗
 
@@ -149,34 +152,36 @@ sequenceDiagram
 sequenceDiagram
     participant Frontend as 前端 AiWidget
     participant Backend as AiController
+    participant Factory as AgentAssistantFactory
     participant Memory as ChatMemoryHolder
-    participant Tools as MusicTools
-    participant LLM as DashScope qwen-max
-    participant DB as MySQL tb_chat_message
+    participant Tools as MusicTools / PlaylistActionTools
+    participant LLM as DashScope qwen-flash
+    participant DB as MySQL
 
-    Frontend->>Backend: POST /test/ai/chat (用户消息 + 会话 ID)
-    Backend->>Backend: 校验会话归属
-    Backend->>Memory: 获取/创建会话记忆
+    Frontend->>Backend: POST /ai/chat (用户消息 + 会话 ID)
+    Backend->>Backend: 校验会话归属，解析可选登录身份
+    Backend->>Factory: create(chatId, userId, sink)
+    Factory->>Memory: 获取/创建会话记忆
     Memory->>DB: 查询历史消息(最多20条)
-    DB-->>Memory: 历史消息列表
-    Backend->>LLM: 发送消息 + 系统提示 + 工具定义
-    LLM-->>Backend: 思考 → 决定调用工具
-    Backend->>Tools: 执行工具函数(如 searchSongs)
-    Tools-->>Backend: 工具返回结果
-    Backend->>LLM: 提交工具结果
+    Factory->>LLM: 发送消息 + 动态系统提示 + 工具定义
+    LLM-->>Factory: 决定调用工具
+    Factory->>Tools: 执行只读工具(如 searchSongs)
+    Tools-->>Factory: ToolResult JSON（身份来自 AgentContext）
+    Factory->>LLM: 提交工具结果
     LLM-->>Backend: 生成最终回答
-    Backend->>Memory: 保存对话(全量删除+重新插入)
+    Backend->>Memory: 保存对话
     Memory->>DB: 持久化消息
     Backend-->>Frontend: 返回回答文本
 
-    Note over Frontend,DB: 流式模式
-    Frontend->>Backend: POST /test/ai/chatStream
-    Backend-->>Frontend: SseEmitter (120s超时)
-    Note over Backend,LLM: LLM 流式生成
-    Backend-->>Frontend: event:token → 逐字推送
-    Backend-->>Frontend: event:done → 完成
-    alt 错误
-        Backend-->>Frontend: event:error → 错误信息
+    Note over Frontend,DB: 流式模式（推荐）
+    Frontend->>Backend: POST /ai/chat/stream
+    Backend-->>Frontend: SSE: start → tool/songs/confirm* → token* → task → done
+    Note over Frontend,Tools: 创建歌单时只生成待确认预览
+    Frontend->>Backend: POST /ai/actions/{taskId}/confirm?version=
+    Backend->>Backend: 重新鉴权 + 归属/状态/版本/歌曲校验
+    Backend-->>Frontend: 真正写入歌单并返回结果
+    alt 失败或超时
+        Backend-->>Frontend: SSE: task(false) → error
     end
 ```
 
@@ -212,8 +217,8 @@ graph LR
         App[VibeMusicServerApplication]
     end
 
-    subgraph 控制层["controller (23 个)"]
-        Admin[AdminController]
+    subgraph 控制层["controller (27 个)"]
+        Admin[AdminController / AdminAlbumController / AdminArtistProfileController / AdminSongCoverController / AdminLyricsController]
         User[UserController]
         Song[SongController / SongUploadController]
         Album[AlbumController / AlbumUploadController]
@@ -224,13 +229,15 @@ graph LR
         Genre[GenreController / StyleController / SearchController]
         Feedback[FeedbackController]
         Favorite[UserFavoriteController]
+        PlayHistory[PlayHistoryController]
         AI[AiController / ConversationController / AgentMemoryController]
-        Agent[AgentActionController / AgentSongController / AdminLyricsController]
+        Agent[AgentActionController / AgentSongController]
     end
 
     subgraph 服务层["service"]
         S[Service 接口 + 实现]
         MC[MediaCleanupService / MediaReferenceService]
+        AR[ArtistProfileService / CoverSearchService]
     end
 
     subgraph 数据层["mapper"]
@@ -254,7 +261,8 @@ graph LR
     end
 
     subgraph AI["ai / tool"]
-        MT[MusicTools - 8个工具]
+        MT[MusicTools - 8 个只读工具]
+        PA[PlaylistActionTools - 1 个写工具]
         MA[MusicAssistant]
         MAN[MusicAssistantNoTools]
         CM[ChatMemoryHolder]
@@ -294,6 +302,7 @@ graph TB
     Layout --> PlaylistDetail["/playlist/:id 歌单详情"]
     Layout --> MyPlaylists["/my-playlists/:id? 我的歌单"]
     Layout --> Like["/like 我的喜欢"]
+    Layout --> History["/play-history 最近播放"]
     Layout --> User["/user 用户中心（嵌套路由）"]
     User --> UserIndex["'' 资料 / 概览"]
     User --> AiMemory["ai-memory AI 记忆管理"]
@@ -316,15 +325,19 @@ graph TB
 | 脚本 | 内容 |
 |---|---|
 | `vibe_music.sql` | 基础库结构与初始数据 |
+| `album_migration.sql` / `migration_lyrics.sql` | 专辑与歌词结构迁移 |
 | `phase2_*.sql` | 聊天记录、收藏、个人歌单 |
 | `phase3_playlist_state_and_cover.sql` | 歌单发布状态与封面 |
 | `phase4_agent_actions.sql` | Agent 动作记录 |
 | `phase5_personalization.sql` | 个性化数据 |
-| `phase6_song_multiple_artists.sql` | 多歌手关系表（含 `_rollback`） |
+| `phase6_*.sql` | 多歌手关系表（含 `_rollback` 与旧数据迁移） |
 | `phase7_conversations.sql` | AI 多会话 |
 | `phase8_ai_memory_preferences.sql` | AI 记忆与偏好 |
 | `phase10_account_cleanup.sql` | 账号注销任务 |
+| `phase11_artist_profile.sql` | 歌手资料字段 |
+| `phase12_play_history.sql` | 播放历史与画像隐式字段 |
 | `phaseC_media_cleanup.sql` | 媒体清理任务表（`tb_media_object` DDL 以注释附于末尾，待后续阶段启用） |
+| `phaseD_account_cleanup.sql` | 账号删除的幂等清理任务表 |
 
 脚本均可在已有库上重复执行，新环境按上表顺序导入。
 
@@ -391,7 +404,8 @@ mvn test -Dtest=MediaCleanupTaskTest
 ```
 
 - 单测默认使用 **H2（MySQL 兼容模式）+ 脚本化模型替身**，不依赖 MySQL / Redis / MinIO / DashScope。
-- `RedisConnectionTest`、`VibeMusicServerApplicationTests` 需要真实环境与 `.env`，CI 中排除。
+- `RedisConnectionTest`、`VibeMusicServerApplicationTests` 需要真实 MySQL/Redis/MinIO 与 `.env`，离线回归时用上面的排除命令。CI 的 server job 直接执行 `mvn -B -ntp verify`，未加排除参数。
+- 用户端纯逻辑测试：`cd vibe-music-client && pnpm test`（`node:test` 直接加载 `tests/*.test.mjs`，无需挂载 Vue）。
 - ⚠️ 涉及 `MusicAssistant.SYSTEM_PROMPT` 等编译期常量时，改动后需 `touch` 测试文件再跑，避免增量编译漏编。
 
 ### 端到端验收
@@ -403,16 +417,16 @@ mvn test -Dtest=MediaCleanupTaskTest
 
 ### CI
 
-`.github/workflows/ci.yml` 在 `main` / `master` / `develop` 分支的 push、PR 及手动触发时执行：
+`.github/workflows/ci.yml` 在 `main` / `master` / `develop` 的 push、任意分支的 PR 及手动触发时执行：
 
 | Job | 内容 |
 |---|---|
-| `server` | `mvn -B -ntp verify`，含 46 条 Agent 离线评测；上传评测报告与 surefire 报告 |
-| `client` | 用户端 `pnpm install --frozen-lockfile` + `pnpm build` |
+| `server` | `mvn -B -ntp verify`，含 50 条 Agent 离线评测；上传评测报告与 surefire 报告 |
+| `client` | 用户端 `pnpm install --frozen-lockfile` + `pnpm type-check` + `pnpm build` |
 | `admin` | 管理端 `pnpm install --frozen-lockfile` + `pnpm build` |
 | `online-eval` | 可选，需仓库 Secret `DASHSCOPE_API_KEY`，仅在手动触发时运行真实模型评测 |
 
-> 当前开发分支为 `test1`，不在 CI 触发分支列表中。
+> 当前开发分支为 `test1`：它的 push 不在 CI 触发分支列表中，但向任意分支提交 PR 仍会触发 CI。
 
 ## 文档索引
 
@@ -420,8 +434,11 @@ mvn test -Dtest=MediaCleanupTaskTest
 |---|---|
 | `CLAUDE.md` | 架构说明与工程约定总览 |
 | `SECURITY.md` | 安全策略与密钥管理 |
-| `vibe-music-server/docs/` | 各阶段设计与验收报告（安全、业务基础、多歌手、会话与账号、媒体清理等） |
+| `vibe-music-server/docs/` | 各阶段设计与验收报告（安全、业务基础、多歌手、会话与账号、媒体清理、播放历史等） |
+| `vibe-music-server/docs/agent-protocol.md` | Agent SSE 契约、工具协议、待确认状态机与幂等设计 |
+| `vibe-music-server/docs/phase12-play-history.md` | 播放历史与画像隐式信号实施记录 |
 | `vibe-music-server/docs/plans/` | 阶段性实施方案（AI 个性化、权限加固、媒体清理等） |
+| `vibe-music-server/docs/plans/2026-10-19-backlog-task-list.md` | 当前遗留工作清单与完成状态 |
 | `agent_ai_plan.md` / `future_plan.md` | Agent 规划与后续路线 |
 
 ## 技术亮点
@@ -440,7 +457,7 @@ mvn test -Dtest=MediaCleanupTaskTest
 | 后端框架 | Spring Boot 3.3.7, MyBatis-Plus 3.5.9 |
 | 数据库 | MySQL 8.0, Redis（db1） |
 | 对象存储 | MinIO |
-| AI | LangChain4j 0.36.2, DashScope (qwen-max) |
+| AI | LangChain4j 0.36.2, DashScope (qwen-flash) |
 | 认证 | Auth0 java-jwt 4.4.0 |
 | 管理端 | Vue 3, Vite 6, Pinia, Element Plus, vue-pure-admin |
 | 用户端 | Vue 3, Vite 6, Pinia, Element Plus, ArtPlayer |
