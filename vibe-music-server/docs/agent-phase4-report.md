@@ -181,7 +181,7 @@ BUILD SUCCESS
 
 ### E.3 确认流程 / 并发与幂等测试
 
-- 重复确认：`dup-01`、`dup-02` 断言两次返回**同一个 playlistId** 且 `tb_playlist` 只增加 1 行。
+- 重复确认：`dup-01`、`dup-02`、`dup-03` 断言两次返回**同一个 playlistId** 且 `tb_playlist` 只增加 1 行。
 - 并发确认：`conc-01`、`conc-02` 用 6 线程同时 confirm，断言所有成功请求指向**同一个歌单**。
 - 越权：`cross-01`、`cross-02`、`guest-confirm-01` 断言 404/401 且任务状态不变。
 - 过期：`expire-01` 断言 410 + `EXPIRED` + 无歌单。

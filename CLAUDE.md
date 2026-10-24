@@ -25,6 +25,9 @@ mvn -B -ntp verify                         # 构建 + 全部测试（CI 使用�
 mvn test -Dtest='!RedisConnectionTest,!VibeMusicServerApplicationTests'   # 离线全量回归
 mvn test -Dtest=AgentEvalReportTest        # 只跑 Agent 离线评测（cases.json 用例集）
 mvn test -Dtest=SongArtistContractTest#方法名 -DfailIfNoTests=false   # 单个测试方法
+
+# 真实模型在线评测（会产生付费调用；三者缺一则整类跳过并写报告说明原因）
+AI_EVAL_ONLINE=1 DASHSCOPE_API_KEY=<key> mvn test -Dtest=AgentOnlineEvalTest -Donline=true
 ```
 
 > `RedisConnectionTest` / `VibeMusicServerApplicationTests` 是仅有的两个需要真实 MySQL/Redis/MinIO + `.env` 的 `@SpringBootTest`；离线开发与本地回归必须排除它们。
@@ -37,6 +40,7 @@ pnpm install && pnpm dev     # 安装依赖 + 启动 (8089)
 pnpm build                   # 生产构建
 pnpm lint                    # ESLint + Prettier + Stylelint 全量检查并自动修复
 pnpm typecheck               # tsc --noEmit && vue-tsc --noEmit --skipLibCheck
+pnpm test                    # node:test 纯逻辑测试（tests/*.test.mjs，不挂载 Vue）
 ```
 
 ### 用户端 (`vibe-music-client/`)
@@ -53,7 +57,7 @@ pnpm test                    # node:test 纯 TS 测试（tests/*.test.mjs，无�
 ### CI (`.github/workflows/ci.yml`)
 
 三个常规 job：后端 `mvn -B -ntp verify`（含离线评测报告上传）、用户端 `pnpm type-check && pnpm build`、管理端 `pnpm build`。
-另有手动触发的 `online-eval`：需仓库 Secret `DASHSCOPE_API_KEY` + `-Donline=true`，调真实模型跑评测。
+另有手动触发的 `online-eval`：需仓库 Secret `DASHSCOPE_API_KEY` + `-Donline=true`，执行 `AgentOnlineEvalTest`（真实模型）并上传 `agent-online-eval-report` artifact。缺 Secret 时只输出 `::warning::` 说明未执行 —— 不要把它当成通过。
 workflow 只在 `main` / `master` / `develop` 的 push 和所有 PR 上触发，当前开发分支 `test1` 的 push 不会自动跑 CI。后端 job 直接执行 `mvn verify`，没有加 `-Dtest` 排除真实依赖用例（见上）。
 
 ## 服务端架构 (`cn.edu.seig.vibemusic`)
@@ -126,16 +130,20 @@ workflow 只在 `main` / `master` / `develop` 的 push 和所有 PR 上触发，
 - **账号删除**：管理员单删/批删与用户自助注销统一走 `AccountDeletionService`；`tb_feedback.user_id` 是 `ON DELETE RESTRICT`，必须先删反馈；头像与自建歌单封面登记媒体清理任务，`tb_account_cleanup_task` 只放无法做引用核对的资源（如 Redis token）。
 - **歌手资料与封面检索**：`service/artist/`（QQ 音乐歌手候选/资料/头像）、`service/cover/`（按专辑搜封面）。接口只返回 CDN 候选、不落盘；管理员选中后才下载到 staging。歌手头像按 mid 拼地址并校验格式，接口不接受任意 URL（防 SSRF）。
 - **上传清理**：`task/SongUploadCleanupTask`、`AlbumUploadCleanupTask` 清理过期暂存；待确认任务过期由 `AgentPendingActionExpiryTask` 扫描；媒体对象删除由 `MediaCleanupRetryTask` 兜底。
+- **AI 可观测性（Trace/Span）**：`service/agent/trace/`（采集 `AgentTraceRecorder` / `AgentTrace`、脱敏 `TraceRedactor`、快照 `TraceSnapshotBuilder`、查询 `AiTraceQueryService`、费用 `AiCostCalculator`）+ `controller/AdminAiTraceController`（`/admin/ai/**`，仅 `ROLE_ADMIN`）。**采集点只有两处**：`MeteredChatModels`（真实 messages/tools/响应/tokenUsage）与 `TracedToolExecutors`（模型原始 Tool Call + 真实执行）。工具侧用 `ToolCallScope` 把服务端 `span_id` 绑进 `AgentContext.nextToolCallId`，因此 **SSE `toolCallId` == `tb_ai_trace_tool_call.span_id`**，关联不靠时间接近。系统提示词按 SHA-256 建版本库（`tb_ai_trace_prompt`），动态块注入状态来自 `AgentSystemPrompt.assemble()` 的实测结果。**采集是旁路：异常只计数不抛出**。口径/隐私/费用/一致性规则见 `docs/ai-observability.md`，改这里之前先读它。
 - **排序白名单**：列表接口的排序字段必须经 `util/SortWhitelistUtil` 校验，禁止直接拼接前端传入的列名。
 - **MinIO**：`MinioService` 封装；对象名解析对端点迁移做了兼容。另见 `docs/` 下相关记录。
-- **数据库脚本**：`vibe-music-server/sql/`。`vibe_music.sql` 是初始建表，其余为幂等增量迁移：`phase2_*`（聊天/收藏/个人歌单）、`phase3_playlist_state_and_cover.sql`、`phase4_agent_actions.sql`、`phase5_personalization.sql`、`phase6_*`（多歌手，含 `_rollback`）、`phase7_conversations.sql`、`phase8_ai_memory_preferences.sql`、`phase10_account_cleanup.sql`、`phase11_artist_profile.sql`、`phase12_play_history.sql`、`phaseC_media_cleanup.sql`、`phaseD_account_cleanup.sql`、`album_migration.sql`、`migration_lyrics.sql`。**改表结构要同时加迁移脚本**。
+- **数据库脚本**：`vibe-music-server/sql/`。`vibe_music.sql` 是初始建表，其余为幂等增量迁移：`phase2_*`（聊天/收藏/个人歌单）、`phase3_playlist_state_and_cover.sql`、`phase4_agent_actions.sql`、`phase5_personalization.sql`、`phase6_*`（多歌手，含 `_rollback`）、`phase7_conversations.sql`、`phase8_ai_memory_preferences.sql`、`phase10_account_cleanup.sql`、`phase11_artist_profile.sql`、`phase12_play_history.sql`、`phase13_ai_observability.sql`（4 张 Trace 表，只增不改）、`phaseC_media_cleanup.sql`、`phaseD_account_cleanup.sql`、`album_migration.sql`、`migration_lyrics.sql`。**改表结构要同时加迁移脚本**。
 - **播放历史**：`tb_play_history`，唯一键 `(user_id, song_id)`（每个用户每首歌一行，重复播放是 UPDATE 不是追加）。`song_id` / `user_id` 都是 `ON DELETE CASCADE`，所以删歌 / 删号时历史自动消失；读查询另外 `INNER JOIN tb_song` 兜底，孤儿行永远不会返回。接口在 `PlayHistoryController`（`/play-history/**`，全部要求登录，且**不接受任何 userId 参数**）。
 - MyBatis-Plus 驼峰映射 + `tb_` 前缀；`log-impl` 刻意设为 `NoLoggingImpl` 以免 SQL 参数泄露密码和聊天内容。
 
 ### 测试
 
 - `AbstractAgentTest` 是 Agent 测试的共享基座：**真实 MySQL 兼容模式 H2 内存库 + 真实 mapper SQL + 真实业务服务**，刻意不用 mock 覆盖业务层（要验证的正是「确认前不写库」「幂等不重复建歌单」「越权被拒绝」这类数据库层面的事实）。**模型是唯一被替换的部件**（脚本化替身）。
-- `agent/eval/AgentEvalReportTest` 跑 `src/test/resources/agent-eval/cases.json` 的离线用例（当前 50 条，测试断言其数量落在 30~50），输出 `target/agent-eval/report.md|json`，断言失败即构建失败（评测进 CI）。在线端到端评测需 `AI_EVAL_ONLINE=1` + `-Donline=true`。
+- `agent/eval/AgentEvalReportTest` 跑 `src/test/resources/agent-eval/cases.json` 的离线用例（当前 50 条，测试断言其数量落在 30~50），输出 `target/agent-eval/report.md|json`，断言失败即构建失败（评测进 CI）。**它的模型是脚本替身，无论配没配 Key 都不会请求 DashScope** —— 加 `-Donline=true` 也不会有任何效果。
+- `agent/AgentOnlineEvalTest` 才是真实模型评测（10 个场景，复用生产 `LangChain4jConfig` 的真实 Qwen Bean + 真实 `AiServiceImpl`/`MysqlChatMemoryStore` + `PersonalizedSystemPrompt`），输出 `target/agent-online-eval/report.md|json`。需 `AI_EVAL_ONLINE=1`、`DASHSCOPE_API_KEY`、`-Donline=true` 三者齐备；缺任一则整类跳过（不报错）但仍写报告说明原因，因此不会弄挂离线 `mvn verify`。
+  - **工具参数只能从 `chat_messages.TOOL_REQUEST` 读**：`AgentEvent` 没有参数字段，用事件只能验证「调了哪个工具」，验证不了「参数填对没有」。解析器是 `agent/eval/OnlineEvalTranscript`（容错：半段工具交换与坏行都跳过）。
+  - 断言只基于可观察事实（工具名、参数、数据库状态），不逐字比对最终文本；唯一的文本断言是「不能声称完成了没发生的事」。
 - 除 `RedisConnectionTest`、`VibeMusicServerApplicationTests` 这两个真实环境集成测试外，测试不依赖 MySQL / Redis / MinIO / DashScope，可在 CI 中稳定重复执行；本地离线回归用上面的排除参数。
 
 ### 敏感配置（务必遵守，见 `SECURITY.md`）
@@ -173,6 +181,6 @@ workflow 只在 `main` / `master` / `develop` 的 push 和所有 PR 上触发，
 
 ## 文档索引
 
-`vibe-music-server/docs/` 下有分阶段方案与验收记录：`agent-protocol.md`（Agent 协议权威说明）、`agent-personalization.md`、`agent-demo.md`、`agent-deployment.md`、`agent-e2e-verification.md`、`phase1-security.md`、`phase2-*`、`phase3-*`、`phase6-song-multiple-artists.md`、`phase9-conversations-account-agent-fixes.md`、`phase12-play-history.md`、`2026-10-15-project-minio-audit.md`、`plans/`（当前遗留清单 `2026-10-19-backlog-task-list.md`）。根目录另有 `README.md`（含媒体清理管线与架构图）、`agent_ai_plan.md`、`change_files.md`、`future_plan.md`、`SECURITY.md`。
+`vibe-music-server/docs/` 下有分阶段方案与验收记录：`agent-protocol.md`（Agent 协议权威说明）、`agent-personalization.md`、`agent-demo.md`、`agent-deployment.md`、`agent-e2e-verification.md`、`ai-observability.md`（Trace/Span 采集与口径）、`phase1-security.md`、`phase2-*`、`phase3-*`、`phase6-song-multiple-artists.md`、`phase9-conversations-account-agent-fixes.md`、`phase12-play-history.md`、`2026-10-15-project-minio-audit.md`、`plans/`（当前遗留清单 `2026-10-19-backlog-task-list.md`）。根目录另有 `README.md`（含媒体清理管线与架构图）、`agent_ai_plan.md`、`change_files.md`、`future_plan.md`、`SECURITY.md`。
 
 **修改 Agent 相关代码前先读 `docs/agent-protocol.md`** —— 它记录了 SSE 契约、工具返回协议、状态机与幂等设计的完整理由，多数"看似可以简化"的地方都有明确的反例。

@@ -117,6 +117,9 @@ function loadAiApi(httpCalls) {
       if (name === '@/stores/modules/user') {
         return { UserStore: () => ({ userInfo: {} }) }
       }
+      if (name === '@/utils/media') {
+        return { normalizeMediaUrls: value => value }
+      }
       // '@/api/system' / '@/api/agent' 仅类型导入，转译后不会出现
       throw new Error(`Unexpected dependency: ${name}`)
     },

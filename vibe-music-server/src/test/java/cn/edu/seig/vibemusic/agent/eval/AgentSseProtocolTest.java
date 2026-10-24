@@ -301,6 +301,55 @@ class AgentSseProtocolTest extends AbstractAgentTest {
         return "";
     }
 
+    /**
+     * 第四类护栏盲区：模型用「已为你准备了歌单预览」这种说法声称做了事，却没有调用写工具。
+     *
+     * <p>真实事故来自 {@code AgentOnlineEvalTest} 的 {@code online-preview-01}（2026-10-22 19:16）：
+     * 模型只调了 {@code searchSongs}，就回复「我已为你准备了歌单预览，包含这首曲目。是否确认创建？」。
+     * 数据库是安全的（没有待确认任务），但用户会去找一张不存在的卡片。
+     *
+     * <p>旧护栏只认「确认卡片」「待确认」两个词，这句话一个都不含，于是原样透传 ——
+     * 说明护栏覆盖的是<b>某几种措辞</b>，而不是「声称做了写操作」这个语义。
+     */
+    @Test
+    @DisplayName("模型声称「已准备好歌单预览」但没有待确认任务时，被校正为如实说明")
+    void preparedPreviewClaimWithoutPendingTaskIsCorrected() {
+        cn.edu.seig.vibemusic.service.agent.AgentMetrics empty =
+                new cn.edu.seig.vibemusic.service.agent.AgentMetrics("t", 1L, "c", "m");
+
+        // 真实事故原句
+        String accident = "已找到你想要的歌曲 **《夜色温柔》**，由 **测试歌手A** 演唱。 "
+                + "我已为你准备了歌单预览，包含这首曲目。是否确认创建？";
+        assertTrue(cn.edu.seig.vibemusic.controller.AiController.guardFinalText(accident, empty)
+                .contains("没有真正生成待确认卡片"), "事故原句应被校正，实际："
+                + cn.edu.seig.vibemusic.controller.AiController.guardFinalText(accident, empty));
+
+        for (String claim : List.of(
+                "我已经帮你准备好了歌单预览",
+                "歌单预览已经准备好了，请确认",
+                "已为你生成歌单草稿",
+                "我为你准备了一个歌单，包含 3 首歌")) {
+            assertTrue(cn.edu.seig.vibemusic.controller.AiController.guardFinalText(claim, empty)
+                    .contains("没有真正生成待确认卡片"), "应被校正：" + claim);
+        }
+        assertTrue(empty.outputGuarded(), "命中后必须置 outputGuarded，便于统计");
+
+        // 真的产生了待确认任务时必须放行，否则会把正常回复也改掉
+        cn.edu.seig.vibemusic.service.agent.AgentMetrics real =
+                new cn.edu.seig.vibemusic.service.agent.AgentMetrics("t", 1L, "c", "m");
+        real.pendingAction("task-1");
+        assertEquals("我已为你准备了歌单预览，包含这首曲目。是否确认创建？",
+                cn.edu.seig.vibemusic.controller.AiController.guardFinalText(
+                        "我已为你准备了歌单预览，包含这首曲目。是否确认创建？", real));
+        // 只是描述能力、没有完成态的说法不能被误伤
+        for (String harmless : List.of(
+                "我可以帮你准备歌单预览，需要吗？",
+                "你点击确认后才会创建歌单",
+                "如果确认，我会为你准备预览")) {
+            assertEquals(harmless, cn.edu.seig.vibemusic.controller.AiController.guardFinalText(harmless, empty));
+        }
+    }
+
     @Test
     @DisplayName("输出护栏是纯函数：无服务端事实时替换，有事实时放行")
     void guardFinalTextIsFactDriven() {

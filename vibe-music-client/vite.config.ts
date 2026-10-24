@@ -4,6 +4,10 @@ import { wrapperEnv } from './build/getEnv'
 import { createProxy } from './build/proxy'
 import { createVitePlugins } from './build/plugins'
 
+// 客户端使用的业务接口前缀；统一走同源代理，公网隧道无需额外 CORS。
+const BACKEND_API_PREFIX =
+  '^/(?:admin|album|artist|banner|comment|favorite|feedback|genre|play-history|playlist(?:-binding)?|search|song|style|user)(?:/|$)'
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const root = process.cwd()
@@ -18,6 +22,16 @@ export default defineConfig(({ mode }) => {
       // 代理配置
       proxy: {
         ...createProxy(viteEnv.VITE_PROXY),
+        [BACKEND_API_PREFIX]: {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+        // MinIO 媒体文件同源代理：/media/vibe-music-data/... → /vibe-music-data/...
+        '/media': {
+          target: 'http://127.0.0.1:9005',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/media/, ''),
+        },
         // AI 助手（/ai/**）必须走同源代理：
         // 游客会话身份存在 Cookie 里，而浏览器到 localhost:8080 是跨端口请求，
         // Chrome 对跨端口 SameSite=Lax Cookie 的收发不稳定（时带时不带），

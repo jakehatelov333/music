@@ -92,6 +92,10 @@ public abstract class AbstractAgentTest {
         jdbc.update("DELETE FROM ai_chat_state");
         jdbc.update("DELETE FROM chat_messages");
         jdbc.update("DELETE FROM tb_ai_task_metric");
+        jdbc.update("DELETE FROM tb_ai_trace_tool_call");
+        jdbc.update("DELETE FROM tb_ai_trace_llm_call");
+        jdbc.update("DELETE FROM tb_ai_trace_span");
+        jdbc.update("DELETE FROM tb_ai_trace_prompt");
         jdbc.update("DELETE FROM tb_agent_pending_action");
         jdbc.update("DELETE FROM tb_playlist_create_request");
         jdbc.update("DELETE FROM tb_user_favorite");
@@ -211,6 +215,32 @@ public abstract class AbstractAgentTest {
         jdbc.execute("CREATE TABLE IF NOT EXISTS tb_user_ai_memory_setting(user_id BIGINT PRIMARY KEY, "
                 + "personalization_enabled BOOLEAN NOT NULL DEFAULT TRUE, updated_at TIMESTAMP NOT NULL, "
                 + "FOREIGN KEY(user_id) REFERENCES tb_user(id) ON DELETE CASCADE)");
+        // AI 可观测性（sql/phase13_ai_observability.sql 对齐）。
+        // 刻意按真实表结构建：要验证的正是「真实 SQL 在真实列上跑得通」，
+        // 用简化表会让列名/类型问题在测试里消失、到生产才暴露。
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_ai_trace_span(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "trace_id VARCHAR(64) NOT NULL, span_id VARCHAR(96) NOT NULL, parent_span_id VARCHAR(96), "
+                + "chat_id VARCHAR(64), user_id BIGINT, span_type VARCHAR(24) NOT NULL, name VARCHAR(128) NOT NULL, "
+                + "status VARCHAR(16) NOT NULL, started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP, duration_ms BIGINT, "
+                + "model VARCHAR(64), input_tokens BIGINT, output_tokens BIGINT, token_source VARCHAR(16), "
+                + "error_category VARCHAR(32), error_message VARCHAR(500), request_summary VARCHAR(300), "
+                + "attributes_json CLOB, created_at TIMESTAMP NOT NULL, UNIQUE(span_id))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_ai_trace_llm_call(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "span_id VARCHAR(96) NOT NULL, trace_id VARCHAR(64) NOT NULL, call_index INT NOT NULL, "
+                + "messages_json CLOB, system_message CLOB, prompt_hash CHAR(64), tools_json CLOB, tools_hash CHAR(64), "
+                + "output_text CLOB, tool_requests_json CLOB, finish_reason VARCHAR(32), "
+                + "snapshot_state VARCHAR(24) NOT NULL DEFAULT 'FULL', snapshot_note VARCHAR(255), "
+                + "created_at TIMESTAMP NOT NULL, UNIQUE(span_id))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_ai_trace_tool_call(id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+                + "span_id VARCHAR(96) NOT NULL, trace_id VARCHAR(64) NOT NULL, tool_name VARCHAR(64) NOT NULL, "
+                + "model_tool_call_id VARCHAR(128), server_tool_call_id VARCHAR(96), raw_arguments CLOB, "
+                + "parsed_arguments CLOB, status VARCHAR(16) NOT NULL, result_code VARCHAR(32), result_total INT, "
+                + "result_summary VARCHAR(500), result_payload CLOB, error_category VARCHAR(32), duration_ms BIGINT, "
+                + "snapshot_state VARCHAR(24) NOT NULL DEFAULT 'FULL', snapshot_note VARCHAR(255), "
+                + "created_at TIMESTAMP NOT NULL, UNIQUE(span_id))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tb_ai_trace_prompt(prompt_hash CHAR(64) PRIMARY KEY, "
+                + "prompt_version VARCHAR(32) NOT NULL, base_prompt CLOB NOT NULL, first_seen_at TIMESTAMP NOT NULL, "
+                + "last_seen_at TIMESTAMP NOT NULL, seen_count BIGINT NOT NULL DEFAULT 1)");
     }
 
     // ------------------------------------------------------------------ helpers
@@ -310,12 +340,15 @@ public abstract class AbstractAgentTest {
             config.addMapper(PlayHistoryMapper.class);
             config.addMapper(SongArtistMapper.class);
             config.addMapper(AgentMemoryMapper.class);
+            config.addMapper(cn.edu.seig.vibemusic.mapper.AiTraceMapper.class);
+            config.addMapper(cn.edu.seig.vibemusic.mapper.AiTraceSearchMapper.class);
             // AiMapper 是 MyBatis-Plus 的 BaseMapper：滚动摘要记忆与会话消息读写都走它。
             config.addMapper(AiMapper.class);
             MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
             factory.setDataSource(source);
             factory.setConfiguration(config);
-            factory.setMapperLocations(new ClassPathResource("mapper/PlaylistMapper.xml"));
+            factory.setMapperLocations(new ClassPathResource("mapper/PlaylistMapper.xml"),
+                    new ClassPathResource("mapper/AiTraceSearchMapper.xml"));
             MybatisPlusInterceptor pagination = new MybatisPlusInterceptor();
             pagination.addInnerInterceptor(new PaginationInnerInterceptor(DbType.H2));
             factory.setPlugins(pagination);
@@ -336,6 +369,12 @@ public abstract class AbstractAgentTest {
         @Bean PlayHistoryMapper playHistoryMapper(SqlSessionTemplate session) { return session.getMapper(PlayHistoryMapper.class); }
         @Bean SongArtistMapper songArtistMapper(SqlSessionTemplate session) { return session.getMapper(SongArtistMapper.class); }
         @Bean AiMapper aiMapper(SqlSessionTemplate session) { return session.getMapper(AiMapper.class); }
+        @Bean cn.edu.seig.vibemusic.mapper.AiTraceMapper aiTraceMapper(SqlSessionTemplate session) {
+            return session.getMapper(cn.edu.seig.vibemusic.mapper.AiTraceMapper.class);
+        }
+        @Bean cn.edu.seig.vibemusic.mapper.AiTraceSearchMapper aiTraceSearchMapper(SqlSessionTemplate session) {
+            return session.getMapper(cn.edu.seig.vibemusic.mapper.AiTraceSearchMapper.class);
+        }
 
         @Bean PlaylistAccessService access(PlaylistMapper mapper) { return new PlaylistAccessService(mapper); }
         @Bean IPlaylistService details() { return new PlaylistServiceImpl(); }

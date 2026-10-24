@@ -543,7 +543,7 @@ public class AgentEvalHarness {
     // ------------------------------------------------------------------ 模型替身
 
     /** 脚本化阻塞模型：按脚本依次返回工具调用或文本；{@code throwError} 步直接抛异常。 */
-    static QwenChatModel scriptedModel(List<EvalCase.Step> script, boolean failMidStream) {
+    public static QwenChatModel scriptedModel(List<EvalCase.Step> script, boolean failMidStream) {
         QwenChatModel model = mock(QwenChatModel.class);
         AtomicInteger index = new AtomicInteger();
         org.mockito.stubbing.Answer<Response<AiMessage>> answer = invocation -> {
@@ -567,7 +567,7 @@ public class AgentEvalHarness {
         return model;
     }
 
-    static QwenStreamingChatModel scriptedStreaming(List<EvalCase.Step> script, boolean failMidStream) {
+    public static QwenStreamingChatModel scriptedStreaming(List<EvalCase.Step> script, boolean failMidStream) {
         QwenStreamingChatModel streaming = mock(QwenStreamingChatModel.class);
         AtomicInteger index = new AtomicInteger();
         doAnswer(invocation -> {
@@ -620,7 +620,7 @@ public class AgentEvalHarness {
 
     private AiAssistantFactory factory(QwenChatModel model, QwenStreamingChatModel streaming) {
         // 评测基座刻意注入 StaticSystemPrompt：只有基础提示词，不含用户画像。
-        // 这样个性化功能上线不会让 46 条用例的基线行为发生漂移。
+        // 这样个性化功能上线不会让离线用例的基线行为发生漂移。
         AiAssistantFactory factory = new AiAssistantFactory(model, streaming, store, readTools, actionTools,
                 new StaticSystemPrompt());
         ReflectionTestUtils.setField(factory, "timeoutSeconds", 15);

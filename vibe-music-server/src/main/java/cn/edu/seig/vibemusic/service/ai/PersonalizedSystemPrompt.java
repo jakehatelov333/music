@@ -8,6 +8,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 个性化系统提示词：基础提示词 + 更早对话摘要 + 用户音乐偏好 + 用户手动偏好。
  *
@@ -42,33 +45,84 @@ public class PersonalizedSystemPrompt implements AgentSystemPrompt {
 
     @Override
     public String build(Long userId, String chatId) {
+        return assemble(userId, chatId).prompt();
+    }
+
+    /**
+     * 组装并如实记录每个块的真实结果。
+     *
+     * <p><b>块状态是"实测事实"，不是"设计意图"：</b>
+     * {@code SKIPPED_EMPTY}（没有数据）、{@code SKIPPED_DISABLED}（个性化开关关闭）、
+     * {@code FAILED}（注入抛错被跳过）三者对排障意义完全不同，
+     * 事后从提示词字符串里看不出来，所以在这里就地记录。
+     */
+    @Override
+    public Assembly assemble(Long userId, String chatId) {
+        Map<String, Object> blocks = new LinkedHashMap<>();
+        blocks.put("base", "INJECTED");
         StringBuilder prompt = new StringBuilder(MusicAssistant.SYSTEM_PROMPT);
+
         // 会话摘要是对话级记忆，游客同样有会话，因此不依赖 userId。
         try {
             String summary = summaries.renderSummaryBlock(chatId);
-            if (summary != null) prompt.append("\n\n").append(summary);
+            if (summary != null) {
+                prompt.append("\n\n").append(summary);
+                blocks.put("summary", "INJECTED");
+            } else {
+                blocks.put("summary", "SKIPPED_EMPTY");
+            }
         } catch (RuntimeException e) {
             log.warn("对话摘要注入失败，已跳过，类型={}", e.getClass().getSimpleName());
+            blocks.put("summary", "FAILED");
+            blocks.put("summaryError", e.getClass().getSimpleName());
         }
-        if (userId == null) return prompt.toString();   // 游客没有画像与手动偏好
+
+        if (userId == null) {
+            // 游客没有画像与手动偏好 —— 这是设计如此，不是失败。
+            blocks.put("profile", "NOT_APPLICABLE");
+            blocks.put("manualPreference", "NOT_APPLICABLE");
+            blocks.put("guest", true);
+            return new Assembly(prompt.toString(), blocks);
+        }
+
         try {
-            if (!memory.isPersonalizationEnabled(userId)) return prompt.toString();
+            if (!memory.isPersonalizationEnabled(userId)) {
+                blocks.put("profile", "SKIPPED_DISABLED");
+                blocks.put("manualPreference", "SKIPPED_DISABLED");
+                return new Assembly(prompt.toString(), blocks);
+            }
         } catch (RuntimeException e) {
             // 开关读取失败按开启处理：宁可少一次个性化，也不静默吞掉用户已配置的偏好。
             log.warn("个性化开关读取失败，按开启处理，类型={}", e.getClass().getSimpleName());
+            blocks.put("personalizationSwitch", "FAILED_DEFAULTED_ON");
         }
+
         try {
             String preference = profiles.renderPreferenceBlock(userId);
-            if (preference != null) prompt.append("\n\n").append(preference);
+            if (preference != null) {
+                prompt.append("\n\n").append(preference);
+                blocks.put("profile", "INJECTED");
+            } else {
+                blocks.put("profile", "SKIPPED_EMPTY");
+            }
         } catch (RuntimeException e) {
             log.warn("用户画像注入失败，已跳过，类型={}", e.getClass().getSimpleName());
+            blocks.put("profile", "FAILED");
+            blocks.put("profileError", e.getClass().getSimpleName());
         }
         try {
             String manual = memory.renderManualPreferenceBlock(userId);
-            if (manual != null) prompt.append("\n\n").append(manual);
+            if (manual != null) {
+                prompt.append("\n\n").append(manual);
+                blocks.put("manualPreference", "INJECTED");
+            } else {
+                blocks.put("manualPreference", "SKIPPED_EMPTY");
+            }
         } catch (RuntimeException e) {
             log.warn("手动偏好注入失败，已跳过，类型={}", e.getClass().getSimpleName());
+            blocks.put("manualPreference", "FAILED");
+            blocks.put("manualPreferenceError", e.getClass().getSimpleName());
         }
-        return prompt.toString();
+        return new Assembly(prompt.toString(), blocks);
     }
 }

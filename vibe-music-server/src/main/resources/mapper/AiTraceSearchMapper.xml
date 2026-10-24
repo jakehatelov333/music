@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.edu.seig.vibemusic.mapper.AiTraceSearchMapper">
+
+    <!--
+      Trace 检索的公共条件。
+      所有值都走 #{} 参数绑定；唯一的动态片段是集合 IN 与字段存在性，均由服务端构造。
+      汇总口径：tb_ai_task_metric 是"一次请求一行"的权威表，检索以它为主表；
+      需要按工具名过滤时，先用子查询取 trace_id 集合（见 Service 层），避免 JOIN 造成重复行。
+    -->
+    <sql id="conditions">
+        <where>
+            <if test="q.from != null">AND m.created_at &gt;= #{q.from}</if>
+            <if test="q.to != null">AND m.created_at &lt; #{q.to}</if>
+            <if test="q.userId != null">AND m.user_id = #{q.userId}</if>
+            <if test="q.traceId != null and q.traceId != ''">AND m.task_id = #{q.traceId}</if>
+            <if test="q.chatId != null and q.chatId != ''">AND m.chat_id = #{q.chatId}</if>
+            <if test="q.model != null and q.model != ''">AND m.model = #{q.model}</if>
+            <if test="q.failureCategory != null and q.failureCategory != ''">
+                AND m.failure_category = #{q.failureCategory}
+            </if>
+            <if test="q.minInputTokens != null">AND m.input_tokens &gt;= #{q.minInputTokens}</if>
+            <if test="q.maxInputTokens != null">AND m.input_tokens &lt;= #{q.maxInputTokens}</if>
+            <if test="q.minOutputTokens != null">AND m.output_tokens &gt;= #{q.minOutputTokens}</if>
+            <if test="q.maxOutputTokens != null">AND m.output_tokens &lt;= #{q.maxOutputTokens}</if>
+            <if test="q.minTotalTokens != null">
+                AND (COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)) &gt;= #{q.minTotalTokens}
+            </if>
+            <if test="q.maxTotalTokens != null">
+                AND (COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)) &lt;= #{q.maxTotalTokens}
+            </if>
+            <if test="q.minLatencyMs != null">AND m.latency_ms &gt;= #{q.minLatencyMs}</if>
+            <if test="q.usedTools != null and q.usedTools">
+                AND m.tool_calls &gt; 0
+            </if>
+            <if test="q.usedTools != null and !q.usedTools">
+                AND m.tool_calls = 0
+            </if>
+            <if test="q.outputGuarded != null and q.outputGuarded">
+                AND m.output_guarded = TRUE
+            </if>
+            <if test="q.tokenAvailable != null and q.tokenAvailable">
+                AND m.token_source = 'PROVIDER'
+            </if>
+            <if test="q.tokenAvailable != null and !q.tokenAvailable">
+                AND m.token_source = 'UNAVAILABLE'
+            </if>
+            <if test="userIds != null and userIds.size() > 0">
+                AND m.user_id IN
+                <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </if>
+            <if test="toolTraceIds != null">
+                AND m.task_id IN
+                <foreach collection="toolTraceIds" item="tid" open="(" separator="," close=")">#{tid}</foreach>
+            </if>
+        </where>
+    </sql>
+
+    <!--
+      状态过滤。
+      数据库里没有单独的 status 列：成功/失败由 success + failure_category 表达。
+      这里把它翻译成等价的 SQL，避免为了"看起来方便"而加一个会和事实脱节的冗余列。
+    -->
+    <sql id="statusFilter">
+        <if test="q.status != null and q.status != ''">
+            <choose>
+                <when test="q.status == 'SUCCESS'">AND m.success = TRUE</when>
+                <when test="q.status == 'FAILED'">AND m.success = FALSE</when>
+                <when test="q.status == 'GUARDED'">AND m.output_guarded = TRUE</when>
+                <otherwise>
+                    AND m.success = FALSE AND m.failure_category = #{q.status}
+                </otherwise>
+            </choose>
+        </if>
+    </sql>
+
+    <select id="count" resultType="long">
+        SELECT COUNT(*)
+        FROM tb_ai_task_metric m
+        <include refid="conditions"/>
+        <include refid="statusFilter"/>
+    </select>
+
+    <select id="search" resultType="cn.edu.seig.vibemusic.model.vo.AiTraceListItemVO">
+        SELECT m.task_id            AS traceId,
+               m.chat_id            AS chatId,
+               m.user_id            AS userId,
+               u.username           AS username,
+               CASE WHEN m.success = TRUE THEN 'SUCCESS'
+                    ELSE COALESCE(m.failure_category, 'FAILED') END AS status,
+               m.failure_category   AS failureCategory,
+               m.failure_message    AS failureMessage,
+               m.model              AS model,
+               m.model_calls        AS modelCalls,
+               m.tool_calls         AS toolCalls,
+               m.tool_failures      AS toolFailures,
+               m.input_tokens       AS inputTokens,
+               m.output_tokens      AS outputTokens,
+               (COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)) AS totalTokens,
+               m.token_source       AS tokenSource,
+               m.latency_ms         AS latencyMs,
+               m.output_guarded     AS outputGuarded,
+               m.created_at         AS startedAt,
+               m.created_at         AS endedAt,
+               <!-- 请求摘要只取根 Span 上已脱敏的短字段，不在列表页返回任何对话原文 -->
+               (SELECT s.request_summary FROM tb_ai_trace_span s
+                 WHERE s.trace_id = m.task_id AND s.span_type = 'REQUEST'
+                 LIMIT 1)           AS requestSummary,
+               CASE WHEN EXISTS (SELECT 1 FROM tb_ai_trace_span s2 WHERE s2.trace_id = m.task_id)
+                    THEN TRUE ELSE FALSE END AS traced
+        FROM tb_ai_task_metric m
+        LEFT JOIN tb_user u ON u.id = m.user_id
+        <include refid="conditions"/>
+        <include refid="statusFilter"/>
+        ORDER BY ${orderBy}
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 用户下拉：只按账号或 ID 精确/前缀搜索，不加载全表。 -->
+    <select id="searchUsers" resultType="java.util.Map">
+        SELECT id AS userId, username
+        FROM tb_user
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND (username LIKE CONCAT(#{keyword}, '%') OR CONCAT(id, '') = #{keyword})
+            </if>
+        </where>
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+</mapper>

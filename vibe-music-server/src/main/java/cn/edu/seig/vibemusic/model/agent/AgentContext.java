@@ -53,8 +53,16 @@ public record AgentContext(
         events.emit(event);
     }
 
-    /** 每次工具调用分配一个稳定的关联 ID，用于把 start / end / 结构化数据串起来。 */
+    /**
+     * 每次工具调用分配一个稳定的关联 ID，用于把 start / end / 结构化数据串起来。
+     *
+     * <p>若追踪层（{@code TracedToolExecutors}）已在当前线程绑定了 ID，则直接采用它 ——
+     * 这样 SSE 的 {@code toolCallId} 与后端 Trace 的 {@code span_id} 是同一个值，
+     * 前端事件流和落库记录可以精确对照，而不是靠时间接近推断。
+     */
     public String nextToolCallId(String toolName) {
+        String bound = ToolCallScope.current();
+        if (bound != null) return bound;
         return (taskId == null ? "run" : taskId) + "-" + toolName + "-" + toolSequence.incrementAndGet();
     }
 }

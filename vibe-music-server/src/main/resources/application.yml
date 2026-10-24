@@ -175,6 +175,46 @@ ai:
   # AI 记忆与手动偏好（tb_user_memory_preference / tb_user_ai_memory_setting）。
   memory:
     max-preferences-per-category: 50 # 单个用户单个分类的手动偏好上限
+  # AI 可观测性（Trace / Span）。详见 docs/ai-observability.md。
+  # 采集是旁路能力：任何采集异常都只计数 + 记日志，绝不影响用户回复。
+  trace:
+    enabled: true # 总开关；关闭后不再产生 Trace 明细（指标表不受影响）
+    capture-content: true # 是否保存消息正文、提示词、工具返回；关闭后只留元数据与统计
+    max-text-chars: 4000 # 单条消息 / 单段文本上限
+    max-system-prompt-chars: 40000 # 系统提示词上限（基础提示词本身就有数千字）
+    max-tools-chars: 60000 # 工具定义上限（10 个工具的中文描述合计超过一万字符是正常的）
+    max-messages-chars: 60000 # 单次模型调用输入快照上限
+    max-result-chars: 20000 # 工具返回数据上限
+    retention-days: 30 # 保留天数，超期由 AiTraceRetentionTask 清理；<=0 表示不清理
+    cleanup-initial-delay-ms: 300000
+    cleanup-interval-ms: 86400000
+  # 费用估算（估算，不是供应商账单）。
+  # 官方来源：https://help.aliyun.com/zh/model-studio/model-pricing
+  # 查询日期：2026-10-24；页面更新时间：2026-10-22 11:52:55 +08:00。
+  # 默认接入地域为华北 2（北京），qwen-flash 标准实时原价：
+  #   0 < 单次输入 Token <= 128K：输入 0.15 / 输出 1.5 元每百万 Token
+  #   128K < 单次输入 Token <= 256K：输入 0.6 / 输出 6 元每百万 Token
+  #   256K < 单次输入 Token <= 1M：输入 1.2 / 输出 12 元每百万 Token
+  # 所有 Token 按该次请求命中的档位结算；不含 Batch 半价、上下文缓存折扣、
+  # 免费额度与活动优惠。超出 1M 的调用不估算，绝不按最高档外推。
+  cost:
+    currency: CNY
+    price-version: qwen-flash-cn-beijing-2026-10-22
+    source-url: https://help.aliyun.com/zh/model-studio/model-pricing
+    source-updated-at: "2026-10-22 11:52:55 +08:00"
+    tiers:
+      - max-input-tokens: 128000
+        input-price-per-million: 0.15
+        output-price-per-million: 1.5
+      - max-input-tokens: 256000
+        input-price-per-million: 0.6
+        output-price-per-million: 6
+      - max-input-tokens: 1000000
+        input-price-per-million: 1.2
+        output-price-per-million: 12
+    # 兼容旧部署的单一单价配置；配置了 tiers 后不使用这两项。
+    input-price-per-million:
+    output-price-per-million:
 
 # 跨域凭据只允许明确列出的前端来源；部署时填写实际域名。
 app:

@@ -8,9 +8,13 @@ import NProgress from '@/config/nprogress'
 import 'nprogress/nprogress.css'
 import { UserStore } from '@/stores/modules/user'
 import { ElMessage } from 'element-plus'
+import { normalizeMediaUrls } from '@/utils/media'
 
 const instance: AxiosInstance = axios.create({
-  baseURL: 'http://localhost:8080', // 设置为后端服务地址
+  // 开发环境由 Vite 同源代理到后端；生产环境仍可通过环境变量指定绝对地址。
+  baseURL: import.meta.env.DEV
+    ? ''
+    : import.meta.env.VITE_APP_BASE_API || '',
   timeout: 20000, // 设置超时时间 20秒
   headers: {
     Accept: 'application/json, text/plain, */*',
@@ -68,7 +72,7 @@ instance.interceptors.response.use(
     // 关闭进度条
     NProgress.done()
     const { data } = response
-    return data
+    return normalizeMediaUrls(data)
   },
   (error) => {
     // 关闭进度条

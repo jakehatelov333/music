@@ -48,7 +48,9 @@ class UserCacheIsolationTest {
             when(favorites.getUserFavoriteSongIds(2L)).thenReturn(List.of(22L));
             SongVO song = new SongVO(); song.setSongId(22L);
             Page<SongVO> page = new Page<>(1, 10, 1); page.setRecords(List.of(song));
-            when(songs.getSongsByIds(any(), anyLong(), eq(List.of(22L)), isNull(), isNull(), isNull())).thenReturn(page);
+            // 第 7 个参数 keyword 是多歌手改造后新增的，签名不匹配会让整个测试模块编译失败。
+            when(songs.getSongsByIds(any(), anyLong(), eq(List.of(22L)),
+                    isNull(), isNull(), isNull(), isNull())).thenReturn(page);
             SongDTO query = new SongDTO(); query.setPageNum(1); query.setPageSize(10);
             ThreadLocalUtil.set(Map.of(JwtClaimsConstant.USER_ID, 1L));
             assertEquals(0L, service.getUserFavoriteSongs(query).getData().getTotal());

@@ -15,6 +15,9 @@ import cn.edu.seig.vibemusic.service.agent.ChatSummaryService;
 import cn.edu.seig.vibemusic.service.agent.ConversationService;
 import cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService;
 import cn.edu.seig.vibemusic.service.agent.UserMusicProfileService;
+import cn.edu.seig.vibemusic.service.agent.trace.AgentTrace;
+import cn.edu.seig.vibemusic.service.agent.trace.AgentTraceRecorder;
+import cn.edu.seig.vibemusic.service.agent.trace.TraceSnapshotBuilder;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,6 +27,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -61,7 +65,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Slf4j
 @RestController
 @RequestMapping("/ai")
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class AiController {
 
     private static final String AI_ERROR = "AI 服务暂不可用，请稍后再试";
@@ -78,8 +82,35 @@ public class AiController {
      * </ul>
      * 不满足就把话术换成如实说明。这样即使模型说错，用户也不会被误导。
      */
+    /**
+     * 第一类护栏：模型声称「有待确认卡片 / 已准备好预览」。
+     *
+     * <p><b>为什么不能只匹配「确认卡片」「待确认」两个词：</b>这两个词覆盖的是<b>措辞</b>，
+     * 不是<b>语义</b>。2026-10-22 在线评测的真实轨迹里，模型只调了 {@code searchSongs}，
+     * 却回复「我已为你准备了歌单预览，包含这首曲目。是否确认创建？」—— 一个关键词都不含，
+     * 于是原样透传给用户，让他去找一张根本不存在的卡片。
+     *
+     * <p>现在按「完成态的写操作声明」匹配：{@code 已/已经} + 准备/生成/做好 + 预览/歌单/草稿。
+     * 刻意要求完成态标记，这样「我可以帮你准备预览，需要吗」「点击确认后才会创建歌单」
+     * 这类描述能力或条件的说法不会被误伤（它们没有完成态）。
+     */
     private static final java.util.regex.Pattern CARD_CLAIM =
-            java.util.regex.Pattern.compile("确认卡片|待确认");
+            java.util.regex.Pattern.compile(
+                    "确认卡片|待确认"
+                            // 正常语序：已为你准备了歌单预览 / 我为你准备了一个歌单
+                            // 必须带完成态锚点：「我可以帮你准备预览」是描述能力，不是声称做过。
+                            // 锚点有两种，各自独立成支：
+                            //   ①「已」——已为你生成歌单草稿（不需要「了」）
+                            //   ②「为你/给你/帮你 + 动词 + 了」——我为你准备了一个歌单
+                            //      （省略「已」，但「了」表明完成态；没有「了」的
+                            //        「我可以帮你准备预览」是描述能力，必须放行）
+                            + "|已(?:经)?[^。；\\n]{0,8}(?:准备|生成|做好|整理)[^。；\\n]{0,6}"
+                            + "(?:预览|歌单|草稿|候选)"
+                            + "|(?:为你|给你|帮你)[^。；\\n]{0,6}(?:准备|生成|做好|整理)"
+                            + "[^。；\\n]{0,4}了[^。；\\n]{0,6}(?:预览|歌单|草稿|候选)"
+                            // 倒装语序：歌单预览已经准备好了
+                            + "|(?:预览|歌单|草稿)[^。；\\n]{0,4}已(?:经)?[^。；\\n]{0,4}"
+                            + "(?:准备|生成|做好|整理)");
     private static final java.util.regex.Pattern CREATED_CLAIM =
             java.util.regex.Pattern.compile("已创建成功|已为你创建|创建成功了|已成功创建");
 
@@ -133,6 +164,25 @@ public class AiController {
     private final MusicTasteSummaryService tasteSummaries;
     private final UserMusicProfileService musicProfiles;
     private final ConversationService conversations;
+    /**
+     * Trace 采集器。允许为 {@code null}（既有测试直接 new 本控制器时不传），
+     * 为 null 时全部采集调用跳过，SSE 协议与业务行为完全不变。
+     */
+    private final AgentTraceRecorder traceRecorder;
+    private final TraceSnapshotBuilder traceSnapshots;
+
+    /**
+     * 不带追踪的构造器：既有测试直接 new 本控制器时保持原样。
+     * 生产环境由 Spring 注入真实的 {@link AgentTraceRecorder}。
+     */
+    public AiController(IAiService aiService, AiSessionService sessions, AiAssistantFactory assistants,
+                        AgentMetricsRecorder metricRecorder, ExecutorService aiExecutor,
+                        ScheduledExecutorService aiTimer, ChatSummaryService chatSummaries,
+                        MusicTasteSummaryService tasteSummaries, UserMusicProfileService musicProfiles,
+                        ConversationService conversations) {
+        this(aiService, sessions, assistants, metricRecorder, aiExecutor, aiTimer, chatSummaries,
+                tasteSummaries, musicProfiles, conversations, null, null);
+    }
 
     @PostMapping("/chat")
     public String chat(@Valid @RequestBody AiChatRequest body, HttpServletRequest request,
@@ -143,11 +193,15 @@ public class AiController {
                 AgentEventSink.NOOP);
         AgentMetrics metrics = run.metrics();
         Future<String> task = null;
+        AgentTrace trace = run.trace();
+        if (traceRecorder != null) traceRecorder.userQuery(trace, body.query());
         try {
             task = aiExecutor.submit(() -> run.assistant().chat(chatId, body.query()));
             String text = task.get(assistants.timeout().toMillis(), TimeUnit.MILLISECONDS);
             metrics.finish(true, AgentFailureCategory.NONE, null);
-            return guardFinalText(text, metrics);
+            String guarded = guardFinalText(text, metrics);
+            recordGuard(trace, text, guarded, metrics);
+            return guarded;
         } catch (TimeoutException e) {
             metrics.finish(false, AgentFailureCategory.TIMEOUT, "AI 回复超时");
             throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "AI 回复超时，请稍后重试");
@@ -161,6 +215,7 @@ public class AiController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, AI_ERROR);
         } finally {
             metricRecorder.record(metrics);
+            recordTrace(trace, metrics);
             run.close();
             if (task != null) task.cancel(true);
             // 放在 run.close() 之后：会话租约已释放，摘要任务读到的历史才是完整的。
@@ -187,6 +242,7 @@ public class AiController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "当前会话正在处理另一条消息，请稍后再试");
         }
         StreamSession session = new StreamSession(emitter, channel, run);
+        if (traceRecorder != null) traceRecorder.userQuery(run.trace(), body.query());
 
         emitter.onCompletion(() -> {
             if (!session.settled()) {
@@ -222,7 +278,11 @@ public class AiController {
                                 java.util.concurrent.atomic.AtomicReference<String> finalText =
                                         new java.util.concurrent.atomic.AtomicReference<>(raw);
                                 boolean first = session.settle(true, AgentFailureCategory.NONE, null,
-                                        () -> finalText.set(guardFinalText(raw, run.metrics())));
+                                        () -> {
+                                            String guarded = guardFinalText(raw, run.metrics());
+                                            finalText.set(guarded);
+                                            recordGuard(run.trace(), raw, guarded, run.metrics());
+                                        });
                                 if (first) {
                                     channel.send("task", json(AgentEvent.task(run.taskId(), true,
                                             AgentFailureCategory.NONE, "任务完成", run.metrics().summary())));
@@ -329,6 +389,36 @@ public class AiController {
     // ------------------------------------------------------------------ 内部
 
     /**
+     * 记录护栏结论（仅在真的替换了文本时才算"命中"）。
+     *
+     * <p>判定方式与指标口径一致：{@code guardFinalText} 返回的对象与原文不同即视为命中。
+     * 这样追踪记录与 {@code tb_ai_task_metric.output_guarded} 不会出现两套说法。
+     */
+    private void recordGuard(AgentTrace trace, String raw, String guarded, AgentMetrics metrics) {
+        if (trace == null || traceRecorder == null) return;
+        boolean guardedHit = raw != null && guarded != null && !raw.equals(guarded);
+        traceRecorder.guardApplied(trace, guardedHit, guarded, guardedHit ? "话术与服务端事实不符，已替换" : null);
+    }
+
+    /**
+     * 结束并落库 Trace。
+     *
+     * <p><b>为什么放在 finally / settle 里：</b>成功、失败、超时、客户端断开都要有记录，
+     * 否则"用户说卡住了"这类问题在追踪里完全查不到。采集失败只计数，不影响用户回复。
+     */
+    private void recordTrace(AgentTrace trace, AgentMetrics metrics) {
+        if (trace == null || traceRecorder == null) return;
+        try {
+            traceRecorder.finish(trace, metrics.success(), metrics.failureCategory(),
+                    metrics.failureMessage(), metrics.latencyMillis());
+            traceRecorder.flush(trace);
+        } catch (RuntimeException e) {
+            // 采集器内部已吞异常并计数；这里再兜一层，确保任何情况下都不影响响应。
+            log.warn("AI Trace 结算失败，已忽略，类型={}", e.getClass().getSimpleName());
+        }
+    }
+
+    /**
      * 会话结束后异步维护记忆与画像。
      *
      * <p><b>为什么放在这里而不是工具里：</b>摘要与画像都是"事后整理"，
@@ -415,6 +505,7 @@ public class AiController {
             if (running != null) running.cancel(true);
             run.close();
             metricRecorder.record(run.metrics());
+            recordTrace(run.trace(), run.metrics());
             // 结算之后异步整理记忆与画像：这是"事后整理"，与本次回答的正确性无关，
             // 放在请求路径里只会让用户多等一次模型调用。
             scheduleMemoryMaintenance(run.metrics().chatId(), run.metrics().userId());

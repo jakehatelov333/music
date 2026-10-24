@@ -2,6 +2,7 @@ import { http } from '@/utils/http'
 import { UserStore } from '@/stores/modules/user'
 import type { Result } from '@/api/system'
 import type { AgentSongRef, PendingAction } from '@/api/agent'
+import { normalizeMediaUrls } from '@/utils/media'
 
 export type AiChatResponse = string
 
@@ -372,12 +373,14 @@ export const aiStreamChat = (
           }
           case 'songs': {
             const payload = parseJson<AgentSongsEvent>(data)
-            if (payload) callbacks.onSongs?.(payload)
+            if (payload) callbacks.onSongs?.(normalizeMediaUrls(payload))
             break
           }
           case 'confirm': {
             const payload = parseJson<{ data: PendingAction }>(data)
-            if (payload?.data) callbacks.onConfirm?.(payload.data)
+            if (payload?.data) {
+              callbacks.onConfirm?.(normalizeMediaUrls(payload.data))
+            }
             break
           }
           case 'task': {

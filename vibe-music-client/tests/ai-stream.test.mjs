@@ -15,6 +15,7 @@ function loadApi(fetchMock) {
     require(name) {
       if (name === '@/stores/modules/user') return { UserStore: () => ({ userInfo: { token: 'test-token' } }) }
       if (name === '@/utils/http') return { http: () => {} }
+      if (name === '@/utils/media') return { normalizeMediaUrls: value => value }
       throw new Error(`Unexpected dependency: ${name}`)
     },
   })

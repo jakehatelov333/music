@@ -32,6 +32,7 @@ function loadApi(fetchMock) {
   return compile(source, {
     '@/stores/modules/user': { UserStore: () => ({ userInfo: { token: 'test-token' } }) },
     '@/utils/http': { http: () => {} },
+    '@/utils/media': { normalizeMediaUrls: value => value },
   }, { fetch: fetchMock, TextDecoder, Response, ReadableStream, TextEncoder, setTimeout })
 }
 

@@ -328,14 +328,14 @@
         "previewMatchesPlaylist": true }
     },
     {
-      "id": "dup-01", "category": "DUPLICATE_CONFIRM",
+      "id": "dup-02", "category": "DUPLICATE_CONFIRM",
       "intent": "重复点击确认只创建一个歌单，返回同一个歌单 ID",
       "flow": "CREATE_DOUBLE_CONFIRM",
       "args": { "title": "重复确认", "introduction": "", "style": "", "songs": [10, 11] },
       "expect": { "success": true, "idempotent": true, "pendingStatus": "SUCCEEDED", "playlistSongCount": 2 }
     },
     {
-      "id": "dup-02", "category": "DUPLICATE_CONFIRM",
+      "id": "dup-03", "category": "DUPLICATE_CONFIRM",
       "intent": "重复确认在单曲场景同样幂等",
       "flow": "CREATE_DOUBLE_CONFIRM",
       "args": { "title": "重复确认二", "introduction": "", "style": "", "songs": [13] },

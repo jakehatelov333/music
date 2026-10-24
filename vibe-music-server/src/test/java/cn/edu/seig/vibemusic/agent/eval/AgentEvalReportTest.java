@@ -39,15 +39,28 @@ class AgentEvalReportTest extends AbstractAgentTest {
     @Autowired private PendingActionService pendingActionService;
     @Autowired private AgentSongQueryService songQueryService;
 
+    /**
+     * 在线评测的执行命令。
+     *
+     * <p>它指向 {@code AgentOnlineEvalTest}，<b>不是</b>本类：本类的模型是脚本替身，
+     * 加再多开关也不会请求 DashScope。历史上这条命令曾误指向本类，
+     * 于是「配好 Key、跑了在线评测」实际上从来没有发生过 —— 报告里却写着已覆盖。
+     */
     private static final String ONLINE_EVAL_COMMAND =
-            "AI_EVAL_ONLINE=1 DASHSCOPE_API_KEY=<key> mvn -o test -Dtest=AgentEvalReportTest -Donline=true";
+            "AI_EVAL_ONLINE=1 DASHSCOPE_API_KEY=<key> mvn -o test -Dtest=AgentOnlineEvalTest -Donline=true";
 
     @Test
-    @DisplayName("运行 44 条离线评测用例并输出真实报告")
+    @DisplayName("运行离线评测用例集并输出真实报告")
     void runOfflineEvaluation() throws Exception {
         List<EvalCase.Case> cases = loadCases();
         assertTrue(cases.size() >= 30 && cases.size() <= 50,
                 "评测集应包含 30~50 条用例，实际 " + cases.size());
+        // 用例 ID 必须唯一：报告按 ID 列明细，重复 ID 会让两行无法区分，
+        // 按 ID 聚合失败信息时还会丢一条。曾出现两条不同用例都叫 dup-01 的情况。
+        List<String> duplicateIds = cases.stream()
+                .collect(Collectors.groupingBy(EvalCase.Case::id, LinkedHashMap::new, Collectors.counting()))
+                .entrySet().stream().filter(e -> e.getValue() > 1).map(Map.Entry::getKey).toList();
+        assertEquals(List.of(), duplicateIds, "评测集存在重复用例 ID：" + duplicateIds);
 
         AgentEvalHarness harness = new AgentEvalHarness(pendingActionService, actionMapper, metricMapper,
                 musicTools, playlistActionTools, jdbc);
@@ -212,11 +225,14 @@ class AgentEvalReportTest extends AbstractAgentTest {
         }
         out.append('\n');
 
-        out.append("## 八、在线端到端评测（未执行）\n\n");
-        out.append("本报告不包含真实模型端到端评测：当前环境未配置 `DASHSCOPE_API_KEY`，"
-                + "且执行环境无外网，无法调用 DashScope。**因此“模型是否选对工具”"
-                + "“自然语言意图识别准确率”这类纯模型能力未在本报告中验证**，"
-                + "标记为待测。配置好 Key 后可运行：\n\n```bash\n").append(ONLINE_EVAL_COMMAND)
+        out.append("## 八、在线端到端评测（不在本报告内）\n\n");
+        out.append("**本报告的模型是脚本化替身，因此不包含真实模型评测。**"
+                + "无论是否配置 `DASHSCOPE_API_KEY`，本测试都不会请求 DashScope —— "
+                + "这是设计使然（离线可重复、无付费调用），不是配置问题。\n\n"
+                + "真实模型评测在独立的 `AgentOnlineEvalTest` 里（10 个场景，"
+                + "复用生产 `LangChain4jConfig` 的真实 Qwen Bean），报告输出到 "
+                + "`target/agent-online-eval/report.md`。运行方式：\n\n```bash\n")
+                .append(ONLINE_EVAL_COMMAND)
                 .append("\n```\n");
         out.append("\n> 对比说明：离线评测覆盖 ").append(total)
                 .append(" 条用例的**确定性部分**（工具执行、结构化返回、"
@@ -235,9 +251,12 @@ class AgentEvalReportTest extends AbstractAgentTest {
         report.put("passed", passed);
         report.put("failed", results.size() - passed);
         report.put("successRate", results.isEmpty() ? 0 : (double) passed / results.size());
+        // 如实标注：本报告本身永远不含在线评测。在线评测是另一个测试类产出的另一份报告，
+        // 把它写成「未配置 Key」会让人以为「配了 Key 这份报告里就会有」。
         report.put("onlineEval", Map.of("executed", false,
-                "reason", "未配置 DASHSCOPE_API_KEY 且执行环境无外网",
-                "command", ONLINE_EVAL_COMMAND));
+                "reason", "离线报告不包含真实模型评测；在线评测见 AgentOnlineEvalTest 的 target/agent-online-eval",
+                "command", ONLINE_EVAL_COMMAND,
+                "reportPath", "target/agent-online-eval/report.md"));
         report.put("cases", results);
         report.put("failures", failures);
         return new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(report);
