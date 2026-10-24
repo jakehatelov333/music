@@ -30,9 +30,9 @@ class AiTraceRedactionTest {
     @Test
     @DisplayName("DashScope 风格 sk- 密钥被替换")
     void apiKeysAreRedacted() {
-        TraceRedactor.Result result = redactor.redact("apiKey=sk-abcdefghijklmnopqrstuvwxyz123456");
+        TraceRedactor.Result result = redactor.redact("apiKey=sk-TEST-ONLY-NOT-A-REAL-KEY");
         assertTrue(result.redacted());
-        assertFalse(result.text().contains("abcdefghijklmnopqrstuvwxyz"));
+        assertFalse(result.text().contains("TEST-ONLY-NOT-A-REAL-KEY"));
     }
 
     @Test
