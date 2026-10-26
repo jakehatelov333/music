@@ -52,7 +52,7 @@ public class AdminAiTraceController {
         return Result.success(traces.search(query));
     }
 
-    /** 筛选下拉的可选值（模型、工具、状态），取自真实数据。 */
+    /** 筛选下拉的可选值：模型/状态取自真实数据，工具包含全部已注册工具。 */
     @GetMapping("/filter-options")
     public Result<Map<String, Object>> filterOptions(
             @RequestParam(required = false)

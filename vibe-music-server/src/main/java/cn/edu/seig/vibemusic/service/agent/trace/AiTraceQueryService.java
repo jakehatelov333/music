@@ -12,6 +12,7 @@ import cn.edu.seig.vibemusic.model.entity.AiTraceSpan;
 import cn.edu.seig.vibemusic.model.entity.AiTraceToolCall;
 import cn.edu.seig.vibemusic.model.vo.*;
 import cn.edu.seig.vibemusic.result.PageResult;
+import cn.edu.seig.vibemusic.tool.AgentToolCatalog;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -302,7 +303,12 @@ public class AiTraceQueryService {
         return searchMapper.searchUsers(value, 20);
     }
 
-    /** 可用于筛选的模型 / 工具名（取自实际数据，不硬编码）。 */
+    /**
+     * 可用于筛选的模型 / 工具名。
+     *
+     * <p>模型取自实际数据；工具取“系统已注册工具”与“历史 Trace 中出现过的工具”的并集。
+     * 只返回近期实际调用过的工具会让从未被调用、或刚上线的新工具在下拉框里不可选。
+     */
     public Map<String, Object> filterOptions(LocalDateTime from, LocalDateTime to) {
         Range range = normalize(from, to);
         Map<String, Object> options = new LinkedHashMap<>();
@@ -312,12 +318,14 @@ public class AiTraceQueryService {
             if (model != null) models.add(model);
         }
         options.put("models", models);
-        List<String> tools = new ArrayList<>();
+        Set<String> tools = new LinkedHashSet<>(AgentToolCatalog.names());
         for (Map<String, Object> row : traceMapper.toolStats(range.from(), range.to())) {
             String tool = str(row.get("toolName"));
             if (tool != null) tools.add(tool);
         }
-        options.put("tools", tools);
+        List<String> sortedTools = new ArrayList<>(tools);
+        Collections.sort(sortedTools);
+        options.put("tools", sortedTools);
         options.put("statuses", List.of("SUCCESS", "FAILED", "TIMEOUT", "INTERRUPTED",
                 "MODEL_ERROR", "TOOL_ERROR", "BUSINESS_ERROR", "UNKNOWN", "GUARDED"));
         options.put("failureCategories", List.of("MODEL_ERROR", "TOOL_ERROR", "TIMEOUT",

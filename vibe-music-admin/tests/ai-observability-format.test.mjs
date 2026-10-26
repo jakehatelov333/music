@@ -116,6 +116,27 @@ test('模型调用增量消息排除 system，避免提示词重复展示', () =
   assert.equal(format.messagesWithoutSystem({ role: 'system' }), null)
 })
 
+test('异常筛选合并为一个条件，并映射到互斥的后端字段', () => {
+  const guarded = format.buildTraceQuery(
+    format.anomalyFilterQuery('guarded')
+  )
+  assert.equal(guarded.outputGuarded, true)
+  assert.equal('tokenAvailable' in guarded, false)
+
+  const unavailable = format.buildTraceQuery(
+    format.anomalyFilterQuery('tokenUnavailable')
+  )
+  assert.equal(unavailable.tokenAvailable, false)
+  assert.equal('outputGuarded' in unavailable, false)
+
+  assert.equal(format.anomalyFilterFromQuery({ outputGuarded: 'true' }), 'guarded')
+  assert.equal(
+    format.anomalyFilterFromQuery({ tokenAvailable: 'false' }),
+    'tokenUnavailable'
+  )
+  assert.equal(format.anomalyFilterFromQuery({}), '')
+})
+
 test('动态块状态翻译成人话', () => {
   assert.equal(format.blockStateLabel('INJECTED'), '已注入')
   assert.equal(format.blockStateLabel('SKIPPED_EMPTY'), '无数据，未注入')

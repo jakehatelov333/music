@@ -209,6 +209,33 @@ export function messagesWithoutSystem(
   ) as Array<Record<string, any>>;
 }
 
+/** Trace 检索页的低频异常筛选。 */
+export type AnomalyFilter = "" | "guarded" | "tokenUnavailable";
+
+/**
+ * 异常筛选 → 后端字段。
+ *
+ * 两个条件合并成一个下拉框，避免检索表单里平铺多个低频复选框。
+ * null 会在 buildTraceQuery 中被移除，表示不限制。
+ */
+export function anomalyFilterQuery(
+  filter: AnomalyFilter
+): Record<string, any> {
+  return {
+    outputGuarded: filter === "guarded" ? true : null,
+    tokenAvailable: filter === "tokenUnavailable" ? false : null
+  };
+}
+
+/** 从总览页带来的 URL 参数还原异常筛选。 */
+export function anomalyFilterFromQuery(
+  query: Record<string, any>
+): AnomalyFilter {
+  if (query?.outputGuarded === "true") return "guarded";
+  if (query?.tokenAvailable === "false") return "tokenUnavailable";
+  return "";
+}
+
 /** 时间范围快捷项（天）。 */
 export const RANGE_PRESETS = [
   { label: "最近 24 小时", hours: 24 },
