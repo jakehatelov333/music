@@ -10,6 +10,9 @@ import cn.edu.seig.vibemusic.model.vo.SongAdminVO;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.security.InvalidMediaException;
+import cn.edu.seig.vibemusic.security.MediaPolicy;
 import cn.edu.seig.vibemusic.service.*;
 import cn.edu.seig.vibemusic.util.BindingResultUtil;
 import jakarta.validation.Valid;
@@ -50,6 +53,10 @@ public class AdminController {
     private IPlaylistService playlistService;
     @Autowired
     private MinioService minioService;
+    @Autowired
+    private ImageStorageService imageStorageService;
+    @Autowired
+    private IAudioMetadataService audioMetadataService;
 
     // 管理员注册端点（POST /admin/register）已于 2026-10-15 下线。
     // 原因：该路径曾被 WebConfig 排除鉴权，匿名调用者可创建管理员并登录管理端。
@@ -295,7 +302,7 @@ public class AdminController {
      */
     @PatchMapping("/updateArtistAvatar/{id}")
     public Result updateArtistAvatar(@PathVariable("id") Long artistId, @RequestParam("avatar") MultipartFile avatar) {
-        String avatarUrl = minioService.uploadFile(avatar, "artists");  // 上传到 artists 目录
+        String avatarUrl = imageStorageService.storeAvatar(avatar, "artists");
         Result result = artistService.updateArtistAvatar(artistId, avatarUrl);
         if (result.getCode() != 0) {
             // 歌手不存在 / 改库失败时，刚上传的这个对象没有任何行引用它，
@@ -405,8 +412,12 @@ public class AdminController {
      */
     @PatchMapping("/updateSongCover/{id}")
     public Result updateSongCover(@PathVariable("id") Long songId, @RequestParam("cover") MultipartFile cover) {
-        String coverUrl = minioService.uploadFile(cover, "songCovers");  // 上传到 songCovers 目录
-        return songService.updateSongCover(songId, coverUrl);
+        String coverUrl = imageStorageService.storeCover(cover, "songCovers");
+        Result result = songService.updateSongCover(songId, coverUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(coverUrl, "歌曲封面更新失败");
+        }
+        return result;
     }
 
     /**
@@ -418,8 +429,23 @@ public class AdminController {
      */
     @PatchMapping("/updateSongAudio/{id}")
     public Result updateSongAudio(@PathVariable("id") Long songId, @RequestParam("audio") MultipartFile audio) {
-        String audioUrl = minioService.uploadFile(audio, "songs");  // 上传到 songs 目录
-        return songService.updateSongAudio(songId, audioUrl);
+        if (audio == null || audio.isEmpty()) {
+            return Result.error("请选择音频文件");
+        }
+        if (!MediaPolicy.SONG_AUDIO_EXTENSIONS.contains(MediaPolicy.extensionOf(audio.getOriginalFilename()))) {
+            return Result.error("仅支持 MP3、FLAC、WAV 格式的音频文件");
+        }
+        try {
+            audioMetadataService.parse(audio);
+        } catch (InvalidMediaException e) {
+            return Result.error(e.getMessage());
+        }
+        String audioUrl = minioService.uploadFile(audio, "songs");
+        Result result = songService.updateSongAudio(songId, audioUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(audioUrl, "歌曲音频更新失败");
+        }
+        return result;
     }
 
     /**
@@ -487,8 +513,12 @@ public class AdminController {
     @PatchMapping("/updateAlbumCover/{id}")
     public Result updateAlbumCover(@PathVariable("id") Long albumId,
                                    @RequestParam("cover") MultipartFile cover) {
-        String coverUrl = minioService.uploadFile(cover, "albumCovers");
-        return albumService.updateAlbumCover(albumId, coverUrl);
+        String coverUrl = imageStorageService.storeCover(cover, "albumCovers");
+        Result result = albumService.updateAlbumCover(albumId, coverUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(coverUrl, "专辑封面更新失败");
+        }
+        return result;
     }
 
     /**
@@ -621,8 +651,12 @@ public class AdminController {
      */
     @PatchMapping("/updatePlaylistCover/{id}")
     public Result updatePlaylistCover(@PathVariable("id") Long playlistId, @RequestParam("cover") MultipartFile cover) {
-        String coverUrl = minioService.uploadFile(cover, "playlists");  // 上传到 playlists 目录
-        return playlistService.updatePlaylistCover(playlistId, coverUrl);
+        String coverUrl = imageStorageService.storeCover(cover, "playlists");
+        Result result = playlistService.updatePlaylistCover(playlistId, coverUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(coverUrl, "歌单封面更新失败");
+        }
+        return result;
     }
 
     /**
@@ -647,4 +681,11 @@ public class AdminController {
         return playlistService.deletePlaylists(playlistIds);
     }
 
+    private void deleteUploadedObject(String url, String operation) {
+        try {
+            minioService.deleteFile(url);
+        } catch (RuntimeException e) {
+            log.warn("{}后回收新对象失败，需人工处理：url={}", operation, url, e);
+        }
+    }
 }

@@ -7,18 +7,17 @@ import cn.edu.seig.vibemusic.mapper.AdminMapper;
 import cn.edu.seig.vibemusic.model.dto.AdminDTO;
 import cn.edu.seig.vibemusic.model.entity.Admin;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.PasswordService;
+import cn.edu.seig.vibemusic.security.TokenExtractor;
 import cn.edu.seig.vibemusic.service.IAdminService;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.util.DigestUtils;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -34,7 +33,9 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
     @Autowired
     private AdminMapper adminMapper;
     @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    private PasswordService passwordService;
+    @Autowired
+    private AuthSessionService authSessionService;
 
     /**
      * 管理员注册。
@@ -53,9 +54,9 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
             return Result.error(MessageConstant.USERNAME + MessageConstant.ALREADY_EXISTS);
         }
 
-        String passwordMD5 = DigestUtils.md5DigestAsHex(adminDTO.getPassword().getBytes());
+        String passwordHash = passwordService.encode(adminDTO.getPassword());
         Admin adminRegister = new Admin();
-        adminRegister.setUsername(adminDTO.getUsername()).setPassword(passwordMD5);
+        adminRegister.setUsername(adminDTO.getUsername()).setPassword(passwordHash).setAuthVersion(0L);
 
         if (adminMapper.insert(adminRegister) == 0) {
             return Result.error(MessageConstant.REGISTER + MessageConstant.FAILED);
@@ -73,24 +74,28 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
     public Result login(AdminDTO adminDTO) {
         Admin admin = adminMapper.selectOne(new QueryWrapper<Admin>().eq("username", adminDTO.getUsername()));
         if (admin == null) {
-            return Result.error(MessageConstant.USERNAME + MessageConstant.ERROR);
+            passwordService.dummyMatch(adminDTO.getPassword());
+            return Result.error(MessageConstant.LOGIN + MessageConstant.FAILED);
         }
-
-        if (DigestUtils.md5DigestAsHex(adminDTO.getPassword().getBytes()).equals(admin.getPassword())) {
-            // 登录成功
-            Map<String, Object> claims = new HashMap<>();
-            claims.put(JwtClaimsConstant.ROLE, RoleEnum.ADMIN.getRole());
-            claims.put(JwtClaimsConstant.ADMIN_ID, admin.getAdminId());
-            claims.put(JwtClaimsConstant.USERNAME, admin.getUsername());
-            String token = JwtUtil.generateToken(claims);
-
-            // 将token存入redis
-            stringRedisTemplate.opsForValue().set(token, token, 6, TimeUnit.HOURS);
-
-            return Result.success(MessageConstant.LOGIN + MessageConstant.SUCCESS, token);
+        if (!passwordService.matches(adminDTO.getPassword(), admin.getPassword())) {
+            return Result.error(MessageConstant.LOGIN + MessageConstant.FAILED);
         }
+        if (passwordService.needsUpgrade(admin.getPassword())) {
+            adminMapper.update(new Admin().setPassword(passwordService.encode(adminDTO.getPassword())),
+                    new QueryWrapper<Admin>().eq("id", admin.getAdminId()));
+        }
+        Map<String, Object> claims = new HashMap<>();
+        claims.put(JwtClaimsConstant.ROLE, RoleEnum.ADMIN.getRole());
+        claims.put(JwtClaimsConstant.ADMIN_ID, admin.getAdminId());
+        claims.put(JwtClaimsConstant.USERNAME, admin.getUsername());
+        Long authVersion = adminMapper.selectAuthVersionById(admin.getAdminId());
+        if (authVersion == null) {
+            throw new IllegalStateException("管理员缺少 auth_version，请先执行 phase14_auth_hardening.sql");
+        }
+        claims.put(JwtClaimsConstant.AUTH_VERSION, authVersion);
+        String token = authSessionService.createSession(claims);
 
-        return Result.error(MessageConstant.PASSWORD + MessageConstant.ERROR);
+        return Result.success(MessageConstant.LOGIN + MessageConstant.SUCCESS, token);
     }
 
     /**
@@ -101,12 +106,7 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
      */
     @Override
     public Result logout(String token) {
-        // 注销token
-        Boolean result = stringRedisTemplate.delete(token);
-        if (result != null && result) {
-            return Result.success(MessageConstant.LOGOUT + MessageConstant.SUCCESS);
-        } else {
-            return Result.error(MessageConstant.LOGOUT + MessageConstant.FAILED);
-        }
+        authSessionService.logout(TokenExtractor.extract(token));
+        return Result.success(MessageConstant.LOGOUT + MessageConstant.SUCCESS);
     }
 }

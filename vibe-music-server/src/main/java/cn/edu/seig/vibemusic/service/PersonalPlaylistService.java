@@ -10,6 +10,7 @@ import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
 import cn.edu.seig.vibemusic.model.vo.PlaylistVO;
 import cn.edu.seig.vibemusic.result.PageResult;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -37,8 +38,6 @@ import java.util.Objects;
 @Service
 @RequiredArgsConstructor
 public class PersonalPlaylistService {
-    /** Cover uploads are small square images; anything larger is rejected before touching object storage. */
-    private static final long MAX_COVER_BYTES = 5L * 1024 * 1024;
     private static final String COVER_FOLDER = "playlists";
 
     private final PlaylistMapper playlists;
@@ -49,7 +48,7 @@ public class PersonalPlaylistService {
     private final IPlaylistService playlistDetails;
     private final ObjectMapper json;
     private final Validator validator;
-    private final MinioService minioService;
+    private final ImageStorageService imageStorageService;
     private final MediaCleanupService mediaCleanupService;
 
     public PageResult<PlaylistVO> mine(PlaylistDTO query) {
@@ -137,10 +136,9 @@ public class PersonalPlaylistService {
     @Transactional
     public PlaylistDetailVO updateCover(Long playlistId, MultipartFile cover) {
         Playlist playlist = access.lockOwned(playlistId);
-        validateCover(cover);
         String previous = playlist.getCoverUrl();
         boolean previousWasCustom = Boolean.TRUE.equals(playlist.getCoverIsCustom());
-        String coverUrl = minioService.uploadFile(cover, COVER_FOLDER);
+        String coverUrl = imageStorageService.storeCover(cover, COVER_FOLDER);
         if (coverUrl == null || coverUrl.isBlank())
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "封面上传失败，请稍后重试");
         playlist.setCoverUrl(coverUrl).setCoverIsCustom(true);
@@ -176,16 +174,6 @@ public class PersonalPlaylistService {
         if (derived == null || derived.isBlank()) return;
         playlist.setCoverUrl(derived);
         playlists.updateById(playlist);
-    }
-
-    private void validateCover(MultipartFile cover) {
-        if (cover == null || cover.isEmpty())
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要上传的封面图片");
-        if (cover.getSize() > MAX_COVER_BYTES)
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "封面图片不能超过 5 MB");
-        String contentType = cover.getContentType();
-        if (contentType == null || !contentType.toLowerCase().startsWith("image/"))
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "封面仅支持 JPG、PNG、WebP 等图片格式");
     }
 
     private void enqueueCoverCleanup(Playlist playlist) {

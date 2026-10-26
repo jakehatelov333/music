@@ -38,8 +38,10 @@ public class UserDTO implements Serializable {
     /**
      * 用户邮箱
      */
-    @NotBlank(message = MessageConstant.EMAIL + MessageConstant.NOT_NULL)
-    @Email(message = MessageConstant.EMAIL + MessageConstant.FORMAT_ERROR)
+    /**
+     * 只读回显字段。服务端不会用资料更新请求修改邮箱；换绑必须走
+     * /user/changeEmail 的双邮箱验证码流程。
+     */
     private String email;
 
     /**

@@ -11,6 +11,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
@@ -24,6 +27,9 @@ import java.util.Map;
 @Slf4j
 @Component
 public class LyricsHttpClient {
+
+    /** A lyrics payload is text; 2 MB leaves ample room while bounding a hostile response. */
+    static final long MAX_RESPONSE_BYTES = 2L * 1024 * 1024;
 
     /** 依据配置构建 HttpClient（连接超时、读取超时、可选代理） */
     public HttpClient create(LyricsProperties.Provider config, String proxy) {
@@ -60,13 +66,28 @@ public class LyricsHttpClient {
                         .GET();
                 headers.forEach(requestBuilder::header);
 
-                HttpResponse<byte[]> response = client.send(
-                        requestBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+                HttpResponse<InputStream> response = client.send(
+                        requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
                 int status = response.statusCode();
 
                 if (status == 200) {
-                    return new String(response.body(), StandardCharsets.UTF_8);
+                    long declared = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                    if (declared > MAX_RESPONSE_BYTES) {
+                        closeQuietly(response.body());
+                        log.warn("歌词源 {} 响应超过 {} 字节上限，已拒绝", source, MAX_RESPONSE_BYTES);
+                        return null;
+                    }
+                    try (InputStream input = response.body()) {
+                        byte[] content = readAtMost(input, MAX_RESPONSE_BYTES);
+                        if (content == null) {
+                            log.warn("歌词源 {} 响应超过 {} 字节上限，已中止读取",
+                                    source, MAX_RESPONSE_BYTES);
+                            return null;
+                        }
+                        return new String(content, StandardCharsets.UTF_8);
+                    }
                 }
+                closeQuietly(response.body());
                 if (status == 429 || status >= 500) {
                     log.debug("歌词源 {} 返回 {}，第 {}/{} 次尝试", source, status, attempt, attempts);
                 } else {
@@ -91,6 +112,32 @@ public class LyricsHttpClient {
         }
         log.warn("歌词源 {} 重试 {} 次后仍失败", source, maxRetries);
         return null;
+    }
+
+    private static byte[] readAtMost(InputStream input, long maxBytes) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        long total = 0;
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            total += read;
+            if (total > maxBytes) {
+                return null;
+            }
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
+    }
+
+    private static void closeQuietly(InputStream input) {
+        if (input == null) {
+            return;
+        }
+        try {
+            input.close();
+        } catch (IOException ignored) {
+            // The response is already being discarded.
+        }
     }
 
 }

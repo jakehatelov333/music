@@ -4,6 +4,7 @@ import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.*;
 import cn.edu.seig.vibemusic.model.agent.AgentContext;
 import cn.edu.seig.vibemusic.model.agent.AgentEvent;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.service.IPlaylistService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
@@ -389,7 +390,8 @@ public abstract class AbstractAgentTest {
                                                PlaylistAccessService access, IPlaylistService details,
                                                ObjectMapper json, Validator validator, MinioService minio,
                                                MediaCleanupService mediaCleanup) {
-            return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator, minio, mediaCleanup);
+            return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator,
+                    new ImageStorageService(minio), mediaCleanup);
         }
 
         @Bean SongArtistService songArtistService(SongArtistMapper mapper, ArtistMapper artists) {

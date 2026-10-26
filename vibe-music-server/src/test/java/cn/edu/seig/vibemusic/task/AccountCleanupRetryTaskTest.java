@@ -36,7 +36,7 @@ class AccountCleanupRetryTaskTest {
         mapper = mock(AccountCleanupTaskMapper.class);
         redis = mock(StringRedisTemplate.class);
         minio = mock(MinioService.class);
-        task = new AccountCleanupRetryTask(mapper, redis, minio);
+        task = new AccountCleanupRetryTask(mapper, minio);
     }
 
     private AccountCleanupTask task(long id, String type, String ref, int attempts) {
@@ -52,14 +52,14 @@ class AccountCleanupRetryTaskTest {
     }
 
     @Test
-    @DisplayName("Redis token 重试成功：作废 token 并标记 DONE")
+    @DisplayName("历史明文 token 任务不再读取或删除 token，直接标记 DONE")
     void retriesRedisTokenCleanup() {
         when(mapper.findRetryable(anyInt(), anyInt()))
                 .thenReturn(List.of(task(1L, "REDIS_TOKEN", "t", 0)));
 
         task.retryPendingCleanups();
 
-        verify(redis).delete("t");
+        verify(redis, never()).delete("t");
         verify(mapper).markDone(eq(1L), any());
     }
 

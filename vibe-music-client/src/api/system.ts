@@ -32,10 +32,16 @@ export const logout = () => {
   return http<Result>('post', '/user/logout')
 }
 
-/** 发送邮箱验证码 */
-export const sendEmailCode = (email: string) => {
+export type VerificationPurpose =
+  | 'REGISTER'
+  | 'RESET_PASSWORD'
+  | 'EMAIL_CHANGE_OLD'
+  | 'EMAIL_CHANGE_NEW'
+
+/** 发送邮箱验证码；用途隔离可阻止注册码被重放到改密/换绑。 */
+export const sendEmailCode = (email: string, purpose: VerificationPurpose) => {
   return http<Result>('get', '/user/sendVerificationCode', {
-    params: { email },
+    params: { email, purpose },
   })
 }
 
@@ -56,6 +62,17 @@ export const changePassword = (data: {
   repeatPassword: string
 }) => {
   return http<Result>('patch', '/user/updateUserPassword', { data })
+}
+
+/** 换绑恢复邮箱：当前密码 + 原邮箱验证码 + 新邮箱验证码。 */
+export const changeEmail = (data: {
+  currentPassword: string
+  oldEmail: string
+  oldEmailCode: string
+  newEmail: string
+  newEmailCode: string
+}) => {
+  return http<Result>('patch', '/user/changeEmail', { data })
 }
 
 /** 获取用户信息 */

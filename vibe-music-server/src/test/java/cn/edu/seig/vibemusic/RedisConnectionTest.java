@@ -8,7 +8,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+        "minio.accessKey=test-access",
+        "minio.secretKey=test-secret"
+})
 public class RedisConnectionTest {
 
     @Autowired

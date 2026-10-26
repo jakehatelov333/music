@@ -13,7 +13,6 @@ import cn.edu.seig.vibemusic.service.agent.MusicTasteSummaryService;
 import cn.edu.seig.vibemusic.service.agent.UserMusicProfileService;
 import cn.edu.seig.vibemusic.service.ai.AiAssistantFactory;
 import cn.edu.seig.vibemusic.service.ai.AiRunBudget;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.service.TokenStream;
@@ -21,7 +20,6 @@ import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.*;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
@@ -42,7 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AiControllerSecurityTest {
     private final IAiService service = mock(IAiService.class);
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
-    @SuppressWarnings("unchecked") private final ValueOperations<String, String> values = mock(ValueOperations.class);
+    private final AuthSessionService sessions = mock(AuthSessionService.class);
     private final AiAssistantFactory factory = mock(AiAssistantFactory.class);
     private final RedisRateLimiter limiter = mock(RedisRateLimiter.class);
     private final ChatSummaryService chatSummaries = mock(ChatSummaryService.class);
@@ -56,9 +54,11 @@ class AiControllerSecurityTest {
     private String token;
 
     @BeforeEach void setup() {
-        when(redis.opsForValue()).thenReturn(values);
-        token = JwtUtil.generateToken(Map.of(JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER"));
-        when(values.get(token)).thenReturn(token);
+        when(redis.opsForValue()).thenReturn(mock(org.springframework.data.redis.core.ValueOperations.class));
+        token = "valid-user-token";
+        Map<String, Object> claims = Map.of(
+                JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER");
+        when(sessions.authenticate(token)).thenReturn(claims);
         when(factory.timeout()).thenReturn(Duration.ofSeconds(2));
         cn.edu.seig.vibemusic.service.agent.ConversationService conversations =
                 new cn.edu.seig.vibemusic.service.agent.ConversationService(aiMapper,
@@ -67,7 +67,7 @@ class AiControllerSecurityTest {
         LoginInterceptor login = new LoginInterceptor();
         RolePermissionManager roles = mock(RolePermissionManager.class);
         when(roles.hasPermission(eq("ROLE_USER"), org.mockito.ArgumentMatchers.startsWith("/ai/"))).thenReturn(true);
-        ReflectionTestUtils.setField(login, "stringRedisTemplate", redis);
+        ReflectionTestUtils.setField(login, "authSessionService", sessions);
         ReflectionTestUtils.setField(login, "rolePermissionManager", roles);
         ReflectionTestUtils.setField(login, "objectMapper", new ObjectMapper());
         mvc = MockMvcBuilders.standaloneSetup(new AiController(service, new AiSessionService(redis, conversations),
@@ -115,6 +115,9 @@ class AiControllerSecurityTest {
     }
 
     @Test void invalidLoginTokenIsNotDowngradedToGuest() throws Exception {
+        doThrow(new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.UNAUTHORIZED, "会话已失效"))
+                .when(sessions).authenticate("invalid");
         mvc.perform(get("/ai/chat/history").header("Authorization", "invalid"))
                 .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(1));
         verifyNoInteractions(service);

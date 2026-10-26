@@ -10,7 +10,6 @@ import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.impl.SongServiceImpl;
 import cn.edu.seig.vibemusic.service.impl.PlaylistServiceImpl;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -42,10 +41,7 @@ class PublicResponseIsolationTest {
     }
 
     private static MockHttpServletRequest loggedIn() {
-        MockHttpServletRequest request = new MockHttpServletRequest();
-        request.addHeader("Authorization", JwtUtil.generateToken(Map.of(
-                JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER")));
-        return request;
+        return new MockHttpServletRequest();
     }
 
     @Test void songDetailsDoNotReuseAnotherUsersFavoriteStatus() {
@@ -61,7 +57,9 @@ class PublicResponseIsolationTest {
         // 本用例只关心缓存隔离，歌手关系用替身即可（读路径装配 artists 不影响 likeStatus）。
         ReflectionTestUtils.setField(target, "songArtistService", mock(SongArtistService.class));
         SongServiceImpl service = withCaching(target);
+        ThreadLocalUtil.set(Map.of(JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER"));
         assertEquals(1, service.getSongDetail(8L, loggedIn()).getData().getLikeStatus());
+        ThreadLocalUtil.remove();
         assertEquals(0, service.getSongDetail(8L, new MockHttpServletRequest()).getData().getLikeStatus());
     }
 

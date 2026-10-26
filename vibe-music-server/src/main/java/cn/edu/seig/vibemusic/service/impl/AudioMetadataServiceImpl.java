@@ -1,6 +1,8 @@
 package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
+import cn.edu.seig.vibemusic.security.InvalidMediaException;
+import cn.edu.seig.vibemusic.security.MediaPolicy;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import lombok.extern.slf4j.Slf4j;
 import org.jaudiotagger.audio.AudioFile;
@@ -16,7 +18,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.InputStream;
-import java.nio.file.StandardCopyOption;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,6 +37,7 @@ public class AudioMetadataServiceImpl implements IAudioMetadataService {
 
     @Override
     public AudioMetadataDTO parse(MultipartFile audio) {
+        validateDeclaredAudio(audio);
         String extension = extensionOf(audio.getOriginalFilename());
         AudioMetadataDTO result = AudioMetadataDTO.builder()
                 .audioFormat(extension.toUpperCase(Locale.ROOT))
@@ -53,6 +57,7 @@ public class AudioMetadataServiceImpl implements IAudioMetadataService {
             fillArtwork(result, audioFile);
         } catch (Exception e) {
             log.warn("音频元数据解析失败，file={}, reason={}", audio.getOriginalFilename(), e.getMessage());
+            throw new InvalidMediaException("无法解析音频文件，请确认文件未损坏且格式正确", e);
         } finally {
             if (tempFile != null) {
                 try {
@@ -63,29 +68,85 @@ public class AudioMetadataServiceImpl implements IAudioMetadataService {
             }
         }
 
+        requireDuration(result);
         applyFilenameFallback(result, audio.getOriginalFilename());
         return result;
     }
 
     @Override
     public AudioMetadataDTO parse(InputStream input, String fileName, long size) {
+        validateDeclaredAudio(fileName, size);
         String extension = extensionOf(fileName);
         AudioMetadataDTO result = AudioMetadataDTO.builder().audioFormat(extension.toUpperCase(Locale.ROOT)).build();
         Path tempFile = null;
         try {
             tempFile = Files.createTempFile("vibe-music-staging-", extension.isEmpty() ? ".tmp" : "." + extension);
-            Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING);
+            copyBounded(input, tempFile, size);
             AudioFile audioFile = readAudioFile(tempFile, extension);
             fillAudioHeader(result, audioFile);
             fillTags(result, audioFile);
             fillArtwork(result, audioFile);
         } catch (Exception e) {
             log.warn("staging 音频元数据解析失败，file={}, reason={}", fileName, e.getMessage());
+            throw new InvalidMediaException("无法解析音频文件，请确认文件未损坏且格式正确", e);
         } finally {
             if (tempFile != null) try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
         }
+        requireDuration(result);
         applyFilenameFallback(result, fileName);
         return result;
+    }
+
+    private void validateDeclaredAudio(MultipartFile audio) {
+        if (audio == null || audio.isEmpty()) {
+            throw new InvalidMediaException("请选择音频文件");
+        }
+        validateDeclaredAudio(audio.getOriginalFilename(), audio.getSize());
+    }
+
+    private void validateDeclaredAudio(String fileName, long size) {
+        if (size <= 0 || size > MediaPolicy.MAX_AUDIO_BYTES) {
+            throw new InvalidMediaException("单个音频不能超过 200 MB");
+        }
+        String extension = extensionOf(fileName);
+        if (!MediaPolicy.SONG_AUDIO_EXTENSIONS.contains(extension)
+                && !MediaPolicy.ALBUM_AUDIO_EXTENSIONS.contains(extension)) {
+            throw new InvalidMediaException("不支持的音频格式");
+        }
+    }
+
+    /**
+     * Copy only the declared object size and fail if the stream contains more bytes.
+     */
+    private void copyBounded(InputStream input, Path target, long declaredSize) throws IOException {
+        if (input == null) {
+            throw new InvalidMediaException("音频内容为空");
+        }
+        try (OutputStream output = Files.newOutputStream(target)) {
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > declaredSize || total > MediaPolicy.MAX_AUDIO_BYTES) {
+                    throw new InvalidMediaException("音频实际大小与声明不一致");
+                }
+                output.write(buffer, 0, read);
+            }
+            if (total != declaredSize) {
+                throw new InvalidMediaException("音频实际大小与声明不一致");
+            }
+        }
+    }
+
+    private void requireDuration(AudioMetadataDTO metadata) {
+        Double duration = metadata.getDurationSeconds();
+        if (!metadata.isDurationParsed() || duration == null || duration <= 0) {
+            throw new InvalidMediaException("无法读取音频时长，文件可能已损坏");
+        }
+        if (duration > MediaPolicy.MAX_AUDIO_DURATION_SECONDS) {
+            throw new InvalidMediaException("音频时长不能超过 6 小时");
+        }
     }
 
     private AudioFile readAudioFile(Path tempFile, String extension) throws Exception {

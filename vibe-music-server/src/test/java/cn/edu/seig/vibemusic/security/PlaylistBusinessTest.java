@@ -9,10 +9,10 @@ import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.PersonalPlaylistService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.service.TestImages;
 import cn.edu.seig.vibemusic.service.impl.PlaylistServiceImpl;
 import cn.edu.seig.vibemusic.tool.MusicTools;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
@@ -102,8 +102,7 @@ class PlaylistBusinessTest {
     @Test void rawAuthorizationHeaderDoesNotGrantPrivateAccessWithoutVerifiedIdentity() {
         Long id = personal.create("create-request-auth", create("Private", List.of())).getPlaylistId();
         MockHttpServletRequest request = new MockHttpServletRequest();
-        request.addHeader("Authorization", "Bearer " + JwtUtil.generateToken(Map.of(
-                JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER")));
+        request.addHeader("Authorization", "Bearer fabricated-token");
         ThreadLocalUtil.remove();
         assertStatus(404, () -> details.getPlaylistDetail(id, request));
     }
@@ -316,10 +315,11 @@ class PlaylistBusinessTest {
 
     @Test void customCoverIsPersistedAndNeverOverwrittenBySongAdditions() {
         jdbc.update("INSERT INTO tb_song(id,name,cover_url) VALUES (20,'Covered A','http://minio/a.jpg')");
-        when(minio.uploadFile(any(), anyString())).thenReturn("http://minio/uploaded.jpg");
+        when(minio.uploadBytes(any(), anyString(), anyString(), anyString()))
+                .thenReturn("http://minio/uploaded.jpg");
         Long id = personal.create("create-request-custom", create("Custom", List.of(20L))).getPlaylistId();
 
-        var uploaded = personal.updateCover(id, image("cover.png", "image/png", new byte[]{1, 2, 3}));
+        var uploaded = personal.updateCover(id, image("cover.png", "image/png", TestImages.png()));
         assertEquals("http://minio/uploaded.jpg", uploaded.getCoverUrl());
         assertTrue(uploaded.getCoverIsCustom());
 
@@ -431,7 +431,8 @@ class PlaylistBusinessTest {
                 PlaylistCreateRequestMapper receipts, SongMapper songs, PlaylistAccessService access,
                 IPlaylistService details, ObjectMapper json, Validator validator, MinioService minio,
                 MediaCleanupService mediaCleanup) {
-            return new PersonalPlaylistService(mapper,bindings,receipts,songs,access,details,json,validator,minio,mediaCleanup);
+            return new PersonalPlaylistService(mapper,bindings,receipts,songs,access,details,json,validator,
+                    new ImageStorageService(minio),mediaCleanup);
         }
         @Bean MusicTools tools(PlaylistMapper playlists) {
             return new MusicTools(mock(cn.edu.seig.vibemusic.service.agent.AgentSongQueryService.class),

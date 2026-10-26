@@ -1,11 +1,9 @@
 package cn.edu.seig.vibemusic.service.impl;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LyricStatusEnum;
-import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.GenreMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -25,12 +23,11 @@ import cn.edu.seig.vibemusic.model.vo.SongDetailVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.CurrentUser;
 import cn.edu.seig.vibemusic.service.ISongService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
-import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -89,16 +86,7 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     @Override
     // 返回值包含当前用户收藏状态，不能复用公共响应缓存。
     public Result<PageResult<SongVO>> getAllSongs(SongDTO songDTO, HttpServletRequest request) {
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7); // 去掉 "Bearer " 前缀
-        }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
+        Long userId = CurrentUser.optionalUserId();
 
         // 查询歌曲列表
         Page<SongVO> page = new Page<>(songDTO.getPageNum(), songDTO.getPageSize());
@@ -112,28 +100,21 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
                 .peek(songVO -> songVO.setLikeStatus(LikeStatusEnum.DEFAULT.getId()))
                 .toList();
 
-        // 如果 token 解析成功且用户为登录状态，进一步操作
-        if (map != null) {
-            String role = (String) map.get(JwtClaimsConstant.ROLE);
-            if (role.equals(RoleEnum.USER.getRole())) {
-                Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-                Long userId = TypeConversionUtil.toLong(userIdObj);
+        if (userId != null) {
+            // 获取用户收藏的歌曲
+            List<UserFavorite> favoriteSongs = userFavoriteMapper.selectList(new QueryWrapper<UserFavorite>()
+                    .eq("user_id", userId)
+                    .eq("type", 0));
 
-                // 获取用户收藏的歌曲
-                List<UserFavorite> favoriteSongs = userFavoriteMapper.selectList(new QueryWrapper<UserFavorite>()
-                        .eq("user_id", userId)
-                        .eq("type", 0));
+            // 获取用户收藏的歌曲 id
+            Set<Long> favoriteSongIds = favoriteSongs.stream()
+                    .map(UserFavorite::getSongId)
+                    .collect(Collectors.toSet());
 
-                // 获取用户收藏的歌曲 id
-                Set<Long> favoriteSongIds = favoriteSongs.stream()
-                        .map(UserFavorite::getSongId)
-                        .collect(Collectors.toSet());
-
-                // 检查并更新状态
-                for (SongVO songVO : songVOList) {
-                    if (favoriteSongIds.contains(songVO.getSongId())) {
-                        songVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
-                    }
+            // 检查并更新状态
+            for (SongVO songVO : songVOList) {
+                if (favoriteSongIds.contains(songVO.getSongId())) {
+                    songVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
                 }
             }
         }
@@ -191,24 +172,12 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
      */
     @Override
     public Result<List<SongVO>> getRecommendedSongs(HttpServletRequest request) {
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7);  // 去掉 "Bearer " 前缀
-        }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
+        Long userId = CurrentUser.optionalUserId();
 
         // 用户未登录，返回随机歌曲列表
-        if (map == null) {
+        if (userId == null) {
             return Result.success(songMapper.getRandomSongsWithArtist());
         }
-
-        // 获取用户 ID
-        Long userId = TypeConversionUtil.toLong(map.get(JwtClaimsConstant.USER_ID));
 
         // 查询用户收藏的歌曲 ID  如果没有 则随机返回
         List<Long> favoriteSongIds = userFavoriteMapper.getFavoriteSongIdsByUserId(userId);
@@ -274,32 +243,15 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     public Result<SongDetailVO> getSongDetail(Long songId, HttpServletRequest request) {
         SongDetailVO songDetailVO = songMapper.getSongDetailById(songId);
 
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7);  // 去掉 "Bearer " 前缀
-        }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
-
-        // 如果 token 解析成功且用户为登录状态，进一步操作
-        if (map != null) {
-            String role = (String) map.get(JwtClaimsConstant.ROLE);
-            if (role.equals(RoleEnum.USER.getRole())) {
-                Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-                Long userId = TypeConversionUtil.toLong(userIdObj);
-
-                // 获取用户收藏的歌曲
-                UserFavorite favoriteSong = userFavoriteMapper.selectOne(new QueryWrapper<UserFavorite>()
-                        .eq("user_id", userId)
-                        .eq("type", 0)
-                        .eq("song_id", songId));
-                if (favoriteSong != null) {
-                    songDetailVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
-                }
+        Long userId = CurrentUser.optionalUserId();
+        if (userId != null) {
+            // 获取用户收藏的歌曲
+            UserFavorite favoriteSong = userFavoriteMapper.selectOne(new QueryWrapper<UserFavorite>()
+                    .eq("user_id", userId)
+                    .eq("type", 0)
+                    .eq("song_id", songId));
+            if (favoriteSong != null) {
+                songDetailVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
             }
         }
 
@@ -618,6 +570,9 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result updateSongCover(Long songId, String coverUrl) {
         Song song = songMapper.selectById(songId);
+        if (song == null) {
+            return Result.error(MessageConstant.SONG + MessageConstant.NOT_FOUND);
+        }
         String oldCover = song.getCoverUrl();
 
         song.setCoverUrl(coverUrl);
@@ -643,6 +598,9 @@ public class SongServiceImpl extends ServiceImpl<SongMapper, Song> implements IS
     @CacheEvict(cacheNames = "songCache", allEntries = true)
     public Result updateSongAudio(Long songId, String audioUrl) {
         Song song = songMapper.selectById(songId);
+        if (song == null) {
+            return Result.error(MessageConstant.SONG + MessageConstant.NOT_FOUND);
+        }
         String oldAudio = song.getAudioUrl();
 
         song.setAudioUrl(audioUrl);

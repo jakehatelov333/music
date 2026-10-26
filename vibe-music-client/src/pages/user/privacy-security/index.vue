@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { reactive, ref, onMounted } from 'vue'
+import { reactive, ref, onMounted, onUnmounted } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { UserStore } from '@/stores/modules/user'
 import AuthTabs from '@/components/Auth/AuthTabs.vue'
-import { changePassword, logout, deleteUser } from '@/api/system'
+import { changePassword, changeEmail, logout, deleteUser, sendEmailCode } from '@/api/system'
 import { clearAllConversations } from '@/api/ai'
 import { maskEmail, maskPhone } from '@/utils/mask'
 import { PASSWORD_PATTERN, PASSWORD_RULE_MESSAGE } from '@/utils/password'
@@ -86,6 +86,133 @@ const handleChangePassword = async () => {
 
 const maskedEmail = maskEmail(userStore.userInfo.email)
 const maskedPhone = maskPhone(userStore.userInfo.phone) || '未绑定'
+
+/* ---------------- 账号安全：换绑恢复邮箱 ---------------- */
+
+const emailDialogVisible = ref(false)
+const emailFormRef = ref<FormInstance>()
+const emailSubmitting = ref(false)
+const oldCodeCountdown = ref(0)
+const newCodeCountdown = ref(0)
+let oldCodeTimer: ReturnType<typeof setInterval> | null = null
+let newCodeTimer: ReturnType<typeof setInterval> | null = null
+
+const emailForm = reactive({
+  currentPassword: '',
+  oldEmail: userStore.userInfo.email || '',
+  oldEmailCode: '',
+  newEmail: '',
+  newEmailCode: '',
+})
+
+const codePattern = /^[0-9a-zA-Z]{6}$/
+const emailRules = reactive<FormRules>({
+  currentPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  oldEmail: [
+    { required: true, message: '原邮箱不能为空', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' },
+  ],
+  oldEmailCode: [
+    { required: true, message: '请输入原邮箱验证码', trigger: 'blur' },
+    { pattern: codePattern, message: '验证码为 6 位字母或数字', trigger: 'blur' },
+  ],
+  newEmail: [
+    { required: true, message: '请输入新邮箱', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' },
+    {
+      validator: (_rule, value: string, callback) => {
+        if (value && value.toLowerCase() === emailForm.oldEmail.toLowerCase()) {
+          callback(new Error('新邮箱不能与原邮箱相同'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+  newEmailCode: [
+    { required: true, message: '请输入新邮箱验证码', trigger: 'blur' },
+    { pattern: codePattern, message: '验证码为 6 位字母或数字', trigger: 'blur' },
+  ],
+})
+
+function startCountdown(target: typeof oldCodeCountdown, timerRef: 'old' | 'new') {
+  target.value = 60
+  const timer = setInterval(() => {
+    target.value--
+    if (target.value <= 0) {
+      clearInterval(timer)
+      if (timerRef === 'old') oldCodeTimer = null
+      else newCodeTimer = null
+    }
+  }, 1000)
+  if (timerRef === 'old') oldCodeTimer = timer
+  else newCodeTimer = timer
+}
+
+const sendOldEmailCode = async () => {
+  if (!emailForm.oldEmail) {
+    ElMessage.warning('原邮箱不能为空')
+    return
+  }
+  const response = await sendEmailCode(emailForm.oldEmail, 'EMAIL_CHANGE_OLD')
+  if (response.code === 0) {
+    ElMessage.success('原邮箱验证码已发送')
+    startCountdown(oldCodeCountdown, 'old')
+  } else {
+    ElMessage.error(response.message || '发送验证码失败')
+  }
+}
+
+const sendNewEmailCode = async () => {
+  if (!emailForm.newEmail) {
+    ElMessage.warning('请先输入新邮箱')
+    return
+  }
+  if (emailForm.newEmail.toLowerCase() === emailForm.oldEmail.toLowerCase()) {
+    ElMessage.warning('新邮箱不能与原邮箱相同')
+    return
+  }
+  const response = await sendEmailCode(emailForm.newEmail, 'EMAIL_CHANGE_NEW')
+  if (response.code === 0) {
+    ElMessage.success('新邮箱验证码已发送')
+    startCountdown(newCodeCountdown, 'new')
+  } else {
+    ElMessage.error(response.message || '发送验证码失败')
+  }
+}
+
+const openEmailDialog = () => {
+  emailForm.currentPassword = ''
+  emailForm.oldEmail = userStore.userInfo.email || ''
+  emailForm.oldEmailCode = ''
+  emailForm.newEmail = ''
+  emailForm.newEmailCode = ''
+  emailDialogVisible.value = true
+}
+
+const handleChangeEmail = async () => {
+  if (!emailFormRef.value) return
+  await emailFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    emailSubmitting.value = true
+    try {
+      const response = await changeEmail(emailForm)
+      if (response.code === 0) {
+        ElMessage.success('邮箱换绑成功，请使用新邮箱重新登录')
+        emailDialogVisible.value = false
+        userStore.clearUserInfo()
+        await router.push('/login')
+      } else {
+        ElMessage.error(response.message || '邮箱换绑失败')
+      }
+    } catch (error: any) {
+      ElMessage.error(error.message || '邮箱换绑失败')
+    } finally {
+      emailSubmitting.value = false
+    }
+  })
+}
 
 /* ---------------- 账号安全：登录状态 ---------------- */
 
@@ -197,6 +324,11 @@ const handleDeleteAccount = async () => {
   }
 }
 
+onUnmounted(() => {
+  if (oldCodeTimer) clearInterval(oldCodeTimer)
+  if (newCodeTimer) clearInterval(newCodeTimer)
+})
+
 onMounted(() => {
   if (!userStore.isLoggedIn) {
     authVisible.value = true
@@ -260,7 +392,7 @@ onMounted(() => {
         <div class="bind-row">
           <span class="bind-label">绑定邮箱</span>
           <span class="bind-value">{{ maskedEmail || '未绑定' }}</span>
-          <el-tag size="small" type="info">换绑暂未开放</el-tag>
+          <el-button type="primary" link @click="openEmailDialog">换绑邮箱</el-button>
         </div>
         <div class="bind-row">
           <span class="bind-label">绑定手机号</span>
@@ -281,6 +413,57 @@ onMounted(() => {
         <p class="hint-text">多设备会话管理暂未开放，退出登录将结束当前设备的登录状态。</p>
       </el-card>
     </section>
+
+    <el-dialog
+      v-model="emailDialogVisible"
+      title="换绑恢复邮箱"
+      width="520px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="换绑成功后，所有设备将立即退出登录。请使用当前密码并分别验证原邮箱与新邮箱。"
+        class="email-alert"
+      />
+      <el-form ref="emailFormRef" :model="emailForm" :rules="emailRules" label-width="96px">
+        <el-form-item label="当前密码" prop="currentPassword">
+          <el-input v-model="emailForm.currentPassword" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item label="原邮箱" prop="oldEmail">
+          <el-input v-model="emailForm.oldEmail" disabled />
+        </el-form-item>
+        <el-form-item label="原邮箱验证码" prop="oldEmailCode">
+          <el-input v-model="emailForm.oldEmailCode" maxlength="6" autocomplete="one-time-code">
+            <template #append>
+              <el-button :disabled="!!oldCodeCountdown" @click="sendOldEmailCode">
+                {{ oldCodeCountdown ? `${oldCodeCountdown}s` : '发送验证码' }}
+              </el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="新邮箱" prop="newEmail">
+          <el-input v-model="emailForm.newEmail" autocomplete="email" />
+        </el-form-item>
+        <el-form-item label="新邮箱验证码" prop="newEmailCode">
+          <el-input v-model="emailForm.newEmailCode" maxlength="6" autocomplete="one-time-code">
+            <template #append>
+              <el-button :disabled="!!newCodeCountdown" @click="sendNewEmailCode">
+                {{ newCodeCountdown ? `${newCodeCountdown}s` : '发送验证码' }}
+              </el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="emailDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="emailSubmitting" @click="handleChangeEmail">
+          确认换绑
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- B 隐私与个性化 -->
     <section class="privacy-section">
@@ -422,5 +605,9 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   font-size: 13px;
   line-height: 1.8;
+}
+
+.email-alert {
+  margin-bottom: 18px;
 }
 </style>

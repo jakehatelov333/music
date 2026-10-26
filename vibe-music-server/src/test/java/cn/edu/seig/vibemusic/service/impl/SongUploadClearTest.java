@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -10,8 +11,10 @@ import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.cover.CoverDownloader;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.SetOperations;
@@ -78,6 +81,14 @@ class SongUploadClearTest {
                 new ArtistProvisioningService(new ArtistNameParser(mock(ArtistMapper.class)),
                         mock(cn.edu.seig.vibemusic.service.IArtistService.class)));
         ReflectionTestUtils.setField(service, "audioMetadataService", mock(IAudioMetadataService.class));
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     /** 正常路径：文件删掉、会话与索引一起清掉，并报告成功。 */
@@ -93,6 +104,20 @@ class SongUploadClearTest {
         verify(valueOperations).get("song-upload:session:" + UPLOAD_ID);
         // 会话与索引都必须清掉，否则定时任务会一直在索引里看到这条
         verify(zSetOperations).remove("song-upload:session-index", UPLOAD_ID);
+    }
+
+    @Test
+    @DisplayName("非会话所有者不能清理暂存文件")
+    void rejectsClearFromAnotherAdministrator() {
+        when(valueOperations.get(anyString())).thenReturn(sessionJson());
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 2L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+
+        Result result = service.clear(UPLOAD_ID);
+
+        assertEquals(1, result.getCode());
+        verify(minioService, never()).deleteObjectsByPrefix(anyString());
     }
 
     /**
@@ -116,16 +141,16 @@ class SongUploadClearTest {
         verify(zSetOperations, never()).remove(anyString(), anyString());
     }
 
-    /** 会话已过期但文件还在：仍要尽力删一次，并且不报错。 */
+    /** 会话已过期：不能仅凭 UUID 删除 staging 文件。 */
     @Test
-    @DisplayName("会话已过期时仍尽力清理残留文件")
-    void stillCleansFilesWhenSessionAlreadyGone() {
+    @DisplayName("会话已过期时拒绝清理，UUID 不是 bearer capability")
+    void rejectsClearWhenSessionAlreadyGone() {
         when(valueOperations.get(anyString())).thenReturn(null);
 
         Result result = service.clear(UPLOAD_ID);
 
-        assertEquals(0, result.getCode());
-        verify(minioService).deleteObjectsByPrefix(STAGING);
+        assertEquals(1, result.getCode());
+        verify(minioService, never()).deleteObjectsByPrefix(anyString());
     }
 
     /**
@@ -185,6 +210,7 @@ class SongUploadClearTest {
                 + "\"uploadId\":\"" + UPLOAD_ID + "\","
                 + "\"createdAt\":1,"
                 + "\"lastActivityAt\":2,"
+                + "\"ownerAdminId\":1,"
                 + "\"audioObjectName\":\"" + STAGING + "/audio.mp3\","
                 + "\"audioSize\":1024,"
                 + "\"lyricsObjectName\":\"" + STAGING + "/lyrics.lrc\""

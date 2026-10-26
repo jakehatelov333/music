@@ -3,14 +3,11 @@ package cn.edu.seig.vibemusic.security;
 import cn.edu.seig.vibemusic.config.*;
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.interceptor.*;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.*;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.mock.web.MockServletContext;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.*;
@@ -45,11 +42,7 @@ class AdminAiTraceAccessTest {
     static class Config {
         @Bean ObjectMapper objectMapper() { return new ObjectMapper(); }
 
-        @Bean StringRedisTemplate redis() {
-            StringRedisTemplate redis = mock(StringRedisTemplate.class);
-            when(redis.opsForValue()).thenReturn(mock(ValueOperations.class));
-            return redis;
-        }
+        @Bean AuthSessionService sessions() { return mock(AuthSessionService.class); }
 
         @Bean RolePermissionManager permissions() {
             // 与 application.yml 的 role-path-permissions 保持一致。
@@ -91,9 +84,10 @@ class AdminAiTraceAccessTest {
     @DisplayName("普通用户访问管理端可观测性接口返回 403，不能借 traceId 越权")
     void regularUserIsForbidden() throws Exception {
         try (var context = new AnnotationWebContext()) {
-            String token = JwtUtil.generateToken(Map.of(
-                    JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER"));
-            when(context.values().get(token)).thenReturn(token);
+            String token = "valid-user-token";
+            Map<String, Object> claims = Map.of(
+                    JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER");
+            when(context.sessions().authenticate(token)).thenReturn(claims);
             context.mvc().perform(get("/admin/ai/overview").header("Authorization", token))
                     .andExpect(status().isForbidden());
             context.mvc().perform(get("/admin/ai/traces/someone-elses-trace").header("Authorization", token))
@@ -107,9 +101,10 @@ class AdminAiTraceAccessTest {
     @DisplayName("管理员可以访问管理端可观测性接口")
     void adminIsAllowed() throws Exception {
         try (var context = new AnnotationWebContext()) {
-            String token = JwtUtil.generateToken(Map.of(
-                    JwtClaimsConstant.ADMIN_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
-            when(context.values().get(token)).thenReturn(token);
+            String token = "valid-admin-token";
+            Map<String, Object> claims = Map.of(
+                    JwtClaimsConstant.ADMIN_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_ADMIN");
+            when(context.sessions().authenticate(token)).thenReturn(claims);
             context.mvc().perform(get("/admin/ai/overview").header("Authorization", token))
                     .andExpect(status().isOk());
             context.mvc().perform(get("/admin/ai/traces/abc").header("Authorization", token))
@@ -133,9 +128,7 @@ class AdminAiTraceAccessTest {
             return MockMvcBuilders.webAppContextSetup(context).build();
         }
 
-        ValueOperations<String, String> values() {
-            return context.getBean(StringRedisTemplate.class).opsForValue();
-        }
+        AuthSessionService sessions() { return context.getBean(AuthSessionService.class); }
 
         @Override
         public void close() {

@@ -225,7 +225,8 @@ const handleSubmit = async () => {
       <div class="section">
         <div class="section-title">邮箱</div>
         <el-form-item prop="email">
-          <el-input v-model="userForm.email" placeholder="邮箱" />
+          <el-input v-model="userForm.email" placeholder="邮箱" disabled />
+          <div class="field-hint">邮箱用于找回账号，请前往“隐私与安全”完成双邮箱验证后换绑。</div>
         </el-form-item>
       </div>
 
@@ -331,6 +332,13 @@ const handleSubmit = async () => {
   margin-bottom: 8px;
   color: var(--el-text-color-regular);
   font-size: 14px;
+}
+
+.field-hint {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .avatar-wrapper {

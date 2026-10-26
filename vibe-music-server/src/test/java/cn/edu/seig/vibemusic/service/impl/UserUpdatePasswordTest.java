@@ -6,12 +6,13 @@ import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.dto.UserPasswordDTO;
 import cn.edu.seig.vibemusic.model.entity.User;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.PasswordService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.DigestUtils;
 
@@ -19,7 +20,6 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,16 +34,19 @@ import static org.mockito.Mockito.when;
 class UserUpdatePasswordTest {
 
     private UserMapper userMapper;
-    private StringRedisTemplate redis;
+    private AuthSessionService authSessionService;
+    private PasswordService passwordService;
     private UserServiceImpl service;
 
     @BeforeEach
     void setUp() {
         userMapper = mock(UserMapper.class);
-        redis = mock(StringRedisTemplate.class);
+        authSessionService = mock(AuthSessionService.class);
+        passwordService = new PasswordService();
         service = new UserServiceImpl();
         ReflectionTestUtils.setField(service, "userMapper", userMapper);
-        ReflectionTestUtils.setField(service, "stringRedisTemplate", redis);
+        ReflectionTestUtils.setField(service, "authSessionService", authSessionService);
+        ReflectionTestUtils.setField(service, "passwordService", passwordService);
         ThreadLocalUtil.set(Map.of(JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER"));
     }
 
@@ -57,12 +60,12 @@ class UserUpdatePasswordTest {
     void rejectsWrongOldPassword() {
         when(userMapper.selectById(1L)).thenReturn(userWithPassword("old12345"));
 
-        Result result = service.updateUserPassword(dto("wrong123", "new12345", "new12345"), "tok");
+        Result result = service.updateUserPassword(dto("wrong123", "new12345", "new12345"));
 
         assertEquals(1, result.getCode());
         assertEquals(MessageConstant.OLD_PASSWORD_ERROR, result.getMessage());
         verify(userMapper, never()).update(any(), any());
-        verify(redis, never()).delete(anyString());
+        verify(authSessionService, never()).revokeAllUserSessions(any());
     }
 
     @Test
@@ -70,7 +73,7 @@ class UserUpdatePasswordTest {
     void rejectsSamePassword() {
         when(userMapper.selectById(1L)).thenReturn(userWithPassword("same1234"));
 
-        Result result = service.updateUserPassword(dto("same1234", "same1234", "same1234"), "tok");
+        Result result = service.updateUserPassword(dto("same1234", "same1234", "same1234"));
 
         assertEquals(1, result.getCode());
         assertEquals(MessageConstant.NEW_PASSWORD_ERROR, result.getMessage());
@@ -82,7 +85,7 @@ class UserUpdatePasswordTest {
     void rejectsMismatchedRepeat() {
         when(userMapper.selectById(1L)).thenReturn(userWithPassword("old12345"));
 
-        Result result = service.updateUserPassword(dto("old12345", "new12345", "diff1234"), "tok");
+        Result result = service.updateUserPassword(dto("old12345", "new12345", "diff1234"));
 
         assertEquals(1, result.getCode());
         assertEquals(MessageConstant.PASSWORD_NOT_MATCH, result.getMessage());
@@ -94,12 +97,13 @@ class UserUpdatePasswordTest {
     void updatesPasswordAndInvalidatesToken() {
         when(userMapper.selectById(1L)).thenReturn(userWithPassword("old12345"));
         when(userMapper.update(any(), any())).thenReturn(1);
+        when(userMapper.incrementAuthVersion(1L)).thenReturn(1);
 
-        Result result = service.updateUserPassword(dto("old12345", "new12345", "new12345"), "tok");
+        Result result = service.updateUserPassword(dto("old12345", "new12345", "new12345"));
 
         assertEquals(0, result.getCode());
         verify(userMapper).update(any(), any());
-        verify(redis).delete("tok");
+        verify(authSessionService).revokeAllUserSessions(any());
     }
 
     @Test
@@ -108,11 +112,12 @@ class UserUpdatePasswordTest {
         // "123" 是纯数字，按新规则不合法；但它是该用户真实的旧密码，不能被拦下
         when(userMapper.selectById(1L)).thenReturn(userWithPassword("123"));
         when(userMapper.update(any(), any())).thenReturn(1);
+        when(userMapper.incrementAuthVersion(1L)).thenReturn(1);
 
-        Result result = service.updateUserPassword(dto("123", "abc12345", "abc12345"), "tok");
+        Result result = service.updateUserPassword(dto("123", "abc12345", "abc12345"));
 
         assertEquals(0, result.getCode(), "旧密码格式不合规但正确时应允许改密");
-        verify(redis).delete("tok");
+        verify(authSessionService).revokeAllUserSessions(any());
     }
 
     private static User userWithPassword(String rawPassword) {

@@ -7,6 +7,8 @@ import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.VerificationPurpose;
+import org.springframework.web.multipart.MultipartFile;
 import com.baomidou.mybatisplus.extension.service.IService;
 
 import java.util.List;
@@ -22,10 +24,7 @@ import java.util.List;
 public interface IUserService extends IService<User> {
 
     // 发送验证码
-    Result sendVerificationCode(String email);
-
-    // 验证验证码
-    boolean verifyVerificationCode(String email, String verificationCode);
+    Result sendVerificationCode(String email, VerificationPurpose purpose);
 
     // 用户注册
     Result register(UserRegisterDTO userRegisterDTO);
@@ -40,13 +39,16 @@ public interface IUserService extends IService<User> {
     Result updateUserInfo(UserDTO userDTO);
 
     // 更新用户头像
-    Result updateUserAvatar(String avatarUrl);
+    Result updateUserAvatar(MultipartFile avatar);
 
     // 更新用户密码
-    Result updateUserPassword(UserPasswordDTO userPasswordDTO, String token);
+    Result updateUserPassword(UserPasswordDTO userPasswordDTO);
 
     // 重置用户密码
     Result resetUserPassword(UserResetPasswordDTO userResetPasswordDTO);
+
+    // 邮箱换绑：当前密码 + 原邮箱验证码 + 新邮箱验证码
+    Result changeEmail(UserEmailChangeDTO userEmailChangeDTO);
 
     // 退出登录
     Result logout(String token);

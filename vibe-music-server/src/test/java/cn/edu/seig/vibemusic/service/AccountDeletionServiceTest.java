@@ -15,6 +15,10 @@ import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.AccountDeletionService.AccountDeletionOutcome;
 import cn.edu.seig.vibemusic.service.AccountDeletionService.BatchDeletionOutcome;
 import cn.edu.seig.vibemusic.service.impl.UserServiceImpl;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.security.PasswordService;
+import cn.edu.seig.vibemusic.security.VerificationCodeService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -45,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
@@ -129,23 +134,37 @@ class AccountDeletionServiceTest {
                                                             AccountCleanupTaskMapper accountCleanupTaskMapper,
                                                             PlaylistMapper playlistMapper,
                                                             MediaCleanupService mediaCleanupService,
-                                                            StringRedisTemplate redis,
+                                                            AuthSessionService authSessionService,
                                                             DataSourceTransactionManager transactionManager) {
             return new AccountDeletionService(userMapper, feedbackMapper, accountCleanupMapper,
-                    accountCleanupTaskMapper, playlistMapper, mediaCleanupService, redis, transactionManager);
+                    accountCleanupTaskMapper, playlistMapper, mediaCleanupService, authSessionService,
+                    transactionManager);
         }
 
-        @Bean UserServiceImpl userService(UserMapper userMapper, AccountDeletionService accountDeletionService) {
+        @Bean AuthSessionService authSessionService() { return mock(AuthSessionService.class); }
+        @Bean PasswordService passwordService() { return new PasswordService(); }
+        @Bean VerificationCodeService verificationCodeService() { return mock(VerificationCodeService.class); }
+        @Bean ImageStorageService imageStorageService() { return mock(ImageStorageService.class); }
+
+        @Bean UserServiceImpl userService(UserMapper userMapper, AccountDeletionService accountDeletionService,
+                                          AuthSessionService authSessionService,
+                                          PasswordService passwordService,
+                                          VerificationCodeService verificationCodeService,
+                                          ImageStorageService imageStorageService) {
             UserServiceImpl impl = new UserServiceImpl();
             ReflectionTestUtils.setField(impl, "userMapper", userMapper);
             ReflectionTestUtils.setField(impl, "accountDeletionService", accountDeletionService);
+            ReflectionTestUtils.setField(impl, "authSessionService", authSessionService);
+            ReflectionTestUtils.setField(impl, "passwordService", passwordService);
+            ReflectionTestUtils.setField(impl, "verificationCodeService", verificationCodeService);
+            ReflectionTestUtils.setField(impl, "imageStorageService", imageStorageService);
             return impl;
         }
     }
 
     @Autowired private AccountDeletionService deletionService;
     @Autowired private UserServiceImpl userService;
-    @Autowired private StringRedisTemplate redis;
+    @Autowired private AuthSessionService authSessionService;
     @Autowired private MinioService minio;
     @Autowired private DataSource dataSource;
 
@@ -158,7 +177,8 @@ class AccountDeletionServiceTest {
 
         jdbc.execute("CREATE TABLE tb_user(id BIGINT PRIMARY KEY, username VARCHAR(255), password VARCHAR(255), "
                 + "phone VARCHAR(32), email VARCHAR(255), user_avatar VARCHAR(255), introduction VARCHAR(1000), "
-                + "create_time TIMESTAMP, update_time TIMESTAMP, status VARCHAR(32))");
+                + "create_time TIMESTAMP, update_time TIMESTAMP, status VARCHAR(32), "
+                + "auth_version BIGINT NOT NULL DEFAULT 0)");
         // RESTRICT：不先删反馈就删用户，会在这里外键报错（历史 bug 的复现点）
         jdbc.execute("CREATE TABLE tb_feedback(id BIGINT AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, "
                 + "feedback VARCHAR(2000), create_time TIMESTAMP, "
@@ -205,7 +225,7 @@ class AccountDeletionServiceTest {
         jdbc.update("INSERT INTO tb_feedback(user_id, feedback, create_time) VALUES "
                 + "(1, '希望增加夜间模式', CURRENT_TIMESTAMP), (1, '很好用', CURRENT_TIMESTAMP)");
 
-        reset(redis, minio);
+        reset(authSessionService, minio);
         // MinioService 被 mock 后 toObjectName 默认返回 null，MediaCleanupService 会据此认为
         // "没有可删的对象"而直接跳过登记。这里给一个与生产语义一致的 URL→对象键实现。
         org.mockito.Mockito.when(minio.toObjectName(anyString())).thenAnswer(invocation -> {
@@ -353,38 +373,36 @@ class AccountDeletionServiceTest {
         assertEquals(0, count("ai_chat_state", "user_id = 1"));
         // 与管理员路径一致：封面同样入队
         assertEquals(1, count("tb_media_cleanup_task", "source_type = 'ACCOUNT_DELETE'"));
-        verify(redis).delete(TOKEN);
+        verify(authSessionService).revokeUserSession(1L, TOKEN);
     }
 
     @Test
     @DisplayName("自助注销：用户已不存在时幂等成功，不碰 token")
     void selfDeletionIsIdempotentWhenUserMissing() {
         userService.deleteAccount(TOKEN);
-        reset(redis);
+        reset(authSessionService);
 
         Result<AccountDeletionResultVO> second = userService.deleteAccount(TOKEN);
 
         assertEquals(0, second.getCode());
         assertTrue(second.getData().isAccountDeleted());
         assertFalse(second.getData().isCleanupPending());
-        verify(redis, org.mockito.Mockito.never()).delete(anyString());
+        verify(authSessionService, org.mockito.Mockito.never()).revokeUserSession(anyLong(), anyString());
     }
 
     @Test
-    @DisplayName("自助注销：Redis 作废失败 → 账号已删但 cleanupPending=true，并落重试记录")
+    @DisplayName("自助注销：Redis 撤销失败不回滚账号，也不持久化令牌或摘要")
     void selfDeletionReportsPendingWhenTokenRevokeFails() {
-        doThrow(new RuntimeException("redis down")).when(redis).delete(TOKEN);
+        doThrow(new RuntimeException("redis down")).when(authSessionService).revokeUserSession(1L, TOKEN);
 
         Result<AccountDeletionResultVO> result = userService.deleteAccount(TOKEN);
 
         assertEquals(0, result.getCode(), "账号已删除，不能报成注销失败");
         AccountDeletionResultVO data = result.getData();
         assertTrue(data.isAccountDeleted());
-        assertTrue(data.isCleanupPending());
-        assertTrue(data.getPendingItems().contains(AccountDeletionService.RESOURCE_REDIS_TOKEN));
+        assertFalse(data.isCleanupPending());
         assertEquals(0, count("tb_user"));
-        assertEquals(1, count("tb_account_cleanup_task",
-                "user_id = 1 AND resource_type = 'REDIS_TOKEN' AND status = 'PENDING'"));
+        assertEquals(0, count("tb_account_cleanup_task"));
     }
 
     @Test

@@ -1,11 +1,9 @@
 package cn.edu.seig.vibemusic.service.impl;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
-import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -23,12 +21,11 @@ import cn.edu.seig.vibemusic.model.vo.AlbumVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.CurrentUser;
 import cn.edu.seig.vibemusic.service.IAlbumService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
-import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -214,7 +211,8 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         Album album = new Album()
                 .setArtistId(albumAddDTO.getArtistId())
                 .setAlbumName(albumName)
-                .setCoverUrl(trimToNull(albumAddDTO.getCoverUrl()))
+                // Cover changes only through the validated image upload endpoint.
+                .setCoverUrl(null)
                 .setReleaseDate(albumAddDTO.getReleaseDate())
                 .setDescription(albumAddDTO.getDescription())
                 .setStatus(status)
@@ -254,10 +252,7 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
                 .set("description", albumUpdateDTO.getDescription())
                 .set("status", normalizeStatus(albumUpdateDTO.getStatus(), albumInDB.getStatus() == null ? "DRAFT" : albumInDB.getStatus()))
                 .set("updated_at", LocalDateTime.now());
-        // 编辑表单不包含封面字段：未传 coverUrl 时保留原封面，避免「编辑专辑」把封面清空
-        if (albumUpdateDTO.getCoverUrl() != null) {
-            albumUpdate.set("cover_url", trimToNull(albumUpdateDTO.getCoverUrl()));
-        }
+        // Client-supplied coverUrl is never trusted; cover replacement has its own endpoint.
         int updated = albumMapper.update(null, albumUpdate);
         if (updated == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
@@ -389,14 +384,10 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         return normalized;
     }
 
-    private String trimToNull(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
-    }
-
     private void setSongLikeStatus(List<SongVO> songs, HttpServletRequest request) {
         songs.forEach(song -> song.setLikeStatus(LikeStatusEnum.DEFAULT.getId()));
 
-        Long userId = getUserId(request);
+        Long userId = CurrentUser.optionalUserId();
         if (userId == null || songs.isEmpty()) {
             return;
         }
@@ -415,27 +406,4 @@ public class AlbumServiceImpl extends ServiceImpl<AlbumMapper, Album> implements
         });
     }
 
-    private Long getUserId(HttpServletRequest request) {
-        String token = request.getHeader("Authorization");
-        if (token == null || token.isEmpty()) {
-            return null;
-        }
-        if (token.startsWith("Bearer ")) {
-            token = token.substring(7);
-        }
-        if (token.isEmpty()) {
-            return null;
-        }
-
-        try {
-            Map<String, Object> claims = JwtUtil.parseToken(token);
-            String role = (String) claims.get(JwtClaimsConstant.ROLE);
-            if (!RoleEnum.USER.getRole().equals(role)) {
-                return null;
-            }
-            return TypeConversionUtil.toLong(claims.get(JwtClaimsConstant.USER_ID));
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
 }

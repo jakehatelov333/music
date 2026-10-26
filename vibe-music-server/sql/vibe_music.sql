@@ -24,94 +24,14 @@ DROP TABLE IF EXISTS `tb_admin`;
 CREATE TABLE `tb_admin`  (
   `id` bigint(0) NOT NULL AUTO_INCREMENT COMMENT '管理员 id',
   `username` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '管理员用户名',
-  `password` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '管理员密码',
+  `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '管理员密码（BCrypt）',
+  `auth_version` bigint(0) NOT NULL DEFAULT 0 COMMENT '认证版本，凭据变化时递增',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `username`(`username`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 170 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
--- ----------------------------
--- Records of tb_admin
--- ----------------------------
-INSERT INTO `tb_admin` VALUES (58, 'admin_172', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (59, 'admin_888', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (60, 'admin_926', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (61, 'admin_966', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (62, 'admin_52', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (65, 'admin_1', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (66, 'admin_494', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (67, 'admin_465', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (68, 'admin_843', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (69, 'admin_820', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (72, 'admin_580', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (73, 'admin_423', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (74, 'admin_375', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (75, 'admin_607', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (76, 'admin_910', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (79, 'admin_110', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (80, 'admin_434', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (81, 'admin_841', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (82, 'admin_901', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (83, 'admin_983', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (86, 'admin_630', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (87, 'admin_865', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (88, 'admin_435', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (89, 'admin_581', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (90, 'admin_601', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (93, 'admin_8', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (94, 'admin_493', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (95, 'admin_445', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (96, 'admin_746', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (97, 'admin_395', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (103, 'admin_59', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (104, 'admin_990', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (105, 'admin_775', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (106, 'admin_905', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (107, 'admin_201', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (110, 'admin_851', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (111, 'admin_463', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (112, 'admin_765', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (113, 'admin_433', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (114, 'admin_874', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (117, 'admin_621', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (118, 'admin_32', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (119, 'admin_295', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (120, 'admin_379', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (121, 'admin_10', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (124, 'admin_572', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (125, 'admin_509', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (126, 'admin_828', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (127, 'admin_616', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (128, 'admin_593', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (131, 'admin_490', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (132, 'admin_107', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (133, 'admin_64', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (134, 'admin_999', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (135, 'admin_805', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (138, 'admin_61', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (139, 'admin_263', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (140, 'admin_132', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (141, 'admin_871', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (142, 'admin_959', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (145, 'admin_450', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (146, 'admin_684', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (147, 'admin_68', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (148, 'admin_287', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (149, 'admin_235', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (152, 'admin_886', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (153, 'admin_135', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (154, 'admin_18', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (155, 'admin_685', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (156, 'admin_371', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (159, 'admin_816', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (160, 'admin_137', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (161, 'admin_239', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (162, 'admin_782', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (163, 'admin_193', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (166, 'admin_613', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (167, 'admin_798', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (168, 'admin_152', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (169, 'admin_365', 'df10ef8509dc176d733d59549e7dbfaf');
-INSERT INTO `tb_admin` VALUES (170, 'admin_372', 'df10ef8509dc176d733d59549e7dbfaf');
+-- No administrator seed rows. Provision the first administrator from a secret manager
+-- with a unique BCrypt hash; never commit reusable credentials.
 
 -- ----------------------------
 -- Table structure for tb_artist
@@ -2499,7 +2419,7 @@ DROP TABLE IF EXISTS `tb_user`;
 CREATE TABLE `tb_user`  (
   `id` bigint(0) NOT NULL AUTO_INCREMENT COMMENT '用户 id',
   `username` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '用户名',
-  `password` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '用户密码',
+  `password` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '用户密码（BCrypt，兼容旧 MD5）',
   `phone` varchar(11) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '用户手机号',
   `email` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '用户邮箱',
   `user_avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '用户头像',
@@ -2507,6 +2427,7 @@ CREATE TABLE `tb_user`  (
   `create_time` datetime(0) NOT NULL COMMENT '用户创建时间',
   `update_time` datetime(0) NOT NULL COMMENT '用户修改时间',
   `status` tinyint(0) NOT NULL COMMENT '用户状态：0-启用，1-禁用',
+  `auth_version` bigint(0) NOT NULL DEFAULT 0 COMMENT '认证版本，凭据变化时递增',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `username`(`username`) USING BTREE,
   UNIQUE INDEX `email`(`email`) USING BTREE,

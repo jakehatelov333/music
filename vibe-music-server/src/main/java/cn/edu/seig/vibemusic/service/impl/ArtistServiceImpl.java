@@ -1,11 +1,9 @@
 package cn.edu.seig.vibemusic.service.impl;
 
-import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MediaCleanupSourceType;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.enumeration.LikeStatusEnum;
-import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
@@ -13,23 +11,23 @@ import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
 import cn.edu.seig.vibemusic.model.dto.ArtistDTO;
 import cn.edu.seig.vibemusic.model.dto.ArtistUpdateDTO;
 import cn.edu.seig.vibemusic.model.entity.Artist;
-import cn.edu.seig.vibemusic.model.entity.UserFavorite;
 import cn.edu.seig.vibemusic.model.vo.ArtistDetailVO;
 import cn.edu.seig.vibemusic.model.vo.ArtistNameVO;
 import cn.edu.seig.vibemusic.model.vo.ArtistVO;
 import cn.edu.seig.vibemusic.model.vo.SongVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.CurrentUser;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.service.artist.ArtistDetailReadService;
 import cn.edu.seig.vibemusic.service.artist.ArtistProfileService;
 import cn.edu.seig.vibemusic.service.artist.QqArtistAvatarUrl;
 import cn.edu.seig.vibemusic.service.cover.CoverDownloader;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
-import cn.edu.seig.vibemusic.util.TypeConversionUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -51,12 +49,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -70,9 +66,6 @@ import java.util.stream.Collectors;
 @Service
 @CacheConfig(cacheNames = "artistCache")
 public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> implements IArtistService {
-
-    /** 头像体积上限，与个人歌单封面保持一致（{@code PersonalPlaylistService.MAX_COVER_BYTES}）。 */
-    private static final long MAX_AVATAR_BYTES = 5L * 1024 * 1024;
 
     @Autowired
     private ArtistMapper artistMapper;
@@ -88,6 +81,10 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
     private MediaCleanupService mediaCleanupService;
     @Autowired
     private ArtistProfileService artistProfileService;
+    @Autowired
+    private ArtistDetailReadService artistDetailReadService;
+    @Autowired
+    private ImageStorageService imageStorageService;
     @Autowired
     private RedisTemplate redisTemplate;
 
@@ -262,66 +259,66 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
      * @return 歌手详情
      */
     @Override
-    // v3 → v4：歌曲结果集新增 albumId（供前端把专辑名做成可跳转链接）。
-    // 改 SQL 结果集必须升版本号，否则 Redis 里的旧条目会继续返回没有 albumId 的歌，
-    // 表现为「重启了但专辑名还是点不动」。
-    @Cacheable(key = "#artistId + '-albums-v4'")
     public Result<ArtistDetailVO> getArtistDetail(Long artistId, HttpServletRequest request) {
-        // 查询里带 status = ACTIVE：停用歌手详情返回 null，由下面统一按「歌手不存在」处理，
-        // 避免把已合并掉的组合歌手页继续暴露出去。
-        ArtistDetailVO artistDetailVO = artistMapper.getArtistDetailById(artistId);
-        if (artistDetailVO == null) {
+        ArtistDetailVO cached = artistDetailReadService.load(artistId);
+        if (cached == null) {
             return Result.error(MessageConstant.ARTIST + MessageConstant.NOT_FOUND);
         }
-        artistDetailVO.setAlbums(albumMapper.getAlbumsByArtistId(artistId));
-
-        // 设置默认状态
-        List<SongVO> songVOList = artistDetailVO.getSongs();
-        songVOList.forEach(songVO -> songVO.setLikeStatus(LikeStatusEnum.DEFAULT.getId()));
-
-        // 获取请求头中的 token
-        String token = request.getHeader("Authorization");
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7); // 去掉 "Bearer " 前缀
-        }
-
-        Map<String, Object> map = null;
-        if (token != null && !token.isEmpty()) {
-            map = JwtUtil.parseToken(token);
-        }
-
-        // 如果 token 解析成功且用户为登录状态，进一步操作
-        if (map != null) {
-            String role = (String) map.get(JwtClaimsConstant.ROLE);
-            if (role.equals(RoleEnum.USER.getRole())) {
-                Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-                Long userId = TypeConversionUtil.toLong(userIdObj);
-
-                // 获取用户收藏的歌曲
-                List<UserFavorite> favoriteSongs = userFavoriteMapper.selectList(new QueryWrapper<UserFavorite>()
-                        .eq("user_id", userId)
-                        .eq("type", 0));
-
-                // 获取用户收藏的歌曲 id
-                Set<Long> favoriteSongIds = favoriteSongs.stream()
-                        .map(UserFavorite::getSongId)
-                        .collect(Collectors.toSet());
-
-                // 检查并更新状态
-                for (SongVO songVO : songVOList) {
-                    if (favoriteSongIds.contains(songVO.getSongId())) {
-                        songVO.setLikeStatus(LikeStatusEnum.LIKE.getId());
-                    }
-                }
-            }
-        }
-
-        // 设置歌曲列表
-        // 这些歌曲来自 tb_song_artist（含该歌手参与的合作歌曲），每首歌再补上自己的完整歌手列表。
-        songArtistService.attachArtists(songVOList);
-        artistDetailVO.setSongs(songVOList);
-
+        ArtistDetailVO artistDetailVO = copyDetail(cached);
+        applyCurrentUserFavorites(artistDetailVO);
         return Result.success(artistDetailVO);
+    }
+
+    /**
+     * The cached object is shared across requests. Copy it before adding viewer state.
+     */
+    private ArtistDetailVO copyDetail(ArtistDetailVO source) {
+        ArtistDetailVO copy = new ArtistDetailVO();
+        BeanUtils.copyProperties(source, copy);
+        if (source.getSongs() != null) {
+            copy.setSongs(source.getSongs().stream().map(this::copySong).toList());
+        }
+        if (source.getAlbums() != null) {
+            copy.setAlbums(source.getAlbums().stream().map(album -> {
+                cn.edu.seig.vibemusic.model.vo.AlbumVO item =
+                        new cn.edu.seig.vibemusic.model.vo.AlbumVO();
+                BeanUtils.copyProperties(album, item);
+                return item;
+            }).toList());
+        }
+        return copy;
+    }
+
+    private SongVO copySong(SongVO source) {
+        SongVO copy = new SongVO();
+        BeanUtils.copyProperties(source, copy);
+        if (source.getArtists() != null) {
+            copy.setArtists(source.getArtists().stream().map(artist -> {
+                cn.edu.seig.vibemusic.model.vo.ArtistNameVO item =
+                        new cn.edu.seig.vibemusic.model.vo.ArtistNameVO();
+                BeanUtils.copyProperties(artist, item);
+                return item;
+            }).toList());
+        }
+        return copy;
+    }
+
+    private void applyCurrentUserFavorites(ArtistDetailVO detail) {
+        List<SongVO> songs = detail.getSongs();
+        Long userId = CurrentUser.optionalUserId();
+        if (userId == null || songs == null || songs.isEmpty()) {
+            return;
+        }
+        List<Long> favoriteIds = userFavoriteMapper.getFavoriteSongIdsByUserId(userId);
+        if (favoriteIds == null || favoriteIds.isEmpty()) {
+            return;
+        }
+        Set<Long> favoriteSongIds = Set.copyOf(favoriteIds);
+        songs.forEach(song -> {
+            if (favoriteSongIds.contains(song.getSongId())) {
+                song.setLikeStatus(LikeStatusEnum.LIKE.getId());
+            }
+        });
     }
 
     /**
@@ -410,11 +407,7 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             // 两者同时出现的唯一可能是前端状态残留，此时以用户最后选中的候选为准
             avatarUrl = downloadQqAvatar(qqSingerMid, avatarSize);
         } else if (avatar != null && !avatar.isEmpty()) {
-            String invalid = validateAvatar(avatar);
-            if (invalid != null) {
-                return Result.error(invalid);
-            }
-            avatarUrl = minioService.uploadFile(avatar, "artists");
+            avatarUrl = imageStorageService.storeAvatar(avatar, "artists");
         }
 
         try {
@@ -457,45 +450,13 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
                 log.warn("QQ 音乐头像下载失败，本次不设头像：mid={}，原因={}", qqSingerMid, downloaded.error());
                 return null;
             }
-            String extension = avatarExtension(downloaded.contentType());
-            String objectName = "artist-qq-" + UUID.randomUUID() + "." + extension;
-            return minioService.uploadBytes(downloaded.bytes(), "artists", objectName, downloaded.contentType());
+            // Provider bytes are authoritative: QQ frequently returns PNG. Do not
+            // attach a synthetic .jpg name that would fail extension/format checks.
+            return imageStorageService.storeImage(downloaded.bytes(), "artists", 512);
         } catch (RuntimeException e) {
             log.warn("QQ 音乐头像下载异常，本次不设头像：mid={}", qqSingerMid, e);
             return null;
         }
-    }
-
-    /** 由 Content-Type 推扩展名；只认三种常见图片格式，其余按 jpg 处理（CDN 实测均为 JPEG）。 */
-    private String avatarExtension(String contentType) {
-        if (contentType == null) {
-            return "jpg";
-        }
-        String normalized = contentType.toLowerCase(Locale.ROOT);
-        if (normalized.contains("png")) {
-            return "png";
-        }
-        if (normalized.contains("webp")) {
-            return "webp";
-        }
-        return "jpg";
-    }
-
-    /**
-     * 校验头像文件，合法返回 {@code null}，否则返回可读原因。
-     *
-     * <p>用与个人歌单封面一致的规则（≤5 MB、Content-Type 必须 {@code image/*}），
-     * 避免同一个系统里两处对"什么是合法图片"给出不同答案。
-     */
-    private String validateAvatar(MultipartFile avatar) {
-        if (avatar.getSize() > MAX_AVATAR_BYTES) {
-            return "头像图片不能超过 5 MB";
-        }
-        String contentType = avatar.getContentType();
-        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("image/")) {
-            return "头像仅支持 JPG、PNG、WebP 等图片格式";
-        }
-        return null;
     }
 
     /**
@@ -582,11 +543,7 @@ public class ArtistServiceImpl extends ServiceImpl<ArtistMapper, Artist> impleme
             }
             avatarReplaced = true;
         } else if (avatar != null && !avatar.isEmpty()) {
-            String invalid = validateAvatar(avatar);
-            if (invalid != null) {
-                return Result.error(invalid);
-            }
-            newAvatarUrl = minioService.uploadFile(avatar, "artists");
+            newAvatarUrl = imageStorageService.storeAvatar(avatar, "artists");
             avatarReplaced = true;
         }
 

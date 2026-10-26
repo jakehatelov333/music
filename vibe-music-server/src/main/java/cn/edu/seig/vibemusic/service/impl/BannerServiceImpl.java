@@ -106,16 +106,18 @@ public class BannerServiceImpl extends ServiceImpl<BannerMapper, Banner> impleme
     @CacheEvict(cacheNames = "bannerCache", allEntries = true)
     public Result updateBanner(Long bannerId, String bannerUrl) {
         Banner banner = bannerMapper.selectById(bannerId);
-        String oldBannerUrl = banner.getBannerUrl();
-        if (oldBannerUrl != null && !oldBannerUrl.isEmpty()) {
-            minioService.deleteFile(oldBannerUrl);
+        if (banner == null) {
+            return Result.error(MessageConstant.DATA_NOT_FOUND);
         }
-
+        String oldBannerUrl = banner.getBannerUrl();
         banner.setBannerUrl(bannerUrl);
         if (bannerMapper.updateById(banner) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
 
+        if (oldBannerUrl != null && !oldBannerUrl.isEmpty() && !oldBannerUrl.equals(bannerUrl)) {
+            minioService.deleteFile(oldBannerUrl);
+        }
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
 

@@ -73,15 +73,20 @@ export const useUserStore = defineStore({
       });
     },
     /** 前端登出（调用接口） */
-    logOut() {
-      this.username = "";
-      this.roles = [];
-      this.permissions = [];
-      getLogout(); // 调用接口（后端登出）
-      removeToken();
-      useMultiTagsStoreHook().handleTags("equal", [...routerArrays]);
-      resetRouter();
-      router.push("/login");
+    async logOut() {
+      try {
+        await getLogout();
+      } catch {
+        // 本地会话必须清掉，服务端撤销失败由短 TTL 与 auth_version 兜底。
+      } finally {
+        this.username = "";
+        this.roles = [];
+        this.permissions = [];
+        removeToken();
+        useMultiTagsStoreHook().handleTags("equal", [...routerArrays]);
+        resetRouter();
+        await router.push("/login");
+      }
     }
     /** 刷新`token` */
     // async handRefreshToken(data) {

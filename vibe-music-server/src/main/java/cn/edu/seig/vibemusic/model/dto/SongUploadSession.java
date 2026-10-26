@@ -21,6 +21,8 @@ public class SongUploadSession implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private String uploadId;
+    /** Authenticated administrator that created this temporary session. */
+    private Long ownerAdminId;
     private long createdAt;
     /**
      * 最后一次活动时间（毫秒）。每次 {@code saveSession} 都会刷新。

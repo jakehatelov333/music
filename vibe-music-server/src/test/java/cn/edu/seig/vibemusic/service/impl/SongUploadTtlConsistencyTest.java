@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -9,8 +10,10 @@ import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -80,6 +83,14 @@ class SongUploadTtlConsistencyTest {
                 new ArtistProvisioningService(new ArtistNameParser(mock(ArtistMapper.class)),
                         mock(cn.edu.seig.vibemusic.service.IArtistService.class)));
         ReflectionTestUtils.setField(service, "audioMetadataService", mock(IAudioMetadataService.class));
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     /**
@@ -149,6 +160,7 @@ class SongUploadTtlConsistencyTest {
     private static SongUploadSession session(long createdAt) {
         return SongUploadSession.builder()
                 .uploadId(UPLOAD_ID)
+                .ownerAdminId(1L)
                 .createdAt(createdAt)
                 .audioObjectName("staging/song-upload/" + UPLOAD_ID + "/audio.mp3")
                 .durationParsed(true)
