@@ -35,6 +35,7 @@ public class SecretsGuard {
         REQUIRED_SECRETS.put("spring.mail.password", "MAIL_PASSWORD");
         REQUIRED_SECRETS.put("minio.accessKey", "MINIO_ACCESS_KEY");
         REQUIRED_SECRETS.put("minio.secretKey", "MINIO_SECRET_KEY");
+        REQUIRED_SECRETS.put("app.jwt.secret", "JWT_SECRET");
         REQUIRED_SECRETS.put("langchain4j.dashscope.api-key", "DASHSCOPE_API_KEY");
     }
 

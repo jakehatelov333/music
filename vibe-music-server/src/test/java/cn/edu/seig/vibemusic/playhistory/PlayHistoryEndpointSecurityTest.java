@@ -9,7 +9,7 @@ import cn.edu.seig.vibemusic.interceptor.LoginInterceptor;
 import cn.edu.seig.vibemusic.interceptor.RateLimitInterceptor;
 import cn.edu.seig.vibemusic.security.CurrentUser;
 import cn.edu.seig.vibemusic.security.RedisRateLimiter;
-import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -17,8 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.mock.web.MockServletContext;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -59,11 +57,7 @@ class PlayHistoryEndpointSecurityTest {
     static class Config {
         @Bean ObjectMapper objectMapper() { return new ObjectMapper(); }
 
-        @Bean StringRedisTemplate redis() {
-            StringRedisTemplate redis = mock(StringRedisTemplate.class);
-            when(redis.opsForValue()).thenReturn(mock(ValueOperations.class));
-            return redis;
-        }
+        @Bean AuthSessionService sessions() { return mock(AuthSessionService.class); }
 
         /** 与 application.yml 的 role-path-permissions 保持一致（只列与本测试相关的部分）。 */
         @Bean RolePermissionManager permissions() {
@@ -126,10 +120,11 @@ class PlayHistoryEndpointSecurityTest {
             mvc.perform(delete("/play-history/clear")).andExpect(status().isUnauthorized());
 
             // 携带有效 token：能进到控制器，且身份就是 token 里的用户
-            String token = JwtUtil.generateToken(Map.of(
-                    JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER"));
-            var values = context.getBean(StringRedisTemplate.class).opsForValue();
-            when(values.get(token)).thenReturn(token);
+            String token = "valid-user-token";
+            Map<String, Object> claims = Map.of(
+                    JwtClaimsConstant.USER_ID, 7L, JwtClaimsConstant.ROLE, "ROLE_USER");
+            AuthSessionService sessions = context.getBean(AuthSessionService.class);
+            when(sessions.authenticate(token)).thenReturn(claims);
 
             mvc.perform(post("/play-history/record").header("Authorization", token))
                     .andExpect(status().isOk()).andExpect(content().string("7"));
@@ -144,7 +139,9 @@ class PlayHistoryEndpointSecurityTest {
                     .andExpect(status().isOk()).andExpect(content().string("7:42"));
 
             // token 在 Redis 中失效 -> 401（会话过期不能被当成游客放行）
-            when(values.get(token)).thenReturn(null);
+            when(sessions.authenticate(token)).thenThrow(
+                    new org.springframework.web.server.ResponseStatusException(
+                            org.springframework.http.HttpStatus.UNAUTHORIZED, "会话已失效"));
             mvc.perform(get("/play-history/recent").header("Authorization", token))
                     .andExpect(status().isUnauthorized());
         } finally {
@@ -164,10 +161,10 @@ class PlayHistoryEndpointSecurityTest {
             context.refresh();
             var mvc = MockMvcBuilders.webAppContextSetup(context).build();
 
-            String token = JwtUtil.generateToken(Map.of(
-                    JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
-            var values = context.getBean(StringRedisTemplate.class).opsForValue();
-            when(values.get(token)).thenReturn(token);
+            String token = "valid-admin-token";
+            Map<String, Object> claims = Map.of(
+                    JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_ADMIN");
+            when(context.getBean(AuthSessionService.class).authenticate(token)).thenReturn(claims);
 
             mvc.perform(get("/play-history/recent").header("Authorization", token))
                     .andExpect(status().isForbidden());

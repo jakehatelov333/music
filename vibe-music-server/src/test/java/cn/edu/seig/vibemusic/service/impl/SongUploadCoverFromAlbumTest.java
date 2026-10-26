@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -11,8 +12,11 @@ import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
 import cn.edu.seig.vibemusic.service.cover.CoverDownloader;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -85,6 +89,15 @@ class SongUploadCoverFromAlbumTest {
                 new ArtistProvisioningService(new ArtistNameParser(mock(ArtistMapper.class)),
                         mock(cn.edu.seig.vibemusic.service.IArtistService.class)));
         ReflectionTestUtils.setField(service, "audioMetadataService", mock(IAudioMetadataService.class));
+        ReflectionTestUtils.setField(service, "imageStorageService", new ImageStorageService(minioService));
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     /**
@@ -229,22 +242,23 @@ class SongUploadCoverFromAlbumTest {
 
         ArgumentCaptor<String> fileName = ArgumentCaptor.forClass(String.class);
         verify(minioService).uploadBytes(any(), eq(STAGING), fileName.capture(), anyString());
-        assertTrue(fileName.getValue().startsWith("cover-searched-"), "实际：" + fileName.getValue());
+        assertTrue(fileName.getValue().matches(
+                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jpg"),
+                "服务端应使用随机 UUID 对象名，实际：" + fileName.getValue());
         assertTrue(fileName.getValue().endsWith(".jpg"), "扩展名应来自 Content-Type：" + fileName.getValue());
-        assertNotEquals("cover-searched-.jpg", fileName.getValue(), "必须带随机后缀");
     }
 
     // ------------------------------------------------------------------ 夹具
 
     private static byte[] jpegBytes() {
-        // JPEG 魔数 + 少量填充，足以证明是二进制而不是空数组
-        return new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0};
+        return cn.edu.seig.vibemusic.service.TestImages.jpeg();
     }
 
     private static String sessionJson(String coverObjectName) {
         StringBuilder json = new StringBuilder("{")
                 .append("\"uploadId\":\"").append(UPLOAD_ID).append("\",")
                 .append("\"createdAt\":1,")
+                .append("\"ownerAdminId\":1,")
                 .append("\"audioObjectName\":\"").append(STAGING).append("/audio.mp3\",")
                 .append("\"durationParsed\":true,")
                 .append("\"metadataAvailable\":true");

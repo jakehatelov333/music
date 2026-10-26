@@ -6,8 +6,10 @@ import cn.edu.seig.vibemusic.model.entity.Banner;
 import cn.edu.seig.vibemusic.model.vo.BannerVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.service.IBannerService;
 import cn.edu.seig.vibemusic.service.MinioService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
@@ -24,12 +26,15 @@ import java.util.List;
  * @since 2025-01-09
  */
 @RestController
+@Slf4j
 public class BannerController {
 
     @Autowired
     private IBannerService bannerService;
     @Autowired
     private MinioService minioService;
+    @Autowired
+    private ImageStorageService imageStorageService;
 
     /**
      * 获取轮播图列表
@@ -49,8 +54,12 @@ public class BannerController {
      */
     @PostMapping("/admin/addBanner")
     public Result addBanner(@RequestParam("banner") MultipartFile banner) {
-        String bannerUrl = minioService.uploadFile(banner, "banners");
-        return bannerService.addBanner(bannerUrl);
+        String bannerUrl = imageStorageService.storeCover(banner, "banners");
+        Result result = bannerService.addBanner(bannerUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(bannerUrl);
+        }
+        return result;
     }
 
     /**
@@ -61,8 +70,12 @@ public class BannerController {
      */
     @PatchMapping("/admin/updateBanner/{id}")
     public Result updateBanner(@PathVariable("id") Long bannerId, @RequestParam("banner") MultipartFile banner) {
-        String bannerUrl = minioService.uploadFile(banner, "banners");
-        return bannerService.updateBanner(bannerId, bannerUrl);
+        String bannerUrl = imageStorageService.storeCover(banner, "banners");
+        Result result = bannerService.updateBanner(bannerId, bannerUrl);
+        if (result.getCode() != 0) {
+            deleteUploadedObject(bannerUrl);
+        }
+        return result;
     }
 
     /**
@@ -106,5 +119,13 @@ public class BannerController {
     @GetMapping("/banner/getBannerList")
     public Result<List<BannerVO>> getBannerList() {
         return bannerService.getBannerList();
+    }
+
+    private void deleteUploadedObject(String url) {
+        try {
+            minioService.deleteFile(url);
+        } catch (RuntimeException e) {
+            log.warn("Banner 更新失败后回收新对象失败，需人工处理：url={}", url, e);
+        }
     }
 }

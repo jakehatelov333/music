@@ -10,6 +10,7 @@ import cn.edu.seig.vibemusic.mapper.SongMapper;
 import cn.edu.seig.vibemusic.model.entity.Playlist;
 import cn.edu.seig.vibemusic.model.vo.PlaylistDetailVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.security.PlaylistAccessService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -144,7 +145,7 @@ class PlaylistCoverCleanupTest {
     @DisplayName("替换自定义封面：旧对象入队（新对象不入队），且不就地删文件")
     void queuesPreviousCustomCoverOnReplace() {
         Long id = insertPlaylist(OLD_COVER, true);
-        when(minio.uploadFile(any(), anyString())).thenReturn(NEW_COVER);
+        when(minio.uploadBytes(any(), anyString(), anyString(), anyString())).thenReturn(NEW_COVER);
 
         personal.updateCover(id, image("new.png"));
 
@@ -180,7 +181,7 @@ class PlaylistCoverCleanupTest {
     }
 
     private static MockMultipartFile image(String name) {
-        return new MockMultipartFile("cover", name, "image/png", new byte[]{1, 2, 3});
+        return new MockMultipartFile("cover", name, "image/png", TestImages.png());
     }
 
     @Configuration
@@ -297,7 +298,7 @@ class PlaylistCoverCleanupTest {
                                          ObjectMapper json, Validator validator, MinioService minio,
                                          MediaCleanupService mediaCleanup) {
             return new PersonalPlaylistService(mapper, bindings, receipts, songs, access, details, json, validator,
-                    minio, mediaCleanup);
+                    new ImageStorageService(minio), mediaCleanup);
         }
     }
 }

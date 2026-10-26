@@ -8,6 +8,7 @@ import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
 import cn.edu.seig.vibemusic.model.dto.ArtistUpdateDTO;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
@@ -21,9 +22,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
 
@@ -60,6 +63,7 @@ class ArtistUpdateAvatarTest {
 
     private ArtistMapper artistMapper;
     private MinioService minioService;
+    private ImageStorageService imageStorageService;
     private MediaCleanupService mediaCleanupService;
     private SongArtistService songArtistService;
     private ArtistProfileService artistProfileService;
@@ -73,6 +77,7 @@ class ArtistUpdateAvatarTest {
 
         artistMapper = mock(ArtistMapper.class);
         minioService = mock(MinioService.class);
+        imageStorageService = new ImageStorageService(minioService);
         mediaCleanupService = mock(MediaCleanupService.class);
         songArtistService = mock(SongArtistService.class);
         artistProfileService = mock(ArtistProfileService.class);
@@ -84,7 +89,8 @@ class ArtistUpdateAvatarTest {
         existing.setStatus(ArtistStatusEnum.ACTIVE.getStatus());
         when(artistMapper.selectById(ARTIST_ID)).thenReturn(existing);
         when(artistMapper.updateById(any(Artist.class))).thenReturn(1);
-        when(minioService.uploadFile(any(MultipartFile.class), eq("artists"))).thenReturn(NEW_URL);
+        when(minioService.uploadBytes(any(byte[].class), eq("artists"), anyString(), eq("image/jpeg")))
+                .thenReturn(NEW_URL);
 
         service = new ArtistServiceImpl();
         ReflectionTestUtils.setField(service, "artistMapper", artistMapper);
@@ -94,6 +100,7 @@ class ArtistUpdateAvatarTest {
         ReflectionTestUtils.setField(service, "songArtistService", songArtistService);
         ReflectionTestUtils.setField(service, "mediaCleanupService", mediaCleanupService);
         ReflectionTestUtils.setField(service, "artistProfileService", artistProfileService);
+        ReflectionTestUtils.setField(service, "imageStorageService", imageStorageService);
         ReflectionTestUtils.setField(service, "redisTemplate", mock(RedisTemplate.class));
     }
 
@@ -109,7 +116,7 @@ class ArtistUpdateAvatarTest {
         // 关键断言：avatar 没有被写进更新语句
         assertNull(updated.getAvatar(), "不传头像时不应设置 avatar 字段");
         assertEquals("灰原穷改", updated.getArtistName());
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
         verify(mediaCleanupService, never()).enqueueForId(anyString(), anyString(), any(), anyString());
     }
 
@@ -127,7 +134,7 @@ class ArtistUpdateAvatarTest {
     @Test
     @DisplayName("上传新头像：写库后把旧头像登记清理队列，不就地删除")
     void uploadAvatarReplacesAndEnqueuesOld() {
-        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null);
+        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null);
 
         assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
         assertEquals(NEW_URL, capturedUpdate().getAvatar());
@@ -142,7 +149,7 @@ class ArtistUpdateAvatarTest {
     void unchangedAvatarIsNotEnqueued() {
         existing.setAvatar(NEW_URL);
 
-        service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null);
+        service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null);
 
         verify(mediaCleanupService, never()).enqueueForId(anyString(), anyString(), any(), anyString());
     }
@@ -152,7 +159,7 @@ class ArtistUpdateAvatarTest {
     void noPreviousAvatarMeansNoCleanup() {
         existing.setAvatar(null);
 
-        service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null);
+        service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null);
 
         verify(mediaCleanupService, never()).enqueueForId(anyString(), anyString(), any(), anyString());
     }
@@ -160,10 +167,11 @@ class ArtistUpdateAvatarTest {
     @Test
     @DisplayName("非法图片被拒绝，且不写库、不登记清理")
     void invalidAvatarRejected() {
-        Result<?> result = service.updateArtist(dto(), image("a.pdf", "application/pdf", 1024), null, null);
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.updateArtist(dto(), image("a.pdf", "application/pdf"), null, null));
 
-        assertEquals(1, result.getCode(), "应失败");
-        assertTrue(String.valueOf(result.getMessage()).contains("图片"));
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        assertTrue(String.valueOf(error.getReason()).contains("图片"));
         verify(artistMapper, never()).updateById(any(Artist.class));
         verify(mediaCleanupService, never()).enqueueForId(anyString(), anyString(), any(), anyString());
     }
@@ -171,11 +179,11 @@ class ArtistUpdateAvatarTest {
     @Test
     @DisplayName("超大图片被拒绝")
     void oversizedAvatarRejected() {
-        Result<?> result = service.updateArtist(dto(),
-                image("big.jpg", "image/jpeg", 5 * 1024 * 1024 + 1), null, null);
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.updateArtist(dto(), oversizedImage("big.jpg", "image/jpeg"), null, null));
 
-        assertEquals(1, result.getCode(), "应失败");
-        assertTrue(String.valueOf(result.getMessage()).contains("5 MB"));
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        assertTrue(String.valueOf(error.getReason()).contains("2 MB"));
         verify(artistMapper, never()).updateById(any(Artist.class));
     }
 
@@ -184,7 +192,7 @@ class ArtistUpdateAvatarTest {
     void updateFailureRemovesUploadedObject() {
         when(artistMapper.updateById(any(Artist.class))).thenReturn(0);
 
-        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null);
+        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null);
 
         assertEquals(1, result.getCode(), "应失败");
         verify(minioService, times(1)).deleteFile(NEW_URL);
@@ -198,7 +206,7 @@ class ArtistUpdateAvatarTest {
                 .thenThrow(new IllegalStateException("数据库炸了"));
 
         assertThrows(IllegalStateException.class,
-                () -> service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null));
+                () -> service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null));
 
         verify(minioService, times(1)).deleteFile(NEW_URL);
     }
@@ -208,16 +216,18 @@ class ArtistUpdateAvatarTest {
     @Test
     @DisplayName("传 qqSingerMid：由服务端下载头像并落库")
     void qqAvatarIsDownloadedAndStored() {
-        byte[] bytes = {1, 2, 3};
+        byte[] bytes = cn.edu.seig.vibemusic.service.TestImages.png();
         when(artistProfileService.downloadAvatar(eq(QQ_MID), any(), any()))
-                .thenReturn(new CoverDownloader.Result(bytes, "image/jpeg", null));
-        when(minioService.uploadBytes(eq(bytes), eq("artists"), anyString(), eq("image/jpeg")))
-                .thenReturn(NEW_URL);
+                .thenReturn(new CoverDownloader.Result(bytes, "image/png", null));
 
         Result<?> result = service.updateArtist(dto(), null, QQ_MID, 800);
 
         assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
         assertEquals(NEW_URL, capturedUpdate().getAvatar());
+        // QQ often returns PNG even when callers expect JPEG; the server must
+        // decode the bytes, re-encode, and store a generated .jpg object.
+        verify(minioService).uploadBytes(any(byte[].class), eq("artists"),
+                org.mockito.ArgumentMatchers.matches("[0-9a-f-]+\\.jpg"), eq("image/jpeg"));
         verify(mediaCleanupService, times(1)).enqueueForId(
                 OLD_URL, MediaCleanupSourceType.ARTIST_AVATAR_REPLACE, ARTIST_ID, "替换歌手头像");
     }
@@ -251,13 +261,12 @@ class ArtistUpdateAvatarTest {
     @DisplayName("qqSingerMid 优先于上传文件")
     void qqTakesPrecedenceOverUpload() {
         when(artistProfileService.downloadAvatar(anyString(), any(), any()))
-                .thenReturn(new CoverDownloader.Result(new byte[]{1}, "image/jpeg", null));
-        when(minioService.uploadBytes(any(byte[].class), anyString(), anyString(), anyString()))
-                .thenReturn(NEW_URL);
+                .thenReturn(new CoverDownloader.Result(cn.edu.seig.vibemusic.service.TestImages.jpeg(),
+                        "image/jpeg", null));
 
-        service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), QQ_MID, 500);
+        service.updateArtist(dto(), image("a.jpg", "image/jpeg"), QQ_MID, 500);
 
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService).uploadBytes(any(byte[].class), eq("artists"), anyString(), eq("image/jpeg"));
     }
 
     // ------------------------------------------------------------------ 其它校验
@@ -267,11 +276,11 @@ class ArtistUpdateAvatarTest {
     void missingArtistFailsCleanly() {
         when(artistMapper.selectById(ARTIST_ID)).thenReturn(null);
 
-        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg", 1024), null, null);
+        Result<?> result = service.updateArtist(dto(), image("a.jpg", "image/jpeg"), null, null);
 
         assertEquals(1, result.getCode(), "应失败");
         verify(artistMapper, never()).updateById(any(Artist.class));
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -323,7 +332,15 @@ class ArtistUpdateAvatarTest {
         return dto;
     }
 
-    private MultipartFile image(String fileName, String contentType, int size) {
-        return new MockMultipartFile("avatar", fileName, contentType, new byte[size]);
+    private MultipartFile image(String fileName, String contentType) {
+        byte[] bytes = "image/png".equals(contentType)
+                ? cn.edu.seig.vibemusic.service.TestImages.png()
+                : cn.edu.seig.vibemusic.service.TestImages.jpeg();
+        return new MockMultipartFile("avatar", fileName, contentType, bytes);
+    }
+
+    private MultipartFile oversizedImage(String fileName, String contentType) {
+        byte[] bytes = new byte[(int) cn.edu.seig.vibemusic.security.MediaPolicy.MAX_AVATAR_BYTES + 1];
+        return new MockMultipartFile("avatar", fileName, contentType, bytes);
     }
 }

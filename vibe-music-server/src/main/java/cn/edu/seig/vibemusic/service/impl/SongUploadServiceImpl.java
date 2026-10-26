@@ -17,6 +17,10 @@ import cn.edu.seig.vibemusic.model.vo.SongUploadFilesVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadMetadataVO;
 import cn.edu.seig.vibemusic.model.vo.SongUploadPrepareVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.CurrentUser;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.security.InvalidMediaException;
+import cn.edu.seig.vibemusic.security.MediaPolicy;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
 import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
@@ -87,8 +91,8 @@ public class SongUploadServiceImpl implements ISongUploadService {
      * 真正的孤儿最多晚一轮（每小时）被回收，代价可以忽略。
      */
     private static final long ORPHAN_MIN_AGE_MILLIS = TimeUnit.MINUTES.toMillis(10);
-    private static final Set<String> AUDIO_EXTENSIONS = Set.of("mp3", "flac", "wav");
-    private static final Set<String> COVER_EXTENSIONS = Set.of("jpg", "jpeg", "png");
+    private static final Set<String> AUDIO_EXTENSIONS = MediaPolicy.SONG_AUDIO_EXTENSIONS;
+    private static final Set<String> COVER_EXTENSIONS = MediaPolicy.IMAGE_EXTENSIONS;
     private static final Set<String> LYRICS_EXTENSIONS = Set.of("lrc", "txt");
 
     /** 封面来源：从音频文件里提取的内嵌图 */
@@ -122,9 +126,12 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private PlatformTransactionManager transactionManager;
     @Autowired
     private CoverDownloader coverDownloader;
+    @Autowired
+    private ImageStorageService imageStorageService;
 
     @Override
     public Result<SongUploadPrepareVO> prepare(MultipartFile audio) {
+        Long ownerAdminId = CurrentUser.requireAdminId();
         log.info("收到歌曲上传准备请求: file={}, size={}", audio == null ? null : audio.getOriginalFilename(), audio == null ? 0 : audio.getSize());
         if (audio == null || audio.isEmpty()) {
             return Result.error("请选择音频文件");
@@ -134,11 +141,20 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!AUDIO_EXTENSIONS.contains(audioExtension)) {
             return Result.error("仅支持 MP3、FLAC、WAV 格式的音频文件");
         }
+        if (audio.getSize() <= 0 || audio.getSize() > MediaPolicy.MAX_AUDIO_BYTES) {
+            return Result.error("单个音频不能超过 200 MB");
+        }
 
         String uploadId = UUID.randomUUID().toString();
         log.info("歌曲上传开始解析: file={}, size={}, uploadId={}", audio.getOriginalFilename(), audio.getSize(), uploadId);
         String stagingFolder = stagingFolder(uploadId);
         String audioObjectName = stagingFolder + "/audio." + audioExtension;
+        AudioMetadataDTO metadata;
+        try {
+            metadata = audioMetadataService.parse(audio);
+        } catch (InvalidMediaException e) {
+            return Result.error(e.getMessage());
+        }
         String audioUrl;
         try {
             audioUrl = minioService.uploadFile(audio, stagingFolder, "audio." + audioExtension);
@@ -147,24 +163,18 @@ public class SongUploadServiceImpl implements ISongUploadService {
             return Result.error(e.getMessage());
         }
 
-        AudioMetadataDTO metadata = audioMetadataService.parse(audio);
         String coverObjectName = null;
         String coverUrl = null;
         String coverSource = null;
         String coverWarning = null;
         if (metadata.isHasEmbeddedCover() && metadata.getEmbeddedCover() != null) {
-            String coverExtension = coverExtension(metadata.getEmbeddedCoverMimeType());
-            String embeddedCoverName = "cover-embedded." + coverExtension;
             try {
-                coverUrl = minioService.uploadBytes(
+                coverUrl = imageStorageService.storeImage(
                         metadata.getEmbeddedCover(),
                         stagingFolder,
-                        embeddedCoverName,
-                        StringUtils.hasText(metadata.getEmbeddedCoverMimeType())
-                                ? metadata.getEmbeddedCoverMimeType()
-                                : "image/" + ("jpg".equals(coverExtension) ? "jpeg" : coverExtension)
+                        1600
                 );
-                coverObjectName = stagingFolder + "/" + embeddedCoverName;
+                coverObjectName = minioService.toObjectName(coverUrl);
                 coverSource = COVER_SOURCE_EMBEDDED;
             } catch (RuntimeException e) {
                 coverWarning = "内嵌封面提取失败，请手动上传封面。";
@@ -175,6 +185,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         long now = System.currentTimeMillis();
         SongUploadSession session = SongUploadSession.builder()
                 .uploadId(uploadId)
+                .ownerAdminId(ownerAdminId)
                 .createdAt(now)
                 .lastActivityAt(now)
                 .audioObjectName(audioObjectName)
@@ -226,7 +237,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!isValidUploadId(uploadId)) {
             return Result.error("上传任务不存在或参数不合法");
         }
-        SongUploadSession session = getSession(uploadId);
+        SongUploadSession session = requireOwnedSession(uploadId);
         if (session == null) {
             return Result.error("上传任务已过期，请重新上传音频");
         }
@@ -242,11 +253,13 @@ public class SongUploadServiceImpl implements ISongUploadService {
             if (!COVER_EXTENSIONS.contains(coverExtension)) {
                 return Result.error("封面仅支持 JPG、JPEG、PNG 格式");
             }
-            String objectName = "cover-uploaded-" + UUID.randomUUID() + "." + coverExtension;
+            if (cover.getSize() <= 0 || cover.getSize() > MediaPolicy.MAX_IMAGE_BYTES) {
+                return Result.error("封面图片不能超过 5 MB");
+            }
             String oldCoverObjectName = session.getCoverObjectName();
             try {
-                String newCoverUrl = minioService.uploadFile(cover, stagingFolder(uploadId), objectName);
-                session.setCoverObjectName(stagingFolder(uploadId) + "/" + objectName);
+                String newCoverUrl = imageStorageService.storeCover(cover, stagingFolder(uploadId));
+                session.setCoverObjectName(minioService.toObjectName(newCoverUrl));
                 session.setCoverUrl(newCoverUrl);
                 session.setCoverSource(COVER_SOURCE_UPLOADED);
                 if (StringUtils.hasText(oldCoverObjectName) && !oldCoverObjectName.equals(session.getCoverObjectName())) {
@@ -305,7 +318,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (dto == null || !isValidUploadId(dto.getUploadId())) {
             return Result.error("上传任务不存在或参数不合法");
         }
-        SongUploadSession session = getSession(dto.getUploadId());
+        SongUploadSession session = requireOwnedSession(dto.getUploadId());
         if (session == null) {
             return Result.error("上传任务已过期，请重新上传音频");
         }
@@ -373,6 +386,17 @@ public class SongUploadServiceImpl implements ISongUploadService {
             if (!minioService.objectExists(session.getAudioObjectName())) {
                 return Result.error("临时音频文件不存在或已过期，请重新上传");
             }
+            MinioService.ObjectMetadata audioStat = minioService.statObject(session.getAudioObjectName());
+            if (audioStat.size() != session.getAudioSize()
+                    || audioStat.size() <= 0
+                    || audioStat.size() > MediaPolicy.MAX_AUDIO_BYTES) {
+                return Result.error("临时音频实际大小与声明不一致或超过上限");
+            }
+            try (java.io.InputStream input = minioService.getObject(session.getAudioObjectName())) {
+                audioMetadataService.parse(input, session.getAudioOriginalName(), audioStat.size());
+            } catch (InvalidMediaException e) {
+                return Result.error("临时音频校验失败：" + e.getMessage());
+            }
 
             String audioExtension = extensionFromObjectName(session.getAudioObjectName(), "mp3");
             String finalAudioName = UUID.randomUUID() + "." + audioExtension;
@@ -387,13 +411,25 @@ public class SongUploadServiceImpl implements ISongUploadService {
                 if (!minioService.objectExists(session.getCoverObjectName())) {
                     throw new IllegalStateException("临时封面文件不存在或已过期");
                 }
-                String coverExtension = extensionFromObjectName(session.getCoverObjectName(), "jpg");
-                String finalCoverName = UUID.randomUUID() + "." + coverExtension;
+                MinioService.ObjectMetadata coverStat = minioService.statObject(session.getCoverObjectName());
+                if (coverStat.size() <= 0 || coverStat.size() > MediaPolicy.MAX_IMAGE_BYTES) {
+                    throw new IllegalStateException("临时封面大小超过安全上限");
+                }
+                String coverObjectExtension = extensionFromObjectName(
+                        session.getCoverObjectName(), "jpg");
+                ImageStorageService.ValidatedImage validatedCover;
+                try (java.io.InputStream input = minioService.getObject(session.getCoverObjectName())) {
+                    validatedCover = imageStorageService.validateCover(
+                            input, "cover." + coverObjectExtension, coverStat.size());
+                }
+                String finalCoverName = UUID.randomUUID()
+                        + extensionForContentType(validatedCover.contentType());
                 finalCoverObjectName = "songCovers/" + finalCoverName;
                 finalCoverUrl = minioService.copyObject(
                         session.getCoverObjectName(),
                         "songCovers",
-                        finalCoverName
+                        finalCoverName,
+                        validatedCover.contentType()
                 );
             }
 
@@ -484,7 +520,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!isValidUploadId(uploadId)) {
             return Result.error("上传任务不存在或参数不合法");
         }
-        SongUploadSession session = getSession(uploadId);
+        SongUploadSession session = requireOwnedSession(uploadId);
         if (session == null) {
             return Result.error("上传任务已过期，请重新上传音频");
         }
@@ -501,21 +537,19 @@ public class SongUploadServiceImpl implements ISongUploadService {
         }
 
         String oldCoverObjectName = session.getCoverObjectName();
-        String objectName = "cover-searched-" + UUID.randomUUID() + "." + coverExtension(downloaded.contentType());
         String newCoverUrl;
         try {
-            newCoverUrl = minioService.uploadBytes(
+            newCoverUrl = imageStorageService.storeImage(
                     downloaded.bytes(),
                     stagingFolder(uploadId),
-                    objectName,
-                    downloaded.contentType()
+                    1600
             );
         } catch (RuntimeException e) {
             log.error("封面写入 staging 失败，uploadId={}", uploadId, e);
             return Result.error("封面保存失败，请重试");
         }
 
-        session.setCoverObjectName(stagingFolder(uploadId) + "/" + objectName);
+        session.setCoverObjectName(minioService.toObjectName(newCoverUrl));
         session.setCoverUrl(newCoverUrl);
         session.setCoverSource(COVER_SOURCE_SEARCHED);
 
@@ -523,7 +557,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
             saveSession(session);
         } catch (RuntimeException e) {
             // 会话没保存成功，刚写入的这张图就成了孤儿：立刻回收，避免留下无主文件
-            safeDeleteObject(stagingFolder(uploadId) + "/" + objectName);
+            safeDeleteObject(minioService.toObjectName(newCoverUrl));
             log.error("保存上传资源状态失败，uploadId={}", uploadId, e);
             return Result.error("保存上传状态失败，请重试");
         }
@@ -546,7 +580,7 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!isValidUploadId(uploadId)) {
             return Result.error("上传任务不存在或参数不合法");
         }
-        SongUploadSession session = getSession(uploadId);
+        SongUploadSession session = requireOwnedSession(uploadId);
         if (session == null) {
             return Result.success("上传任务已过期", null);
         }
@@ -577,16 +611,9 @@ public class SongUploadServiceImpl implements ISongUploadService {
         if (!isValidUploadId(uploadId)) {
             return Result.error("上传任务不存在或参数不合法");
         }
-        SongUploadSession session = getSession(uploadId);
+        SongUploadSession session = requireOwnedSession(uploadId);
         if (session == null) {
-            // 会话已不在（可能已过期）：staging 里仍可能有残留对象，尽力删一次；
-            // 这里删失败也不报错 —— 已无会话可保留，交给 cleanupOrphanStaging 兜底。
-            try {
-                minioService.deleteObjectsByPrefix(stagingFolder(uploadId));
-            } catch (Exception e) {
-                log.warn("清理残留 staging 文件失败，uploadId={}", uploadId, e);
-            }
-            return Result.success("临时文件已清理");
+            return Result.error("上传任务不存在或已过期");
         }
         try {
             cleanupSession(uploadId);
@@ -1025,6 +1052,21 @@ public class SongUploadServiceImpl implements ISongUploadService {
     }
 
     /**
+     * Session IDs are not bearer capabilities. Every user-facing operation must be
+     * performed by the administrator that created the session; legacy sessions without
+     * an owner are rejected.
+     */
+    private SongUploadSession requireOwnedSession(String uploadId) {
+        Long adminId = CurrentUser.requireAdminId();
+        SongUploadSession session = getSession(uploadId);
+        if (session == null || session.getOwnerAdminId() == null
+                || !session.getOwnerAdminId().equals(adminId)) {
+            return null;
+        }
+        return session;
+    }
+
+    /**
      * 清理一次上传会话：先删 staging 文件，<b>确认删干净之后</b>才删 Redis 会话。
      *
      * <p>顺序不能反，也不能把两步都包在「失败只记日志」里。曾经的写法是两步各自 try/catch：
@@ -1082,20 +1124,6 @@ public class SongUploadServiceImpl implements ISongUploadService {
         return String.format(Locale.ROOT, "%.2f", seconds);
     }
 
-    private String coverExtension(String mimeType) {
-        if (!StringUtils.hasText(mimeType)) {
-            return "jpg";
-        }
-        String mime = mimeType.toLowerCase(Locale.ROOT);
-        if (mime.contains("png")) {
-            return "png";
-        }
-        if (mime.contains("webp")) {
-            return "webp";
-        }
-        return "jpg";
-    }
-
     private String extensionOf(String filename) {
         if (!StringUtils.hasText(filename)) {
             return "";
@@ -1109,6 +1137,10 @@ public class SongUploadServiceImpl implements ISongUploadService {
     private String extensionFromObjectName(String objectName, String fallback) {
         String extension = extensionOf(objectName);
         return StringUtils.hasText(extension) ? extension : fallback;
+    }
+
+    private static String extensionForContentType(String contentType) {
+        return MediaPolicy.isPngContentType(contentType) ? ".png" : ".jpg";
     }
 
     private String trimToNull(String value) {

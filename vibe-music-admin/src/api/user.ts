@@ -75,9 +75,13 @@ export const getLogin = async (data?: object) => {
 
 /** 登出 */
 export const getLogout = () => {
-  const userData = getToken(); // 获取 token 数据
+  const userData = getToken();
   return http.request("post", "/admin/logout", {
-    headers: { Authorization: userData.accessToken } // 设置请求头
+    headers: {
+      Authorization: userData?.accessToken
+        ? `Bearer ${userData.accessToken}`
+        : ""
+    }
   });
 };
 

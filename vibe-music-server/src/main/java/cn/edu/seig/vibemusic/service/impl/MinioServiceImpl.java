@@ -4,6 +4,7 @@ import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.service.MinioService;
 import io.minio.CopyObjectArgs;
 import io.minio.CopySource;
+import io.minio.Directive;
 import io.minio.messages.DeleteObject;
 import io.minio.errors.ErrorResponseException;
 import io.minio.ListObjectsArgs;
@@ -16,6 +17,7 @@ import io.minio.RemoveObjectArgs;
 import io.minio.RemoveObjectsArgs;
 import io.minio.Result;
 import io.minio.StatObjectArgs;
+import io.minio.StatObjectResponse;
 import io.minio.messages.DeleteError;
 import io.minio.messages.Item;
 import org.springframework.beans.factory.annotation.Value;
@@ -90,19 +92,27 @@ public class MinioServiceImpl implements MinioService {
 
     @Override
     public String copyObject(String sourceObjectName, String targetFolder, String targetFileName) {
+        return copyObject(sourceObjectName, targetFolder, targetFileName, null);
+    }
+
+    @Override
+    public String copyObject(String sourceObjectName, String targetFolder, String targetFileName,
+                             String contentType) {
         String targetObjectName = objectName(targetFolder, targetFileName);
         try {
             CopySource source = CopySource.builder()
                     .bucket(bucketName)
                     .object(sourceObjectName)
                     .build();
-            minioClient.copyObject(
-                    CopyObjectArgs.builder()
-                            .bucket(bucketName)
-                            .object(targetObjectName)
-                            .source(source)
-                            .build()
-            );
+            CopyObjectArgs.Builder builder = CopyObjectArgs.builder()
+                    .bucket(bucketName)
+                    .object(targetObjectName)
+                    .source(source);
+            if (StringUtils.hasText(contentType)) {
+                builder.metadataDirective(Directive.REPLACE)
+                        .headers(java.util.Map.of("Content-Type", contentType));
+            }
+            minioClient.copyObject(builder.build());
             return publicUrl(targetObjectName);
         } catch (Exception e) {
             throw new RuntimeException("文件转存失败：" + e.getMessage());
@@ -112,20 +122,31 @@ public class MinioServiceImpl implements MinioService {
     @Override
     public boolean objectExists(String objectName) {
         try {
-            minioClient.statObject(
+            statObject(objectName);
+            return true;
+        } catch (RuntimeException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof ErrorResponseException response
+                    && ("NoSuchKey".equals(response.errorResponse().code())
+                    || "NoSuchObject".equals(response.errorResponse().code()))) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    @Override
+    public ObjectMetadata statObject(String objectName) {
+        try {
+            StatObjectResponse stat = minioClient.statObject(
                     StatObjectArgs.builder()
                             .bucket(bucketName)
                             .object(objectName)
                             .build()
             );
-            return true;
-        } catch (ErrorResponseException e) {
-            if ("NoSuchKey".equals(e.errorResponse().code()) || "NoSuchObject".equals(e.errorResponse().code())) {
-                return false;
-            }
-            throw new RuntimeException("检查文件状态失败：" + e.getMessage());
+            return new ObjectMetadata(objectName, stat.size(), stat.contentType());
         } catch (Exception e) {
-            throw new RuntimeException("检查文件状态失败：" + e.getMessage());
+            throw new RuntimeException("检查文件状态失败：" + e.getMessage(), e);
         }
     }
 

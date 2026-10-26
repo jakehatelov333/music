@@ -6,6 +6,7 @@ import cn.edu.seig.vibemusic.model.dto.*;
 import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.VerificationPurpose;
 import cn.edu.seig.vibemusic.service.IUserService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.util.BindingResultUtil;
@@ -31,9 +32,6 @@ public class UserController {
 
     @Autowired
     private IUserService userService;
-    @Autowired
-    private MinioService minioService;
-
     /**
      * 发送验证码
      *
@@ -41,8 +39,9 @@ public class UserController {
      * @return 结果
      */
     @GetMapping("/sendVerificationCode")
-    public Result sendVerificationCode(@RequestParam @Email String email) {
-        return userService.sendVerificationCode(email);
+    public Result sendVerificationCode(@RequestParam @Email String email,
+                                       @RequestParam VerificationPurpose purpose) {
+        return userService.sendVerificationCode(email, purpose);
     }
 
     /**
@@ -58,12 +57,6 @@ public class UserController {
         String errorMessage = BindingResultUtil.handleBindingResultErrors(bindingResult);
         if (errorMessage != null) {
             return Result.error(errorMessage);
-        }
-
-        // 验证验证码是否正确
-        boolean isCodeValid = userService.verifyVerificationCode(userRegisterDTO.getEmail(), userRegisterDTO.getVerificationCode());
-        if (!isCodeValid) {
-            return Result.error(MessageConstant.VERIFICATION_CODE + MessageConstant.INVALID);
         }
 
         return userService.register(userRegisterDTO);
@@ -122,27 +115,25 @@ public class UserController {
      */
     @PatchMapping("/updateUserAvatar")
     public Result updateUserAvatar(@RequestParam("avatar") MultipartFile avatar) {
-        String avatarUrl = minioService.uploadFile(avatar, "users");  // 上传到 users 目录
-        return userService.updateUserAvatar(avatarUrl);
+        return userService.updateUserAvatar(avatar);
     }
 
     /**
      * 更新用户密码
      *
      * @param userPasswordDTO 用户密码信息
-     * @param token           认证token
      * @return 结果
      */
     @PatchMapping("/updateUserPassword")
     public Result updateUserPassword(@RequestBody @Valid UserPasswordDTO userPasswordDTO,
-                                     @RequestHeader("Authorization") String token, BindingResult bindingResult) {
+                                     BindingResult bindingResult) {
         // 校验失败时，返回错误信息
         String errorMessage = BindingResultUtil.handleBindingResultErrors(bindingResult);
         if (errorMessage != null) {
             return Result.error(errorMessage);
         }
 
-        return userService.updateUserPassword(userPasswordDTO, token);
+        return userService.updateUserPassword(userPasswordDTO);
     }
 
     /**
@@ -159,13 +150,20 @@ public class UserController {
             return Result.error(errorMessage);
         }
 
-        // 验证验证码是否正确
-        boolean isCodeValid = userService.verifyVerificationCode(userResetPasswordDTO.getEmail(), userResetPasswordDTO.getVerificationCode());
-        if (!isCodeValid) {
-            return Result.error(MessageConstant.VERIFICATION_CODE + MessageConstant.INVALID);
-        }
-
         return userService.resetUserPassword(userResetPasswordDTO);
+    }
+
+    /**
+     * 换绑邮箱：必须同时通过当前密码、原邮箱验证码和新邮箱验证码。
+     */
+    @PatchMapping("/changeEmail")
+    public Result changeEmail(@RequestBody @Valid UserEmailChangeDTO userEmailChangeDTO,
+                              BindingResult bindingResult) {
+        String errorMessage = BindingResultUtil.handleBindingResultErrors(bindingResult);
+        if (errorMessage != null) {
+            return Result.error(errorMessage);
+        }
+        return userService.changeEmail(userEmailChangeDTO);
     }
 
     /**

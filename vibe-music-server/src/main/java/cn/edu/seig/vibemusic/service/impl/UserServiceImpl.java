@@ -5,25 +5,29 @@ import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.enumeration.RoleEnum;
 import cn.edu.seig.vibemusic.enumeration.UserStatusEnum;
-import cn.edu.seig.vibemusic.mapper.AccountCleanupMapper;
-import cn.edu.seig.vibemusic.mapper.AccountCleanupTaskMapper;
-import cn.edu.seig.vibemusic.mapper.FeedbackMapper;
 import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.dto.*;
-import cn.edu.seig.vibemusic.model.entity.Feedback;
 import cn.edu.seig.vibemusic.model.entity.User;
 import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.model.vo.UserManagementVO;
 import cn.edu.seig.vibemusic.model.vo.UserVO;
 import cn.edu.seig.vibemusic.result.PageResult;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.CurrentUser;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.security.PasswordService;
+import cn.edu.seig.vibemusic.security.TokenExtractor;
+import cn.edu.seig.vibemusic.security.TransactionCallbacks;
+import cn.edu.seig.vibemusic.security.VerificationCodeService;
+import cn.edu.seig.vibemusic.security.VerificationCodeService.VerificationClaim;
+import cn.edu.seig.vibemusic.security.VerificationPurpose;
 import cn.edu.seig.vibemusic.service.EmailService;
 import cn.edu.seig.vibemusic.service.IUserService;
 import cn.edu.seig.vibemusic.service.AccountDeletionService;
 import cn.edu.seig.vibemusic.service.AccountDeletionService.AccountDeletionOutcome;
 import cn.edu.seig.vibemusic.service.AccountDeletionService.BatchDeletionOutcome;
 import cn.edu.seig.vibemusic.service.MinioService;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.SortWhitelistUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import cn.edu.seig.vibemusic.util.TypeConversionUtil;
@@ -37,20 +41,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.util.DigestUtils;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -65,29 +66,23 @@ import java.util.concurrent.TimeUnit;
 @CacheConfig(cacheNames = "userCache")
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
-    /** 账号注销时清理的外部资源类型。 */
-    private static final String RESOURCE_REDIS_TOKEN = "REDIS_TOKEN";
-    private static final String RESOURCE_MINIO_AVATAR = "MINIO_AVATAR";
-
     @Autowired
     private UserMapper userMapper;
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
     @Autowired
     private EmailService emailService;
     @Autowired
     private MinioService minioService;
-    @Autowired
-    private FeedbackMapper feedbackMapper;
-    @Autowired
-    private AccountCleanupMapper accountCleanupMapper;
-    @Autowired
-    private AccountCleanupTaskMapper accountCleanupTaskMapper;
-    @Autowired
-    private PlatformTransactionManager transactionManager;
     /** 账号删除的唯一实现：管理员单删/批删/自助注销都委托它，入口只负责鉴权。 */
     @Autowired
     private AccountDeletionService accountDeletionService;
+    @Autowired
+    private PasswordService passwordService;
+    @Autowired
+    private AuthSessionService authSessionService;
+    @Autowired
+    private VerificationCodeService verificationCodeService;
+    @Autowired
+    private ImageStorageService imageStorageService;
 
     /**
      * 发送验证码
@@ -96,28 +91,20 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      * @return 结果
      */
     @Override
-    public Result sendVerificationCode(String email) {
-        String verificationCode = emailService.sendVerificationCodeEmail(email);
-        if (verificationCode == null) {
+    public Result sendVerificationCode(String email, VerificationPurpose purpose) {
+        String verificationCode = verificationCodeService.issue(purpose, email);
+        try {
+            boolean sent = emailService.sendEmail(email, "【Vibe Music】验证码",
+                    "您的验证码为：" + verificationCode + "，5 分钟内有效。请勿向他人泄露。");
+            if (!sent) {
+                verificationCodeService.consume(purpose, email, verificationCode);
+                return Result.error(MessageConstant.EMAIL_SEND_FAILED);
+            }
+        } catch (RuntimeException e) {
+            verificationCodeService.consume(purpose, email, verificationCode);
             return Result.error(MessageConstant.EMAIL_SEND_FAILED);
         }
-
-        // 将验证码存储到Redis中，设置过期时间为5分钟
-        stringRedisTemplate.opsForValue().set("verificationCode:" + email, verificationCode, 5, TimeUnit.MINUTES);
         return Result.success(MessageConstant.EMAIL_SEND_SUCCESS);
-    }
-
-    /**
-     * 验证验证码
-     *
-     * @param email            用户邮箱
-     * @param verificationCode 验证码
-     * @return 验证结果
-     */
-    @Override
-    public boolean verifyVerificationCode(String email, String verificationCode) {
-        String storedCode = stringRedisTemplate.opsForValue().get("verificationCode:" + email);
-        return storedCode != null && storedCode.equals(verificationCode);
     }
 
     /**
@@ -128,10 +115,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Result register(UserRegisterDTO userRegisterDTO) {
-        // 删除Redis中的验证码
-        stringRedisTemplate.delete("verificationCode:" + userRegisterDTO.getEmail());
-
         User userByUsername = userMapper.selectOne(new QueryWrapper<User>().eq("username", userRegisterDTO.getUsername()));
         if (userByUsername != null) {
             return Result.error(MessageConstant.USERNAME + MessageConstant.ALREADY_EXISTS);
@@ -142,15 +127,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.error(MessageConstant.EMAIL + MessageConstant.ALREADY_EXISTS);
         }
 
-        String passwordMD5 = DigestUtils.md5DigestAsHex(userRegisterDTO.getPassword().getBytes());
+        VerificationClaim verificationClaim = verificationCodeService.claim(
+                VerificationPurpose.REGISTER, userRegisterDTO.getEmail(), userRegisterDTO.getVerificationCode());
+        String passwordHash = passwordService.encode(userRegisterDTO.getPassword());
         User user = new User();
-        user.setUsername(userRegisterDTO.getUsername()).setPassword(passwordMD5).setEmail(userRegisterDTO.getEmail())
+        user.setUsername(userRegisterDTO.getUsername()).setPassword(passwordHash).setEmail(userRegisterDTO.getEmail())
                 .setCreateTime(LocalDateTime.now()).setUpdateTime(LocalDateTime.now())
-                .setUserStatus(UserStatusEnum.ENABLE);
+                .setUserStatus(UserStatusEnum.ENABLE).setAuthVersion(0L);
 
         if (userMapper.insert(user) == 0) {
+            verificationCodeService.releaseClaim(verificationClaim);
             return Result.error(MessageConstant.REGISTER + MessageConstant.FAILED);
         }
+        TransactionCallbacks.afterCommit(
+                () -> verificationCodeService.finalizeClaim(verificationClaim),
+                () -> verificationCodeService.releaseClaim(verificationClaim));
         return Result.success(MessageConstant.REGISTER + MessageConstant.SUCCESS);
     }
 
@@ -164,28 +155,29 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     public Result login(UserLoginDTO userLoginDTO) {
         User user = userMapper.selectOne(new QueryWrapper<User>().eq("email", userLoginDTO.getEmail()));
         if (user == null) {
-            return Result.error(MessageConstant.EMAIL + MessageConstant.ERROR);
+            passwordService.dummyMatch(userLoginDTO.getPassword());
+            return Result.error(MessageConstant.LOGIN + MessageConstant.FAILED);
         }
-        if (user.getUserStatus() != UserStatusEnum.ENABLE) {
-            return Result.error(MessageConstant.ACCOUNT_LOCKED);
+        boolean passwordMatches = passwordService.matches(userLoginDTO.getPassword(), user.getPassword());
+        if (!passwordMatches || user.getUserStatus() != UserStatusEnum.ENABLE) {
+            return Result.error(MessageConstant.LOGIN + MessageConstant.FAILED);
         }
-
-        if (DigestUtils.md5DigestAsHex(userLoginDTO.getPassword().getBytes()).equals(user.getPassword())) {
-            // 登录成功
-            Map<String, Object> claims = new HashMap<>();
-            claims.put(JwtClaimsConstant.ROLE, RoleEnum.USER.getRole());
-            claims.put(JwtClaimsConstant.USER_ID, user.getUserId());
-            claims.put(JwtClaimsConstant.USERNAME, user.getUsername());
-            claims.put(JwtClaimsConstant.EMAIL, user.getEmail());
-            String token = JwtUtil.generateToken(claims);
-
-
-            // 将token存入redis
-            stringRedisTemplate.opsForValue().set(token, token, 6, TimeUnit.HOURS);
-            return Result.success(MessageConstant.LOGIN + MessageConstant.SUCCESS, token);
+        if (passwordService.needsUpgrade(user.getPassword())) {
+            userMapper.update(new User().setPassword(passwordService.encode(userLoginDTO.getPassword()))
+                    .setUpdateTime(LocalDateTime.now()), new QueryWrapper<User>().eq("id", user.getUserId()));
         }
-
-        return Result.error(MessageConstant.PASSWORD + MessageConstant.ERROR);
+        Map<String, Object> claims = new HashMap<>();
+        claims.put(JwtClaimsConstant.ROLE, RoleEnum.USER.getRole());
+        claims.put(JwtClaimsConstant.USER_ID, user.getUserId());
+        claims.put(JwtClaimsConstant.USERNAME, user.getUsername());
+        claims.put(JwtClaimsConstant.EMAIL, user.getEmail());
+        Long authVersion = userMapper.selectAuthVersionById(user.getUserId());
+        if (authVersion == null) {
+            throw new IllegalStateException("账号缺少 auth_version，请先执行 phase14_auth_hardening.sql");
+        }
+        claims.put(JwtClaimsConstant.AUTH_VERSION, authVersion);
+        String token = authSessionService.createSession(claims);
+        return Result.success(MessageConstant.LOGIN + MessageConstant.SUCCESS, token);
     }
 
     /**
@@ -236,14 +228,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.error(MessageConstant.PHONE + MessageConstant.ALREADY_EXISTS);
         }
 
-        User userByEmail = userMapper.selectOne(new QueryWrapper<User>().eq("email", userDTO.getEmail()));
-        if (userByEmail != null && !userByEmail.getUserId().equals(userId)) {
-            return Result.error(MessageConstant.EMAIL + MessageConstant.ALREADY_EXISTS);
-        }
-
         User user = new User();
         BeanUtils.copyProperties(userDTO, user);
         user.setUserId(userId); // 显式覆盖：实体主键只能来自认证上下文
+        user.setEmail(null); // 邮箱只能走受验证的换绑流程
         user.setUpdateTime(LocalDateTime.now());
 
         if (userMapper.updateById(user) == 0) {
@@ -260,20 +248,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
-    public Result updateUserAvatar(String avatarUrl) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+    public Result updateUserAvatar(MultipartFile avatar) {
+        Long userId = CurrentUser.requireUserId();
+        String avatarUrl = imageStorageService.storeAvatar(avatar, "users");
 
         User user = userMapper.selectById(userId);
-        String userAvatar = user.getUserAvatar();
-        if (userAvatar != null && !userAvatar.isEmpty()) {
-            minioService.deleteFile(userAvatar);
+        if (user == null) {
+            minioService.deleteFile(avatarUrl);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, MessageConstant.SESSION_EXPIRED);
         }
-
+        String userAvatar = user.getUserAvatar();
         if (userMapper.update(new User().setUserAvatar(avatarUrl).setUpdateTime(LocalDateTime.now()),
                 new QueryWrapper<User>().eq("id", userId)) == 0) {
+            minioService.deleteFile(avatarUrl);
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+        if (userAvatar != null && !userAvatar.isEmpty() && !userAvatar.equals(avatarUrl)) {
+            minioService.deleteFile(userAvatar);
         }
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
@@ -282,23 +273,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      * 更新用户密码
      *
      * @param userPasswordDTO 用户密码信息
-     * @param token           认证token
      * @return 结果
      */
     @Override
-    public Result updateUserPassword(UserPasswordDTO userPasswordDTO, String token) {
-        Map<String, Object> map = ThreadLocalUtil.get();
-        Object userIdObj = map.get(JwtClaimsConstant.USER_ID);
-        Long userId = TypeConversionUtil.toLong(userIdObj);
+    @Transactional(rollbackFor = Exception.class)
+    public Result updateUserPassword(UserPasswordDTO userPasswordDTO) {
+        Long userId = CurrentUser.requireUserId();
         User user = userMapper.selectById(userId);
         if (user == null) {
             return Result.error(MessageConstant.USER + MessageConstant.NOT_EXIST);
         }
-        if (!user.getPassword().equals(DigestUtils.md5DigestAsHex(userPasswordDTO.getOldPassword().getBytes()))) {
+        if (!passwordService.matches(userPasswordDTO.getOldPassword(), user.getPassword())) {
             return Result.error(MessageConstant.OLD_PASSWORD_ERROR);
         }
 
-        if (user.getPassword().equals(DigestUtils.md5DigestAsHex(userPasswordDTO.getNewPassword().getBytes()))) {
+        if (passwordService.matches(userPasswordDTO.getNewPassword(), user.getPassword())) {
             return Result.error(MessageConstant.NEW_PASSWORD_ERROR);
         }
 
@@ -306,13 +295,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.error(MessageConstant.PASSWORD_NOT_MATCH);
         }
 
-        if (userMapper.update(new User().setPassword(DigestUtils.md5DigestAsHex(userPasswordDTO.getNewPassword().getBytes())).setUpdateTime(LocalDateTime.now()),
+        if (userMapper.update(new User().setPassword(passwordService.encode(userPasswordDTO.getNewPassword())).setUpdateTime(LocalDateTime.now()),
                 new QueryWrapper<User>().eq("id", userId)) == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
-
-        // 注销token
-        stringRedisTemplate.delete(token);
+        requireVersionIncrement(userMapper.incrementAuthVersion(userId));
+        TransactionCallbacks.afterCommit(() -> authSessionService.revokeAllUserSessions(userId));
 
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
@@ -324,10 +312,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Result resetUserPassword(UserResetPasswordDTO userResetPasswordDTO) {
-        // 删除Redis中的验证码
-        stringRedisTemplate.delete("verificationCode:" + userResetPasswordDTO.getEmail());
-
         User user = userMapper.selectOne(new QueryWrapper<User>().eq("email", userResetPasswordDTO.getEmail()));
         if (user == null) {
             return Result.error(MessageConstant.EMAIL + MessageConstant.NOT_EXIST);
@@ -337,12 +323,78 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.error(MessageConstant.PASSWORD_NOT_MATCH);
         }
 
-        if (userMapper.update(new User().setPassword(DigestUtils.md5DigestAsHex(userResetPasswordDTO.getNewPassword().getBytes())).setUpdateTime(LocalDateTime.now()),
+        VerificationClaim verificationClaim = verificationCodeService.claim(
+                VerificationPurpose.RESET_PASSWORD, userResetPasswordDTO.getEmail(),
+                userResetPasswordDTO.getVerificationCode());
+        if (userMapper.update(new User().setPassword(passwordService.encode(userResetPasswordDTO.getNewPassword())).setUpdateTime(LocalDateTime.now()),
                 new QueryWrapper<User>().eq("id", user.getUserId())) == 0) {
+            verificationCodeService.releaseClaim(verificationClaim);
             return Result.error(MessageConstant.PASSWORD + MessageConstant.RESET + MessageConstant.FAILED);
         }
+        requireVersionIncrement(userMapper.incrementAuthVersion(user.getUserId()));
+        TransactionCallbacks.afterCommit(
+                () -> {
+                    verificationCodeService.finalizeClaim(verificationClaim);
+                    authSessionService.revokeAllUserSessions(user.getUserId());
+                },
+                () -> verificationCodeService.releaseClaim(verificationClaim));
 
         return Result.success(MessageConstant.PASSWORD + MessageConstant.RESET + MessageConstant.SUCCESS);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result changeEmail(UserEmailChangeDTO dto) {
+        Long userId = CurrentUser.requireUserId();
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, MessageConstant.SESSION_EXPIRED);
+        }
+        if (!passwordService.matches(dto.getCurrentPassword(), user.getPassword())) {
+            return Result.error(MessageConstant.OLD_PASSWORD_ERROR);
+        }
+        String oldEmail = user.getEmail();
+        String newEmail = dto.getNewEmail().trim().toLowerCase();
+        if (!oldEmail.equalsIgnoreCase(dto.getOldEmail().trim())) {
+            return Result.error(MessageConstant.EMAIL + MessageConstant.ERROR);
+        }
+        if (oldEmail.equalsIgnoreCase(newEmail)) {
+            return Result.error(MessageConstant.EMAIL + MessageConstant.ERROR);
+        }
+        User occupied = userMapper.selectOne(new QueryWrapper<User>().eq("email", newEmail));
+        if (occupied != null && !occupied.getUserId().equals(userId)) {
+            return Result.error(MessageConstant.EMAIL + MessageConstant.ALREADY_EXISTS);
+        }
+
+        VerificationClaim oldClaim = verificationCodeService.claim(
+                VerificationPurpose.EMAIL_CHANGE_OLD, oldEmail, dto.getOldEmailCode());
+        VerificationClaim newClaim;
+        try {
+            newClaim = verificationCodeService.claim(
+                    VerificationPurpose.EMAIL_CHANGE_NEW, newEmail, dto.getNewEmailCode());
+        } catch (RuntimeException e) {
+            verificationCodeService.releaseClaim(oldClaim);
+            throw e;
+        }
+
+        if (userMapper.update(new User().setEmail(newEmail).setUpdateTime(LocalDateTime.now()),
+                new QueryWrapper<User>().eq("id", userId)) == 0) {
+            verificationCodeService.releaseClaim(oldClaim);
+            verificationCodeService.releaseClaim(newClaim);
+            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
+        requireVersionIncrement(userMapper.incrementAuthVersion(userId));
+        TransactionCallbacks.afterCommit(
+                () -> {
+                    verificationCodeService.finalizeClaim(oldClaim);
+                    verificationCodeService.finalizeClaim(newClaim);
+                    authSessionService.revokeAllUserSessions(userId);
+                },
+                () -> {
+                    verificationCodeService.releaseClaim(oldClaim);
+                    verificationCodeService.releaseClaim(newClaim);
+                });
+        return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
 
     /**
@@ -354,13 +406,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     @CacheEvict(cacheNames = {"userCache", "userFavoriteCache", "songCache", "artistCache", "playlistCache"}, allEntries = true)
     public Result logout(String token) {
-        // 注销token
-        Boolean result = stringRedisTemplate.delete(token);
-        if (result != null && result) {
-            return Result.success(MessageConstant.LOGOUT + MessageConstant.SUCCESS);
-        } else {
-            return Result.error(MessageConstant.LOGOUT + MessageConstant.FAILED);
-        }
+        authSessionService.logout(TokenExtractor.extract(token));
+        return Result.success(MessageConstant.LOGOUT + MessageConstant.SUCCESS);
     }
 
     /**
@@ -418,6 +465,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return null;
         }
         return message.length() <= 500 ? message : message.substring(0, 500);
+    }
+
+    private static void requireVersionIncrement(int rows) {
+        if (rows != 1) {
+            throw new IllegalStateException("账号认证版本递增失败");
+        }
     }
 
     /**
@@ -518,11 +571,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             }
         }
 
-        String passwordMD5 = DigestUtils.md5DigestAsHex(userAddDTO.getPassword().getBytes());
+        String passwordHash = passwordService.encode(userAddDTO.getPassword());
         User user = new User();
-        user.setUsername(userAddDTO.getUsername()).setPassword(passwordMD5).setPhone(userAddDTO.getPhone())
+        user.setUsername(userAddDTO.getUsername()).setPassword(passwordHash).setPhone(userAddDTO.getPhone())
                 .setEmail(userAddDTO.getEmail()).setIntroduction(userAddDTO.getIntroduction())
-                .setCreateTime(LocalDateTime.now()).setUpdateTime(LocalDateTime.now());
+                .setCreateTime(LocalDateTime.now()).setUpdateTime(LocalDateTime.now()).setAuthVersion(0L);
 
         // 前端传递的用户状态（1：启用，0：禁用）需反转
         if (userAddDTO.getUserStatus().getId() == 1) {
@@ -558,13 +611,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.error(MessageConstant.PHONE + MessageConstant.ALREADY_EXISTS);
         }
 
-        User userByEmail = userMapper.selectOne(new QueryWrapper<User>().eq("email", userDTO.getEmail()));
-        if (userByEmail != null && !userByEmail.getUserId().equals(userId)) {
-            return Result.error(MessageConstant.EMAIL + MessageConstant.ALREADY_EXISTS);
-        }
-
         User user = new User();
         BeanUtils.copyProperties(userDTO, user);
+        user.setEmail(null); // 管理员资料编辑同样不能绕过双邮箱验证
         user.setUpdateTime(LocalDateTime.now());
 
         if (userMapper.updateById(user) == 0) {
@@ -582,7 +631,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      */
     @Override
     @CacheEvict(cacheNames = "userCache", allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Result updateUserStatus(Long userId, Integer userStatus) {
+        User existing = userMapper.selectById(userId);
+        if (existing == null) {
+            return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
+        }
         // 确保用户状态有效
         UserStatusEnum statusEnum;
         if (userStatus == 0) {
@@ -601,6 +655,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if (rows == 0) {
             return Result.error(MessageConstant.UPDATE + MessageConstant.FAILED);
         }
+        requireVersionIncrement(userMapper.incrementAuthVersion(userId));
+        TransactionCallbacks.afterCommit(() -> authSessionService.revokeAllUserSessions(userId));
         return Result.success(MessageConstant.UPDATE + MessageConstant.SUCCESS);
     }
 

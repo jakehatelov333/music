@@ -11,5 +11,7 @@ public class PathConstant {
     public static final String ALBUM_LIST_PATH = "/album/list";
     public static final String ALBUM_DETAIL_PATH = "/album/**";
     public static final String AI_PATH="/ai/**";
+    /** 精确路径与子路径都要覆盖；AntPathMatcher 不保证 {@code /search/**} 匹配 {@code /search}。 */
     public static final String SEARCH_PATH = "/search";
+    public static final String SEARCH_SUBPATH = "/search/**";
 }

@@ -31,13 +31,9 @@ public class WebConfig implements WebMvcConfigurer {
                         "/admin/login", "/admin/logout",
                         "/user/login", "/user/logout", "/user/register",
                         "/user/sendVerificationCode", "/user/resetUserPassword",
-                        "/banner/getBannerList",
-                        // 不再整体排除：匿名仍可访问（见 LoginInterceptor 白名单），
-                        // 但携带 token 时会校验身份，用于"自己创建的歌单排后 / 收藏标记"。
-                        "/artist/getAllArtists", "/artist/getArtistDetail/**",
-                        "/song/getAllSongs", "/song/getRecommendedSongs", "/song/getSongDetail/**",
-                        PathConstant.ALBUM_LIST_PATH, PathConstant.ALBUM_DETAIL_PATH,
-                        PathConstant.SEARCH_PATH);
+                        "/banner/getBannerList");
+        // 公共内容详情不再整体排除：匿名由 LoginInterceptor 白名单放行，携带 token
+        // 时必须完成 Redis 会话校验，不能仅凭可解析的 JWT 获取用户态数据。
         registry.addInterceptor(rateLimitInterceptor).order(1).addPathPatterns("/**");
     }
 

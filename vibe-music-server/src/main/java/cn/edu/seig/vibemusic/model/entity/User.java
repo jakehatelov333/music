@@ -109,4 +109,10 @@ public class User implements Serializable {
     @TableField("status")
     private UserStatusEnum userStatus;
 
+    /**
+     * 账号安全版本。密码、邮箱或账号状态变化时递增，旧 JWT 即使 Redis 会话仍在也不能继续使用。
+     */
+    @TableField("auth_version")
+    private Long authVersion;
+
 }

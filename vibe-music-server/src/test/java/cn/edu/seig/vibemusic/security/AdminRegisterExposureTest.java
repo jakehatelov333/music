@@ -4,14 +4,11 @@ import cn.edu.seig.vibemusic.config.*;
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.controller.AdminController;
 import cn.edu.seig.vibemusic.interceptor.*;
-import cn.edu.seig.vibemusic.util.JwtUtil;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.*;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.mock.web.MockServletContext;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.*;
@@ -56,12 +53,7 @@ class AdminRegisterExposureTest {
             return new ObjectMapper();
         }
 
-        @Bean
-        StringRedisTemplate redis() {
-            StringRedisTemplate redis = mock(StringRedisTemplate.class);
-            when(redis.opsForValue()).thenReturn(mock(ValueOperations.class));
-            return redis;
-        }
+        @Bean AuthSessionService sessions() { return mock(AuthSessionService.class); }
 
         @Bean
         RolePermissionManager permissions() {
@@ -114,9 +106,10 @@ class AdminRegisterExposureTest {
                     .andExpect(content().string("login-reached"));
 
             // 管理员令牌仍能访问 /admin/ 前缀路径（角色前缀匹配未被破坏）
-            String token = JwtUtil.generateToken(Map.of(
-                    JwtClaimsConstant.ROLE, "ROLE_ADMIN", JwtClaimsConstant.ADMIN_ID, 1L));
-            when(context.getBean(StringRedisTemplate.class).opsForValue().get(token)).thenReturn(token);
+            String token = "valid-admin-token";
+            Map<String, Object> claims = Map.of(
+                    JwtClaimsConstant.ROLE, "ROLE_ADMIN", JwtClaimsConstant.ADMIN_ID, 1L);
+            when(context.getBean(AuthSessionService.class).authenticate(token)).thenReturn(claims);
 
             mvc.perform(post("/admin/register").header("Authorization", token)
                             .contentType("application/json").content(BODY))

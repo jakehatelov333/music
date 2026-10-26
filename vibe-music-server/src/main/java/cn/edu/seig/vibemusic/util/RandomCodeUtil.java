@@ -1,12 +1,12 @@
 package cn.edu.seig.vibemusic.util;
 
-import java.util.Random;
+import java.security.SecureRandom;
 
 public class RandomCodeUtil {
 
     private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private static final int LENGTH = 6; // 生成的字符串长度
-    private static final Random random = new Random();
+    private static final SecureRandom random = new SecureRandom();
 
     /**
      * 生成随机的6个字符的字符串

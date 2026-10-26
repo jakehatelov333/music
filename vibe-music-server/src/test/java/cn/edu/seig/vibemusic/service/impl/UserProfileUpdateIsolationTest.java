@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -78,6 +79,7 @@ class UserProfileUpdateIsolationTest {
 
         assertEquals(0, service.updateUserInfo(dto(SELF)).getCode());
         assertEquals(SELF, capturedUpdatedUserId());
+        assertEquals(null, capturedUpdatedUser().getEmail(), "资料更新不得改写恢复邮箱");
     }
 
     @Test
@@ -87,6 +89,7 @@ class UserProfileUpdateIsolationTest {
 
         assertEquals(0, service.updateUserInfo(dto(null)).getCode());
         assertEquals(SELF, capturedUpdatedUserId());
+        assertEquals(null, capturedUpdatedUser().getEmail());
     }
 
     @Test
@@ -104,6 +107,12 @@ class UserProfileUpdateIsolationTest {
         ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
         verify(userMapper).updateById(captor.capture());
         return captor.getValue().getUserId();
+    }
+
+    private User capturedUpdatedUser() {
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userMapper, atLeastOnce()).updateById(captor.capture());
+        return captor.getAllValues().get(captor.getAllValues().size() - 1);
     }
 
     private UserDTO dto(Long userId) {

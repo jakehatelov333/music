@@ -32,6 +32,17 @@ public interface MinioService {
     String copyObject(String sourceObjectName, String targetFolder, String targetFileName);
 
     /**
+     * Copies an object with an explicit server-derived Content-Type.
+     */
+    String copyObject(String sourceObjectName, String targetFolder, String targetFileName,
+                      String contentType);
+
+    /**
+     * 读取对象元数据。大小与内容类型必须来自服务端存储，而不是客户端声明。
+     */
+    ObjectMetadata statObject(String objectName);
+
+    /**
      * 判断对象是否存在。
      */
     boolean objectExists(String objectName);
@@ -95,5 +106,15 @@ public interface MinioService {
      * @param lastModified 最后修改时间；MinIO 未返回时为 {@code null}（调用方应按「刚写入」处理，宁可不删）
      */
     record StagedObject(String objectName, java.time.ZonedDateTime lastModified) {
+    }
+
+    /**
+     * MinIO 对象元数据。
+     *
+     * @param objectName 对象名
+     * @param size       真实字节数
+     * @param contentType 服务端保存的 Content-Type
+     */
+    record ObjectMetadata(String objectName, long size, String contentType) {
     }
 }

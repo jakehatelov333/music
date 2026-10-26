@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -14,11 +15,14 @@ import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.IArtistService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -98,6 +102,12 @@ class SongUploadPendingArtistsTest {
         when(valueOperations.get(anyString())).thenReturn(sessionJson());
 
         when(minioService.objectExists(anyString())).thenReturn(true);
+        when(minioService.statObject(anyString())).thenAnswer(invocation -> {
+            String objectName = invocation.getArgument(0);
+            return new MinioService.ObjectMetadata(objectName, 1024, "application/octet-stream");
+        });
+        when(minioService.getObject(anyString()))
+                .thenAnswer(invocation -> new java.io.ByteArrayInputStream(new byte[]{1, 2, 3}));
         when(minioService.copyObject(anyString(), eq("songs"), anyString()))
                 .thenReturn("http://localhost:9005/vibe-music-data/songs/final.mp3");
         when(albumMapper.selectOne(any())).thenReturn(existingAlbum());
@@ -123,6 +133,15 @@ class SongUploadPendingArtistsTest {
         ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
         ReflectionTestUtils.setField(service, "transactionManager", txManager);
         ReflectionTestUtils.setField(service, "audioMetadataService", mock(IAudioMetadataService.class));
+        ReflectionTestUtils.setField(service, "imageStorageService", mock(ImageStorageService.class));
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     /** 只有待新建歌手时，应创建它并使用其 id。 */
@@ -259,7 +278,10 @@ class SongUploadPendingArtistsTest {
     private static String sessionJson() {
         return "{"
                 + "\"uploadId\":\"" + UPLOAD_ID + "\","
+                + "\"ownerAdminId\":1,"
                 + "\"audioObjectName\":\"staging/song-upload/" + UPLOAD_ID + "/audio.mp3\","
+                + "\"audioOriginalName\":\"audio.mp3\","
+                + "\"audioSize\":1024,"
                 + "\"durationParsed\":true,"
                 + "\"durationSeconds\":180.5,"
                 + "\"metadataAvailable\":true"

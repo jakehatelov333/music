@@ -10,10 +10,10 @@ import cn.edu.seig.vibemusic.model.entity.Feedback;
 import cn.edu.seig.vibemusic.model.entity.Playlist;
 import cn.edu.seig.vibemusic.model.entity.User;
 import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -36,7 +36,7 @@ import java.util.Set;
  * <ol>
  *     <li><b>事务内</b>：锁账号 → 收集待清理的外部资源（头像 + 个人歌单自定义封面）
  *         → 删反馈（RESTRICT 必须先删）→ 删无外键表 → 登记清理任务 → 删用户</li>
- *     <li><b>提交后</b>：作废 Redis token，唤醒媒体清理 worker</li>
+ *     <li><b>提交后</b>：撤销 Redis 摘要会话，唤醒媒体清理 worker</li>
  * </ol>
  *
  * <p>为什么封面必须在删用户<b>之前</b>收集：{@code tb_playlist.owner_user_id} 是
@@ -53,16 +53,13 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class AccountDeletionService {
 
-    /** Redis token 作废失败时的重试类型（仍走 tb_account_cleanup_task）。 */
-    public static final String RESOURCE_REDIS_TOKEN = "REDIS_TOKEN";
-
     private final UserMapper userMapper;
     private final FeedbackMapper feedbackMapper;
     private final AccountCleanupMapper accountCleanupMapper;
     private final AccountCleanupTaskMapper accountCleanupTaskMapper;
     private final PlaylistMapper playlistMapper;
     private final MediaCleanupService mediaCleanupService;
-    private final StringRedisTemplate stringRedisTemplate;
+    private final AuthSessionService authSessionService;
     private final PlatformTransactionManager transactionManager;
 
     /**
@@ -80,6 +77,7 @@ public class AccountDeletionService {
 
         int coverCount;
         UserSnapshot snapshot;
+        List<Long> deletedIds = new ArrayList<>();
         try {
             TransactionTemplate tx = new TransactionTemplate(transactionManager);
             Object[] captured = tx.execute(status -> {
@@ -100,6 +98,9 @@ public class AccountDeletionService {
 
                 // 2)~6) 与批量删除走完全相同的一段实现
                 int covers = deleteAccountBody(userId);
+                // A DB row disappearing is sufficient to reject old tokens, but revoking the
+                // Redis index keeps storage bounded and makes the intent explicit.
+                deletedIds.add(userId);
                 return new Object[]{before, covers};
             });
 
@@ -115,13 +116,18 @@ public class AccountDeletionService {
 
         // 7) DB 已提交，再处理外部资源。失败不回滚（也回滚不了），落重试记录并如实上报。
         Set<String> pending = new LinkedHashSet<>();
+        for (Long deletedId : deletedIds) {
+            try {
+                authSessionService.revokeAllUserSessions(deletedId);
+            } catch (RuntimeException e) {
+                log.error("账号删除后清理 Redis 会话索引失败，userId={}，旧令牌由账号存在性检查兜底", deletedId, e);
+            }
+        }
         if (StringUtils.hasText(tokenToRevoke)) {
             try {
-                stringRedisTemplate.delete(tokenToRevoke);
+                authSessionService.revokeUserSession(userId, tokenToRevoke);
             } catch (RuntimeException e) {
-                log.error("账号删除后作废 Redis token 失败，userId={}", userId, e);
-                pending.add(RESOURCE_REDIS_TOKEN);
-                recordTokenRetry(userId, tokenToRevoke, e);
+                log.error("账号删除后清理 Redis 会话失败，userId={}，旧令牌由账号存在性检查兜底", userId, e);
             }
         }
 
@@ -142,6 +148,7 @@ public class AccountDeletionService {
         List<Long> ordered = new ArrayList<>(new LinkedHashSet<>(userIds));
         ordered.sort(Long::compareTo);
 
+        List<Long> deletedIds = new ArrayList<>();
         try {
             TransactionTemplate tx = new TransactionTemplate(transactionManager);
             int[] counters = tx.execute(status -> {
@@ -158,6 +165,7 @@ public class AccountDeletionService {
                         continue;
                     }
                     covers += deleteAccountBody(userId);
+                    deletedIds.add(userId);
                     deletedCount++;
                 }
                 return new int[]{deletedCount, covers};
@@ -166,6 +174,13 @@ public class AccountDeletionService {
             int covers = counters == null ? 0 : counters[1];
             log.info("批量删除账号完成，请求 {} 个、实际删除 {} 个，登记封面清理 {} 个",
                     ordered.size(), deletedCount, covers);
+            for (Long deletedId : deletedIds) {
+                try {
+                    authSessionService.revokeAllUserSessions(deletedId);
+                } catch (RuntimeException e) {
+                    log.error("批量删除账号后清理 Redis 会话索引失败，userId={}", deletedId, e);
+                }
+            }
             return new BatchDeletionOutcome(true, null, ordered, covers);
         } catch (RuntimeException e) {
             log.error("批量删除账号失败，已整体回滚，userIds={}", userIds, e);
@@ -222,16 +237,6 @@ public class AccountDeletionService {
         // 删用户（其余关联数据由 FK ON DELETE CASCADE 处理）；返回 0 说明并发请求已删，视同成功
         userMapper.deleteById(userId);
         return covers.size();
-    }
-
-    private void recordTokenRetry(Long userId, String token, RuntimeException cause) {
-        try {
-            accountCleanupTaskMapper.upsertPending(userId, RESOURCE_REDIS_TOKEN, token,
-                    truncate(cause.getMessage()), java.time.LocalDateTime.now());
-        } catch (RuntimeException e) {
-            // 记录本身失败只能记日志：账号已经删了，不能让调用方误以为删除失败
-            log.error("记录账号删除后的 token 清理重试任务失败，userId={}", userId, e);
-        }
     }
 
     private static String truncate(String message) {

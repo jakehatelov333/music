@@ -8,6 +8,7 @@ import cn.edu.seig.vibemusic.mapper.UserFavoriteMapper;
 import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.service.MediaCleanupService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
@@ -19,9 +20,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,6 +69,7 @@ class ArtistAvatarLifecycleTest {
 
     private ArtistMapper artistMapper;
     private MinioService minioService;
+    private ImageStorageService imageStorageService;
     private MediaCleanupService mediaCleanupService;
     private ArtistServiceImpl service;
 
@@ -76,6 +80,7 @@ class ArtistAvatarLifecycleTest {
 
         artistMapper = mock(ArtistMapper.class);
         minioService = mock(MinioService.class);
+        imageStorageService = new ImageStorageService(minioService);
         mediaCleanupService = mock(MediaCleanupService.class);
 
         AtomicLong seq = new AtomicLong(NEW_ID - 1);
@@ -84,7 +89,8 @@ class ArtistAvatarLifecycleTest {
             return 1;
         }).when(artistMapper).insert(any(Artist.class));
 
-        when(minioService.uploadFile(any(MultipartFile.class), eq("artists"))).thenReturn(UPLOADED_URL);
+        when(minioService.uploadBytes(any(byte[].class), eq("artists"), anyString(), eq("image/jpeg")))
+                .thenReturn(UPLOADED_URL);
 
         service = new ArtistServiceImpl();
         ReflectionTestUtils.setField(service, "artistMapper", artistMapper);
@@ -93,6 +99,7 @@ class ArtistAvatarLifecycleTest {
         ReflectionTestUtils.setField(service, "minioService", minioService);
         ReflectionTestUtils.setField(service, "songArtistService", mock(SongArtistService.class));
         ReflectionTestUtils.setField(service, "mediaCleanupService", mediaCleanupService);
+        ReflectionTestUtils.setField(service, "imageStorageService", imageStorageService);
         ReflectionTestUtils.setField(service, "redisTemplate", mock(RedisTemplate.class));
     }
 
@@ -101,7 +108,7 @@ class ArtistAvatarLifecycleTest {
     @Test
     @DisplayName("带头像新增：头像落在同一条记录上，并返回新 id")
     void addArtistWithAvatarStoresUrlAndReturnsId() {
-        Result<?> result = service.addArtist(dto("新歌手"), image("avatar.jpg", "image/jpeg", 1024));
+        Result<?> result = service.addArtist(dto("新歌手"), image("avatar.jpg", "image/jpeg"));
 
         assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
         assertEquals(NEW_ID, result.getData(), "应返回新歌手 id");
@@ -124,7 +131,7 @@ class ArtistAvatarLifecycleTest {
         assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
         assertEquals(NEW_ID, result.getData());
         assertNull(capturedInsert().getAvatar(), "没传头像就不该有 URL");
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -136,44 +143,49 @@ class ArtistAvatarLifecycleTest {
 
         assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
         assertNull(capturedInsert().getAvatar());
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
     }
 
     @Test
-    @DisplayName("超过 5 MB 的头像被拒绝，且不写库、不上传")
+    @DisplayName("超过 2 MB 的头像被拒绝，且不写库、不上传")
     void oversizedAvatarIsRejected() {
-        MultipartFile huge = image("huge.jpg", "image/jpeg", 5 * 1024 * 1024 + 1);
+        MultipartFile huge = oversizedImage("huge.jpg", "image/jpeg");
 
-        Result<?> result = service.addArtist(dto("新歌手"), huge);
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.addArtist(dto("新歌手"), huge));
 
-        assertEquals(1, result.getCode(), "应失败");
-        assertTrue(String.valueOf(result.getMessage()).contains("5 MB"), "提示应说明体积上限：" + result.getMessage());
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        assertTrue(String.valueOf(error.getReason()).contains("2 MB"),
+                "提示应说明体积上限：" + error.getReason());
         verify(artistMapper, never()).insert(any(Artist.class));
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
     }
 
     @Test
     @DisplayName("非图片类型被拒绝，且不写库、不上传")
     void nonImageAvatarIsRejected() {
-        MultipartFile pdf = image("resume.pdf", "application/pdf", 1024);
+        MultipartFile pdf = image("resume.pdf", "application/pdf");
 
-        Result<?> result = service.addArtist(dto("新歌手"), pdf);
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.addArtist(dto("新歌手"), pdf));
 
-        assertEquals(1, result.getCode(), "应失败");
-        assertTrue(String.valueOf(result.getMessage()).contains("图片"), "提示应说明格式要求：" + result.getMessage());
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        assertTrue(String.valueOf(error.getReason()).contains("图片"),
+                "提示应说明格式要求：" + error.getReason());
         verify(artistMapper, never()).insert(any(Artist.class));
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
     }
 
     @Test
-    @DisplayName("Content-Type 为空也拒绝，避免把未知二进制当图片存进去")
-    void nullContentTypeIsRejected() {
-        MultipartFile unknown = image("x.bin", null, 1024);
+    @DisplayName("Content-Type 为空但字节是真实 JPEG 时接受，不信任客户端 MIME")
+    void nullContentTypeDoesNotOverrideValidBytes() {
+        MultipartFile valid = image("x.jpg", null);
 
-        Result<?> result = service.addArtist(dto("新歌手"), unknown);
+        Result<?> result = service.addArtist(dto("新歌手"), valid);
 
-        assertEquals(1, result.getCode(), "应失败");
-        verify(artistMapper, never()).insert(any(Artist.class));
+        assertEquals(0, result.getCode(), "应成功：" + result.getMessage());
+        assertEquals(UPLOADED_URL, capturedInsert().getAvatar());
+        verify(minioService).uploadBytes(any(byte[].class), eq("artists"), anyString(), eq("image/jpeg"));
     }
 
     @Test
@@ -182,7 +194,7 @@ class ArtistAvatarLifecycleTest {
         doThrow(new IllegalStateException("数据库炸了")).when(artistMapper).insert(any(Artist.class));
 
         assertThrows(IllegalStateException.class,
-                () -> service.addArtist(dto("新歌手"), image("a.jpg", "image/jpeg", 1024)));
+                () -> service.addArtist(dto("新歌手"), image("a.jpg", "image/jpeg")));
 
         verify(minioService, times(1)).deleteFile(UPLOADED_URL);
     }
@@ -195,7 +207,7 @@ class ArtistAvatarLifecycleTest {
         doThrow(new RuntimeException("MinIO 也炸了")).when(minioService).deleteFile(UPLOADED_URL);
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> service.addArtist(dto("新歌手"), image("a.jpg", "image/jpeg", 1024)));
+                () -> service.addArtist(dto("新歌手"), image("a.jpg", "image/jpeg")));
 
         assertSame(root, thrown, "应抛出原始的插入异常");
     }
@@ -205,10 +217,10 @@ class ArtistAvatarLifecycleTest {
     void duplicateNameRejectedBeforeUpload() {
         when(artistMapper.selectCount(any())).thenReturn(1L);
 
-        Result<?> result = service.addArtist(dto("周杰伦"), image("a.jpg", "image/jpeg", 1024));
+        Result<?> result = service.addArtist(dto("周杰伦"), image("a.jpg", "image/jpeg"));
 
         assertEquals(1, result.getCode(), "应失败");
-        verify(minioService, never()).uploadFile(any(MultipartFile.class), anyString());
+        verify(minioService, never()).uploadBytes(any(byte[].class), anyString(), anyString(), anyString());
         verify(artistMapper, never()).insert(any(Artist.class));
     }
 
@@ -305,7 +317,15 @@ class ArtistAvatarLifecycleTest {
         return dto;
     }
 
-    private MultipartFile image(String fileName, String contentType, int size) {
-        return new MockMultipartFile("avatar", fileName, contentType, new byte[size]);
+    private MultipartFile image(String fileName, String contentType) {
+        byte[] bytes = "image/png".equals(contentType)
+                ? cn.edu.seig.vibemusic.service.TestImages.png()
+                : cn.edu.seig.vibemusic.service.TestImages.jpeg();
+        return new MockMultipartFile("avatar", fileName, contentType, bytes);
+    }
+
+    private MultipartFile oversizedImage(String fileName, String contentType) {
+        byte[] bytes = new byte[(int) cn.edu.seig.vibemusic.security.MediaPolicy.MAX_AVATAR_BYTES + 1];
+        return new MockMultipartFile("avatar", fileName, contentType, bytes);
     }
 }

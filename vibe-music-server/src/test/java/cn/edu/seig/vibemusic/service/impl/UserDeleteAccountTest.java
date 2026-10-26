@@ -11,6 +11,10 @@ import cn.edu.seig.vibemusic.mapper.UserMapper;
 import cn.edu.seig.vibemusic.model.vo.AccountDeletionResultVO;
 import cn.edu.seig.vibemusic.result.Result;
 import cn.edu.seig.vibemusic.service.AccountDeletionService;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.security.PasswordService;
+import cn.edu.seig.vibemusic.security.VerificationCodeService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.annotation.DbType;
@@ -41,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -126,16 +131,30 @@ class UserDeleteAccountTest {
                                                            AccountCleanupTaskMapper accountCleanupTaskMapper,
                                                            PlaylistMapper playlistMapper,
                                                            cn.edu.seig.vibemusic.service.MediaCleanupService mediaCleanupService,
-                                                           StringRedisTemplate redis,
+                                                           AuthSessionService authSessionService,
                                                            DataSourceTransactionManager transactionManager) {
             return new AccountDeletionService(userMapper, feedbackMapper, accountCleanupMapper,
-                    accountCleanupTaskMapper, playlistMapper, mediaCleanupService, redis, transactionManager);
+                    accountCleanupTaskMapper, playlistMapper, mediaCleanupService, authSessionService,
+                    transactionManager);
         }
-        @Bean UserServiceImpl userService(UserMapper userMapper, AccountDeletionService accountDeletionService) {
+
+        @Bean AuthSessionService authSessionService() { return mock(AuthSessionService.class); }
+        @Bean PasswordService passwordService() { return new PasswordService(); }
+        @Bean VerificationCodeService verificationCodeService() { return mock(VerificationCodeService.class); }
+        @Bean ImageStorageService imageStorageService() { return mock(ImageStorageService.class); }
+        @Bean UserServiceImpl userService(UserMapper userMapper, AccountDeletionService accountDeletionService,
+                                          AuthSessionService authSessionService,
+                                          PasswordService passwordService,
+                                          VerificationCodeService verificationCodeService,
+                                          ImageStorageService imageStorageService) {
             UserServiceImpl impl = new UserServiceImpl();
             ReflectionTestUtils.setField(impl, "userMapper", userMapper);
             // 账号删除的唯一实现已抽到 AccountDeletionService；UserServiceImpl 只负责鉴权与结果组装。
             ReflectionTestUtils.setField(impl, "accountDeletionService", accountDeletionService);
+            ReflectionTestUtils.setField(impl, "authSessionService", authSessionService);
+            ReflectionTestUtils.setField(impl, "passwordService", passwordService);
+            ReflectionTestUtils.setField(impl, "verificationCodeService", verificationCodeService);
+            ReflectionTestUtils.setField(impl, "imageStorageService", imageStorageService);
             return impl;
         }
     }
@@ -143,7 +162,7 @@ class UserDeleteAccountTest {
     @Autowired
     private UserServiceImpl userService;
     @Autowired
-    private StringRedisTemplate redis;
+    private AuthSessionService authSessionService;
     @Autowired
     private MinioService minio;
     @Autowired
@@ -158,7 +177,8 @@ class UserDeleteAccountTest {
 
         jdbc.execute("CREATE TABLE tb_user(id BIGINT PRIMARY KEY, username VARCHAR(255), password VARCHAR(255), "
                 + "phone VARCHAR(32), email VARCHAR(255), user_avatar VARCHAR(255), introduction VARCHAR(1000), "
-                + "create_time TIMESTAMP, update_time TIMESTAMP, status VARCHAR(32))");
+                + "create_time TIMESTAMP, update_time TIMESTAMP, status VARCHAR(32), "
+                + "auth_version BIGINT NOT NULL DEFAULT 0)");
         // RESTRICT：先删用户后删反馈的实现会在这里 FK 报错
         jdbc.execute("CREATE TABLE tb_feedback(id BIGINT AUTO_INCREMENT PRIMARY KEY, user_id BIGINT NOT NULL, "
                 + "feedback VARCHAR(2000), create_time TIMESTAMP, "
@@ -205,7 +225,7 @@ class UserDeleteAccountTest {
         jdbc.update("INSERT INTO tb_feedback(user_id, feedback, create_time) VALUES "
                 + "(1, '希望增加夜间模式', CURRENT_TIMESTAMP), (1, '很好用', CURRENT_TIMESTAMP)");
 
-        reset(redis, minio);
+        reset(authSessionService, minio);
         ThreadLocalUtil.set(Map.of(JwtClaimsConstant.USER_ID, 1L, JwtClaimsConstant.ROLE, "ROLE_USER"));
     }
 
@@ -236,7 +256,7 @@ class UserDeleteAccountTest {
         assertFalse(data.isCleanupPending());
         assertEquals(0, count("tb_feedback"), "用户提交的反馈行应随注销一起删除");
         assertEquals(0, count("tb_user"), "用户行应被删除");
-        verify(redis).delete(TOKEN);
+        verify(authSessionService).revokeUserSession(1L, TOKEN);
     }
 
     @Test
@@ -250,7 +270,7 @@ class UserDeleteAccountTest {
         assertEquals(0, result.getCode(), "用户不存在应走幂等成功路径，而不是报错");
         assertTrue(result.getData().isAccountDeleted());
         assertFalse(result.getData().isCleanupPending());
-        verify(redis, never()).delete(anyString());
+        verify(authSessionService, never()).revokeUserSession(anyLong(), anyString());
     }
 
     @Test
@@ -264,7 +284,7 @@ class UserDeleteAccountTest {
         assertEquals(0, second.getCode(), "第二次注销不应报错");
         assertTrue(second.getData().isAccountDeleted());
         assertFalse(second.getData().isCleanupPending());
-        verify(redis).delete(TOKEN); // 只删了一次
+        verify(authSessionService).revokeUserSession(1L, TOKEN);
     }
 
     @Test
@@ -279,7 +299,7 @@ class UserDeleteAccountTest {
         assertEquals(MessageConstant.ACCOUNT_DELETE_FAILED, result.getMessage());
         assertEquals(2, count("tb_feedback"), "事务回滚后反馈行必须还在");
         assertEquals(1, count("tb_user"), "事务回滚后用户行必须还在");
-        verify(redis, never()).delete(anyString());
+        verify(authSessionService, never()).revokeUserSession(anyLong(), anyString());
         verify(minio, never()).deleteFile(anyString());
     }
 
@@ -336,21 +356,18 @@ class UserDeleteAccountTest {
     }
 
     @Test
-    @DisplayName("注销：Redis 作废失败 → 账号已注销但 cleanupPending=true，并落重试记录")
+    @DisplayName("注销：Redis 撤销失败不回滚账号，也不持久化令牌或摘要")
     void deleteAccountReportsPendingWhenRedisFails() {
-        doThrow(new RuntimeException("redis down")).when(redis).delete(TOKEN);
+        doThrow(new RuntimeException("redis down")).when(authSessionService).revokeUserSession(1L, TOKEN);
 
         Result<AccountDeletionResultVO> result = userService.deleteAccount(TOKEN);
 
         assertEquals(0, result.getCode(), "账号已删除，不能报成注销失败");
         AccountDeletionResultVO data = result.getData();
         assertTrue(data.isAccountDeleted());
-        assertTrue(data.isCleanupPending());
-        assertTrue(data.getPendingItems().contains("REDIS_TOKEN"));
+        assertFalse(data.isCleanupPending());
         assertEquals(0, count("tb_user"), "DB 注销必须已完成");
-        assertEquals(1, count("tb_account_cleanup_task",
-                "user_id = 1 AND resource_type = 'REDIS_TOKEN' AND status = 'PENDING'"),
-                "失败的 Redis 清理应落一条待重试记录");
+        assertEquals(0, count("tb_account_cleanup_task"));
     }
 
     @Test
@@ -369,5 +386,5 @@ class UserDeleteAccountTest {
         // 因此这里只断言"没有走立即删除 + 没有误落账号级重试表"。
         assertEquals(0, count("tb_account_cleanup_task"),
                 "头像不再使用 MINIO_AVATAR 账号级重试，改由媒体清理队列负责");
-        verify(redis).delete(TOKEN); // Redis 成功
+        verify(authSessionService).revokeUserSession(1L, TOKEN);
     }}

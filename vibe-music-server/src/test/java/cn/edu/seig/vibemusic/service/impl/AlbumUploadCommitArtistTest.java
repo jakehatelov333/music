@@ -1,28 +1,34 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.enumeration.ArtistStatusEnum;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
 import cn.edu.seig.vibemusic.model.dto.AlbumUploadCommitDTO;
 import cn.edu.seig.vibemusic.model.dto.ArtistAddDTO;
+import cn.edu.seig.vibemusic.model.dto.AudioMetadataDTO;
 import cn.edu.seig.vibemusic.model.entity.Album;
 import cn.edu.seig.vibemusic.model.entity.Artist;
 import cn.edu.seig.vibemusic.model.entity.Song;
 import cn.edu.seig.vibemusic.model.vo.AlbumUploadPrepareVO;
 import cn.edu.seig.vibemusic.model.vo.AlbumUploadPendingArtistsVO;
 import cn.edu.seig.vibemusic.result.Result;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
 import cn.edu.seig.vibemusic.service.ArtistNameParser;
 import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAlbumUploadService;
 import cn.edu.seig.vibemusic.service.IArtistService;
+import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -30,6 +36,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.io.InputStream;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,11 +49,15 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -80,6 +91,8 @@ class AlbumUploadCommitArtistTest {
     private SongArtistService songArtistService;
     private cn.edu.seig.vibemusic.service.MediaCleanupService mediaCleanupService;
     private IArtistService artistService;
+    private IAudioMetadataService metadataService;
+    private ImageStorageService imageStorageService;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> redisValueOperations;
     private AlbumUploadServiceImpl service;
@@ -100,6 +113,12 @@ class AlbumUploadCommitArtistTest {
         minioService = mock(MinioService.class);
         songArtistService = mock(SongArtistService.class);
         mediaCleanupService = mock(cn.edu.seig.vibemusic.service.MediaCleanupService.class);
+        metadataService = mock(IAudioMetadataService.class);
+        imageStorageService = mock(ImageStorageService.class);
+
+        ThreadLocalUtil.set(Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
 
         when(artistMapper.selectById(any())).thenAnswer(invocation -> {
             Object id = invocation.getArgument(0);
@@ -124,11 +143,27 @@ class AlbumUploadCommitArtistTest {
         redisTemplate = mock(StringRedisTemplate.class);
         redisValueOperations = mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(redisValueOperations);
-        when(redisValueOperations.get(anyString())).thenReturn(stagingSessionJson());
+        when(redisValueOperations.get(anyString())).thenAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return key.startsWith("album-upload:owner:") ? "1" : stagingSessionJson();
+        });
 
         when(minioService.objectExists(anyString())).thenReturn(true);
         when(minioService.copyObject(anyString(), anyString(), anyString()))
                 .thenReturn("http://minio.local/object");
+        when(minioService.copyObject(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn("http://minio.local/object");
+        when(minioService.statObject(anyString())).thenAnswer(invocation -> {
+            String object = invocation.getArgument(0);
+            return object.contains("album-cover")
+                    ? new MinioService.ObjectMetadata(object, 2048, "image/jpeg")
+                    : new MinioService.ObjectMetadata(object, 1024, "audio/mpeg");
+        });
+        when(minioService.getObject(anyString())).thenReturn(InputStream.nullInputStream());
+        when(metadataService.parse(any(InputStream.class), anyString(), anyLong()))
+                .thenReturn(new AudioMetadataDTO());
+        when(imageStorageService.validateCover(any(InputStream.class), anyString(), anyLong()))
+                .thenReturn(new ImageStorageService.ValidatedImage("image/jpeg"));
 
         doAnswer(invocation -> {
             invocation.getArgument(0, Album.class).setAlbumId(9001L);
@@ -152,6 +187,13 @@ class AlbumUploadCommitArtistTest {
         ReflectionTestUtils.setField(service, "mediaCleanupService", mediaCleanupService);
         ReflectionTestUtils.setField(service, "stringRedisTemplate", redisTemplate);
         ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
+        ReflectionTestUtils.setField(service, "metadataService", metadataService);
+        ReflectionTestUtils.setField(service, "imageStorageService", imageStorageService);
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     @Test
@@ -206,6 +248,47 @@ class AlbumUploadCommitArtistTest {
         ArgumentCaptor<List<Long>> artistIdsCaptor = ArgumentCaptor.forClass(List.class);
         verify(songArtistService, times(2)).replaceSongArtists(any(), artistIdsCaptor.capture());
         assertEquals(List.of(EXISTING_ARTIST_ID), artistIdsCaptor.getAllValues().get(0));
+    }
+
+    @Test
+    void clientSuppliedCoverUrlIsNeverPersisted() {
+        AlbumUploadCommitDTO dto = commitDTO(false);
+        dto.getSongs().forEach(song -> song.setArtistIds(List.of(EXISTING_ARTIST_ID)));
+        dto.getAlbum().setCoverUrl("http://minio.local/vibe-music-data/songs/victim.mp3");
+
+        Result<Object> result = service.commit(dto);
+
+        assertEquals(0, result.getCode().intValue(), "提交应成功：" + result.getMessage());
+        ArgumentCaptor<Album> albumCaptor = ArgumentCaptor.forClass(Album.class);
+        verify(albumMapper).insert(albumCaptor.capture());
+        assertNull(albumCaptor.getValue().getCoverUrl());
+
+        ArgumentCaptor<Song> songCaptor = ArgumentCaptor.forClass(Song.class);
+        verify(songMapper, times(2)).insert(songCaptor.capture());
+        assertTrue(songCaptor.getAllValues().stream()
+                .allMatch(song -> song.getCoverUrl() == null));
+    }
+
+    @Test
+    void existingAlbumKeepsItsServerStoredCoverWhenClientSuppliesAnotherUrl() {
+        String existingCover = "http://minio.local/vibe-music-data/albumCovers/server-cover.jpg";
+        Album existing = new Album();
+        existing.setAlbumId(9001L);
+        existing.setCoverUrl(existingCover);
+        when(albumMapper.selectOne(any())).thenReturn(existing);
+        AlbumUploadCommitDTO dto = commitDTO(false);
+        dto.getSongs().forEach(song -> song.setArtistIds(List.of(EXISTING_ARTIST_ID)));
+        dto.getAlbum().setCoverUrl("http://minio.local/vibe-music-data/songs/victim.mp3");
+
+        Result<Object> result = service.commit(dto);
+
+        assertEquals(0, result.getCode().intValue(), "提交应成功：" + result.getMessage());
+        verify(albumMapper, never()).insert(any(Album.class));
+        verify(albumMapper, never()).update(any(), any());
+        ArgumentCaptor<Song> songCaptor = ArgumentCaptor.forClass(Song.class);
+        verify(songMapper, times(2)).insert(songCaptor.capture());
+        assertTrue(songCaptor.getAllValues().stream()
+                .allMatch(song -> existingCover.equals(song.getCoverUrl())));
     }
 
     @Test
@@ -304,7 +387,7 @@ class AlbumUploadCommitArtistTest {
         assertEquals(12L, ((Number) data.get("expiresInHours")).longValue());
         long expiresAt = ((Number) data.get("expiresAt")).longValue();
         assertTrue(expiresAt >= before + 12 * 3600_000L - 5_000);
-        verify(redisValueOperations).set(anyString(), anyString(), eq(12L), eq(TimeUnit.HOURS));
+        verify(redisValueOperations, times(2)).set(anyString(), anyString(), eq(12L), eq(TimeUnit.HOURS));
     }
 
     @Test
@@ -361,12 +444,15 @@ class AlbumUploadCommitArtistTest {
     @Test
     void replacingAlbumCoverEnqueuesOldCoverForCleanup() {
         String oldCover = "http://minio.local/vibe-music-data/albumCovers/old-cover.jpg";
-        when(redisValueOperations.get(anyString())).thenReturn(stagingSessionJsonWithCover());
+        when(redisValueOperations.get(anyString())).thenAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return key.startsWith("album-upload:owner:") ? "1" : stagingSessionJsonWithCover();
+        });
         Album existing = new Album();
         existing.setAlbumId(9001L);
         existing.setCoverUrl(oldCover);
         when(albumMapper.selectOne(any())).thenReturn(existing);
-        when(minioService.copyObject(anyString(), eq("albumCovers"), anyString()))
+        when(minioService.copyObject(anyString(), eq("albumCovers"), anyString(), eq("image/jpeg")))
                 .thenReturn("http://minio.local/vibe-music-data/albumCovers/new-cover.jpg");
 
         Result<Object> result = service.commit(commitDTO(true));
@@ -387,13 +473,13 @@ class AlbumUploadCommitArtistTest {
      */
     @Test
     void abortKeepsSessionWhenStagingDeletionFails() {
-        org.mockito.Mockito.doThrow(new RuntimeException("目录清理失败: 网络超时"))
+        doThrow(new RuntimeException("目录清理失败: 网络超时"))
                 .when(minioService).deleteObjectsByPrefix(anyString());
 
         Result<Object> result = service.abort(UPLOAD_ID);
 
         assertNotEquals(0, result.getCode().intValue(), "失败必须显式报错，不能返回成功");
-        verify(redisTemplate, never()).delete(anyString());
+        verify(redisTemplate, never()).delete(anyList());
     }
 
     /** 放弃草稿成功：先删文件、再删会话。 */
@@ -404,18 +490,45 @@ class AlbumUploadCommitArtistTest {
         assertEquals(0, result.getCode().intValue(), "应成功：" + result.getMessage());
         var order = org.mockito.Mockito.inOrder(minioService, redisTemplate);
         order.verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
-        order.verify(redisTemplate).delete("album-upload:session:" + UPLOAD_ID);
+        order.verify(redisTemplate).delete(List.of(
+                "album-upload:session:" + UPLOAD_ID,
+                "album-upload:owner:" + UPLOAD_ID));
     }
 
-    /** 会话已过期但文件还在：尽力删一次，不报错（这是正常生命周期终点）。 */
+    /** 会话已过期：不能仅凭 UUID 删除 staging 文件。 */
     @Test
-    void abortStillCleansFilesWhenSessionAlreadyGone() {
+    void abortRejectsWhenSessionAlreadyGone() {
         when(redisValueOperations.get(anyString())).thenReturn(null);
 
         Result<Object> result = service.abort(UPLOAD_ID);
 
+        assertNotEquals(0, result.getCode().intValue());
+        verify(minioService, never()).deleteObjectsByPrefix(anyString());
+        verify(redisTemplate, never()).delete(anyList());
+    }
+
+    @Test
+    void clearRejectsAnotherAdministrator() {
+        ThreadLocalUtil.set(Map.of(
+                JwtClaimsConstant.ADMIN_ID, 2L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+
+        Result<Object> result = service.clear(UPLOAD_ID);
+
+        assertNotEquals(0, result.getCode().intValue());
+        verify(minioService, never()).deleteObjectsByPrefix(anyString());
+        verify(redisTemplate, never()).delete(anyList());
+    }
+
+    @Test
+    void clearDeletesOwnedSession() {
+        Result<Object> result = service.clear(UPLOAD_ID);
+
         assertEquals(0, result.getCode().intValue());
         verify(minioService).deleteObjectsByPrefix("staging/album-upload/" + UPLOAD_ID + "/");
+        verify(redisTemplate).delete(List.of(
+                "album-upload:session:" + UPLOAD_ID,
+                "album-upload:owner:" + UPLOAD_ID));
     }
 
     /** 与 {@code AlbumUploadServiceImpl.StagedSong} 的 Jackson 形态一致（Redis 会话里的暂存条目）。 */

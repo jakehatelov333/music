@@ -5,7 +5,6 @@ import cn.edu.seig.vibemusic.model.entity.AccountCleanupTask;
 import cn.edu.seig.vibemusic.service.MinioService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -33,7 +32,6 @@ public class AccountCleanupRetryTask {
     private static final String RESOURCE_MINIO_AVATAR = "MINIO_AVATAR";
 
     private final AccountCleanupTaskMapper cleanupTasks;
-    private final StringRedisTemplate stringRedisTemplate;
     private final MinioService minioService;
 
     @Scheduled(
@@ -65,7 +63,10 @@ public class AccountCleanupRetryTask {
 
     private void cleanup(AccountCleanupTask task) {
         if (RESOURCE_REDIS_TOKEN.equals(task.getResourceType())) {
-            stringRedisTemplate.delete(task.getResourceRef());
+            // Session digests are no longer sufficient to reconstruct the Redis key without
+            // the token. New deletions revoke through AuthSessionService before enqueueing;
+            // legacy raw-token tasks are intentionally retired without logging the secret.
+            log.warn("跳过历史明文 token 清理任务，任务={}", task.getId());
         } else if (RESOURCE_MINIO_AVATAR.equals(task.getResourceType())) {
             minioService.deleteFile(task.getResourceRef());
         } else {

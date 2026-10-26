@@ -48,10 +48,16 @@ public class Admin implements Serializable {
 
     /**
      * 管理员密码
-     * 实体不参与请求体校验；且此处存的是 32 位 MD5 十六进制串，不施加任何强度约束。
+     * 实体不参与请求体校验；新密码为 BCrypt 哈希，登录时会透明升级历史 MD5。
      */
     @NotBlank(message = MessageConstant.PASSWORD + MessageConstant.NOT_NULL)
     @TableField("password")
     private String password;
+
+    /**
+     * 管理员安全版本。凭据或权限状态变化时递增，用于撤销已签发的 JWT。
+     */
+    @TableField("auth_version")
+    private Long authVersion;
 
 }

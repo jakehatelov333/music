@@ -1,5 +1,6 @@
 package cn.edu.seig.vibemusic.service.impl;
 
+import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.mapper.AlbumMapper;
 import cn.edu.seig.vibemusic.mapper.ArtistMapper;
 import cn.edu.seig.vibemusic.mapper.SongMapper;
@@ -15,11 +16,14 @@ import cn.edu.seig.vibemusic.service.ArtistProvisioningService;
 import cn.edu.seig.vibemusic.service.IAudioMetadataService;
 import cn.edu.seig.vibemusic.service.MinioService;
 import cn.edu.seig.vibemusic.service.SongArtistService;
+import cn.edu.seig.vibemusic.security.ImageStorageService;
+import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -107,6 +111,12 @@ class SongUploadCommitBoundaryTest {
                 .thenReturn("http://localhost:9005/vibe-music-data/songs/final-audio.mp3");
         when(minioService.copyObject(eq("staging/song-upload/" + UPLOAD_ID + "/cover.jpg"), eq("songCovers"), anyString()))
                 .thenReturn("http://localhost:9005/vibe-music-data/songCovers/final-cover.jpg");
+        when(minioService.statObject(anyString())).thenAnswer(invocation -> {
+            String objectName = invocation.getArgument(0);
+            return new MinioService.ObjectMetadata(objectName, 1024, "application/octet-stream");
+        });
+        when(minioService.getObject(anyString()))
+                .thenAnswer(invocation -> new java.io.ByteArrayInputStream(new byte[]{1, 2, 3}));
 
         // 专辑已存在，避免走 insert 分支；resolveAlbumId 现在跑在事务里，返回值必须稳定。
         when(albumMapper.selectOne(any())).thenAnswer(invocation -> {
@@ -139,6 +149,18 @@ class SongUploadCommitBoundaryTest {
         ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
         ReflectionTestUtils.setField(service, "transactionManager", transactionManager);
         ReflectionTestUtils.setField(service, "audioMetadataService", mock(IAudioMetadataService.class));
+        ImageStorageService images = mock(ImageStorageService.class);
+        when(images.validateCover(any(), anyString(), any(Long.class)))
+                .thenReturn(new ImageStorageService.ValidatedImage("image/jpeg"));
+        ReflectionTestUtils.setField(service, "imageStorageService", images);
+        ThreadLocalUtil.set(java.util.Map.of(
+                JwtClaimsConstant.ADMIN_ID, 1L,
+                JwtClaimsConstant.ROLE, "ROLE_ADMIN"));
+    }
+
+    @AfterEach
+    void clearIdentity() {
+        ThreadLocalUtil.remove();
     }
 
     /**
@@ -209,7 +231,10 @@ class SongUploadCommitBoundaryTest {
     private static String sessionJson() {
         return "{"
                 + "\"uploadId\":\"" + UPLOAD_ID + "\","
+                + "\"ownerAdminId\":1,"
                 + "\"audioObjectName\":\"staging/song-upload/" + UPLOAD_ID + "/audio.mp3\","
+                + "\"audioOriginalName\":\"audio.mp3\","
+                + "\"audioSize\":1024,"
                 + "\"coverObjectName\":\"staging/song-upload/" + UPLOAD_ID + "/cover.jpg\","
                 + "\"durationParsed\":true,"
                 + "\"durationSeconds\":180.5,"

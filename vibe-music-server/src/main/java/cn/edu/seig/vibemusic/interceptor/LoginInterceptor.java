@@ -5,13 +5,12 @@ import cn.edu.seig.vibemusic.config.RolePermissionManager;
 import cn.edu.seig.vibemusic.constant.JwtClaimsConstant;
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.constant.PathConstant;
-import cn.edu.seig.vibemusic.util.JwtUtil;
+import cn.edu.seig.vibemusic.security.AuthSessionService;
+import cn.edu.seig.vibemusic.security.TokenExtractor;
 import cn.edu.seig.vibemusic.util.ThreadLocalUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.stereotype.Component;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.util.PathMatcher;
@@ -32,7 +31,7 @@ import lombok.extern.slf4j.Slf4j;
 public class LoginInterceptor implements AsyncHandlerInterceptor {
 
     @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    private AuthSessionService authSessionService;
     @Autowired
     private RolePermissionManager rolePermissionManager;
 
@@ -58,10 +57,12 @@ public class LoginInterceptor implements AsyncHandlerInterceptor {
             return true; // 直接放行，确保 CORS 预检请求不会被拦截
         }
 
-        String token = request.getHeader("Authorization");
-
-        if (token != null && token.startsWith("Bearer ")) {
-            token = token.substring(7); // 去掉 "Bearer " 前缀
+        String token;
+        try {
+            token = TokenExtractor.extract(request.getHeader("Authorization"));
+        } catch (RuntimeException e) {
+            sendErrorResponse(response, 401, MessageConstant.SESSION_EXPIRED);
+            return false;
         }
         String path = request.getRequestURI();
 
@@ -78,6 +79,8 @@ public class LoginInterceptor implements AsyncHandlerInterceptor {
                 PathConstant.SONG_DETAIL_PATH,
                 PathConstant.ALBUM_LIST_PATH,
                 PathConstant.ALBUM_DETAIL_PATH,
+                PathConstant.SEARCH_PATH,
+                PathConstant.SEARCH_SUBPATH,
                 PathConstant.AI_PATH
         );
 
@@ -87,7 +90,7 @@ public class LoginInterceptor implements AsyncHandlerInterceptor {
 
         log.debug("拦截器检查: path={}, allowedPaths={}, isAllowed={}", path, allowedPaths, isAllowedPath);
 
-        if (token == null || token.isEmpty()) {
+        if (token == null) {
             if (isAllowedPath) {
                 log.debug("放行未登录用户访问: {}", path);
                 return true; // 允许未登录用户访问这些路径
@@ -99,18 +102,10 @@ public class LoginInterceptor implements AsyncHandlerInterceptor {
         }
 
         try {
-            // 从redis中获取相同的token
-            ValueOperations<String, String> operations = stringRedisTemplate.opsForValue();
-            String redisToken = operations.get(token);
-            if (redisToken == null) {
-                // token失效
-                throw new RuntimeException();
-            }
-
-            Map<String, Object> claims = JwtUtil.parseToken(token);
-            String role = (String) claims.get(JwtClaimsConstant.ROLE);
+            Map<String, Object> claims = authSessionService.authenticate(token);
+            String role = String.valueOf(claims.get(JwtClaimsConstant.ROLE));
             String requestURI = request.getRequestURI();
-            if (rolePermissionManager.hasPermission(role, requestURI)) {
+            if (isAllowedPath || rolePermissionManager.hasPermission(role, requestURI)) {
                 ThreadLocalUtil.set(claims);
                 return true;
             } else {
@@ -119,6 +114,9 @@ public class LoginInterceptor implements AsyncHandlerInterceptor {
             }
         } catch (org.springframework.dao.DataAccessException e) {
             throw e;
+        } catch (org.springframework.web.server.ResponseStatusException e) {
+            sendErrorResponse(response, e.getStatusCode().value(), MessageConstant.SESSION_EXPIRED);
+            return false;
         } catch (Exception e) {
             sendErrorResponse(response, 401, MessageConstant.SESSION_EXPIRED); // 令牌无效
             return false;

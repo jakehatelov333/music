@@ -2,7 +2,6 @@ package cn.edu.seig.vibemusic.service.impl;
 
 import cn.edu.seig.vibemusic.constant.MessageConstant;
 import cn.edu.seig.vibemusic.service.EmailService;
-import cn.edu.seig.vibemusic.util.RandomCodeUtil;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import lombok.extern.slf4j.Slf4j;
@@ -55,21 +54,4 @@ public class EmailServiceImpl implements EmailService {
         }
     }
 
-    /**
-     * 发送验证码邮件
-     *
-     * @param email 收件人地址
-     * @return 发送结果，包含是否成功和验证码
-     */
-    public String sendVerificationCodeEmail(String email) {
-        String verificationCode = RandomCodeUtil.generateRandomCode();
-        String subject = "【Vibe Music】验证码";
-        String content = "您的验证码为：" + verificationCode;
-        boolean success = sendEmail(email, subject, content);
-        if (success) {
-            return verificationCode;
-        } else {
-            return null;
-        }
-    }
 }

@@ -58,7 +58,7 @@ const handleSendCode = async () => {
       ElMessage.warning('请先输入邮箱')
       return
     }
-    const response = await sendEmailCode(registerForm.email)
+    const response = await sendEmailCode(registerForm.email, 'REGISTER')
     if (response.code === 0) {
       ElMessage.success('验证码已发送')
       countdown.value = 60
