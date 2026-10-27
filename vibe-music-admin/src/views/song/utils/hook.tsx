@@ -401,7 +401,6 @@ export function useSong(tableRef: Ref, treeRef: Ref) {
           album: row?.album ?? "",
           style: row?.style ?? [],
           releaseTime: row?.releaseTime ?? "",
-          lyric: row?.lyric ?? "",
           instrumental: row?.lyricStatus === 4
         }
       },

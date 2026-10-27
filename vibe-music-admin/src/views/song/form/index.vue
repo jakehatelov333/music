@@ -17,7 +17,6 @@ const props = withDefaults(defineProps<FormProps>(), {
     album: "",
     style: [],
     releaseTime: null,
-    lyric: "",
     instrumental: false
   })
 });
@@ -226,26 +225,6 @@ onMounted(() => {
         </el-form-item>
       </re-col>
 
-      <re-col
-        v-if="newFormInline.title === '修改' && !newFormInline.instrumental"
-        :value="24"
-        :xs="24"
-        :sm="24"
-      >
-        <el-form-item label="歌词" prop="lyric">
-          <el-input
-            v-model="newFormInline.lyric"
-            type="textarea"
-            :rows="10"
-            resize="vertical"
-            placeholder="支持 LRC 时间轴格式，留空表示该歌曲暂无歌词"
-            class="lyric-textarea"
-          />
-          <div class="lyric-hint">
-            支持 LRC 时间轴格式；留空表示该歌曲暂无歌词。可先在列表页使用「补歌词」自动获取。
-          </div>
-        </el-form-item>
-      </re-col>
     </el-row>
   </el-form>
 </template>
@@ -256,12 +235,6 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.5;
   color: var(--el-text-color-secondary);
-}
-
-.lyric-textarea :deep(textarea) {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.7;
 }
 
 .lyric-hint {
