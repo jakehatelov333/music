@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, h, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import ReCol from "@/components/ReCol";
+import ReCropperPreview from "@/components/ReCropperPreview";
+import { addDialog } from "@/components/ReDialog";
+import { deviceDetection } from "@pureadmin/utils";
+import userAvatar from "@/assets/user.jpg";
 import ProfilePreview from "./ProfilePreview.vue";
 import EyeIcon from "@iconify-icons/ri/eye-line";
 import KeyboardIcon from "@iconify-icons/ri/keyboard-line";
@@ -11,6 +15,7 @@ import { FormProps } from "../utils/types";
 import {
   searchQqArtists,
   getQqArtistProfile,
+  getQqArtistAvatar,
   type ArtistCandidate,
   type ArtistProfile
 } from "@/api/artistProfile";
@@ -391,8 +396,9 @@ const avatarChanged = computed(
 );
 
 /**
- * 选图后只做本地预览，不立即上传 —— 用户还可能改名字、甚至取消整个操作。
- * 真正上传发生在点「确定」时，由 addArtistWithAvatar / updateArtistWithAvatar 一并提交。
+ * 选图后直接进入裁剪：只有点了裁剪弹窗的「确定」，才用裁剪结果替换头像；
+ * 取消则什么都不改。真正上传发生在表单「确定」时，由
+ * addArtistWithAvatar / updateArtistWithAvatar 一并提交。
  */
 function handleAvatarChange(uploadFile: { raw?: File }) {
   const file = uploadFile?.raw;
@@ -407,14 +413,7 @@ function handleAvatarChange(uploadFile: { raw?: File }) {
     ElMessage.error("头像仅支持 JPG、PNG、WebP 等图片格式");
     return;
   }
-  // 换图时释放上一个 objectURL，否则反复选图会一直占着内存
-  if (newFormInline.value.avatarPreview?.startsWith("blob:")) {
-    URL.revokeObjectURL(newFormInline.value.avatarPreview);
-  }
-  newFormInline.value.avatarFile = file;
-  newFormInline.value.avatarPreview = URL.createObjectURL(file);
-  // 自己上传了图，就不再走 QQ 下载
-  newFormInline.value.qqSingerMid = "";
+  openAvatarCropper(URL.createObjectURL(file));
 }
 
 /** 移除头像。修改模式下等价于「恢复原头像」，不会真的把库里的头像清空。 */
@@ -425,6 +424,94 @@ function clearAvatar() {
   newFormInline.value.avatarFile = null;
   newFormInline.value.avatarPreview = originalAvatar.value;
   newFormInline.value.qqSingerMid = "";
+}
+
+const cropRef = ref();
+/** 最近一次裁剪结果；只在点裁剪弹窗的「确定」时写入表单 */
+const cropInfo = ref<{ blob: Blob } | null>(null);
+/** QQ 头像经后端代理取回期间置真，给「裁剪」按钮转圈 */
+const qqAvatarLoading = ref(false);
+
+/**
+ * 把裁剪结果统一写成本地文件：来源（QQ 图 / 上传图）在裁剪后不再有区别，
+ * 提交时都走 avatar 文件字段。QQ 图必须清掉 qqSingerMid —— 服务端下载
+ * 优先于上传文件，不清的话刚裁好的图会被服务端按 mid 拉的原图覆盖。
+ */
+function commitAvatarBlob(blob: Blob) {
+  const form = newFormInline.value;
+  // 换图时释放上一个 objectURL，否则反复选图会一直占着内存
+  if (form.avatarPreview?.startsWith("blob:")) {
+    URL.revokeObjectURL(form.avatarPreview);
+  }
+  const ext =
+    blob.type === "image/png"
+      ? "png"
+      : blob.type === "image/webp"
+        ? "webp"
+        : "jpg";
+  form.avatarFile = new File([blob], `artist-avatar.${ext}`, {
+    type: blob.type || "image/jpeg"
+  });
+  form.avatarPreview = URL.createObjectURL(blob);
+  form.qqSingerMid = "";
+}
+
+/**
+ * 打开裁剪弹窗（复用原独立「上传头像」入口的 ReCropperPreview）。
+ * 参数缺省时裁当前预览。QQ 候选图必须先经后端代理取回：腾讯 CDN 只对
+ * 白名单 Origin 回 CORS 头，浏览器直接裁会因 canvas 污染导不出结果。
+ */
+async function openAvatarCropper(preview?: string) {
+  const form = newFormInline.value;
+  let src = preview || form.avatarPreview || "";
+  // 本次弹窗用到的临时 objectURL：无论确认与否，关窗时都要释放
+  let tempSrc = preview ?? "";
+  if (src && !src.startsWith("blob:") && form.qqSingerMid) {
+    qqAvatarLoading.value = true;
+    try {
+      const blob = await getQqArtistAvatar(form.qqSingerMid);
+      tempSrc = URL.createObjectURL(blob);
+      src = tempSrc;
+    } catch (error) {
+      console.error("获取 QQ 头像失败：", error);
+      ElMessage.error("获取 QQ 头像失败，请重试");
+      return;
+    } finally {
+      qqAvatarLoading.value = false;
+    }
+  }
+  if (!src) {
+    return;
+  }
+  cropInfo.value = null;
+  addDialog({
+    title: "裁剪头像",
+    width: "40%",
+    closeOnClickModal: false,
+    fullscreen: deviceDetection(),
+    contentRenderer: () =>
+      h(ReCropperPreview, {
+        ref: cropRef,
+        imgSrc: src,
+        fallbackSrc: userAvatar,
+        uploadable: true,
+        onCropper: info => (cropInfo.value = info)
+      }),
+    beforeSure: done => {
+      if (!cropInfo.value?.blob) {
+        ElMessage.error("图片裁剪失败，请重试");
+        return;
+      }
+      commitAvatarBlob(cropInfo.value.blob);
+      done();
+    },
+    closeCallBack: () => {
+      cropRef.value?.hidePopover();
+      if (tempSrc.startsWith("blob:")) {
+        URL.revokeObjectURL(tempSrc);
+      }
+    }
+  });
 }
 
 function getRef() {
@@ -647,7 +734,7 @@ defineExpose({ getRef });
         </el-form-item>
       </re-col>
 
-      <!-- 头像：新增时可直接选图；修改时显示当前头像并允许替换 -->
+      <!-- 头像：选图 / QQ 候选图 / 库中原图都可裁剪；修改时不改动则保持原头像 -->
       <re-col :value="24" :xs="24" :sm="24">
         <el-form-item label="歌手头像">
           <div class="flex items-center gap-4">
@@ -683,6 +770,14 @@ defineExpose({ getRef });
                     {{ avatarChanged ? "更换图片" : "选择图片" }}
                   </el-button>
                 </el-upload>
+                <el-button
+                  v-if="newFormInline.avatarPreview"
+                  size="small"
+                  :loading="qqAvatarLoading"
+                  @click="openAvatarCropper()"
+                >
+                  裁剪
+                </el-button>
                 <!-- 修改模式下「还原」比「移除」更准确：库里原有头像不会被清空 -->
                 <el-button
                   v-if="avatarChanged && !isCreate"
@@ -705,7 +800,7 @@ defineExpose({ getRef });
               <span
                 class="text-xs text-[var(--el-text-color-secondary)] leading-tight"
               >
-                可选，JPG / PNG / WebP，不超过 5 MB
+                可选，JPG / PNG / WebP，不超过 5 MB；上传或 QQ 图都可裁剪
                 <template v-if="!isCreate">；不改就保持原头像</template>
               </span>
             </div>

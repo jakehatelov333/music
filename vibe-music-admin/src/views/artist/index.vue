@@ -4,8 +4,6 @@ import { useArtist } from "./utils/hook";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 
-import Upload from "@iconify-icons/ri/upload-line";
-import More from "@iconify-icons/ep/more-filled";
 import Delete from "@iconify-icons/ep/delete";
 import EditPen from "@iconify-icons/ep/edit-pen";
 import Refresh from "@iconify-icons/ep/refresh";
@@ -25,15 +23,12 @@ const {
   dataList,
   selectedNum,
   pagination,
-  buttonClass,
   deviceDetection,
   onSearch,
   resetForm,
   onbatchDel,
   openDialog,
-  handleUpdate,
   handleDelete,
-  handleUpload,
   handleSizeChange,
   handleSortChange,
   onSelectionCancel,
@@ -190,32 +185,6 @@ const {
                   </el-button>
                 </template>
               </el-popconfirm>
-              <el-dropdown>
-                <el-button
-                  class="ml-3 mt-[2px]"
-                  link
-                  type="primary"
-                  :size="size"
-                  :icon="useRenderIcon(More)"
-                  @click="handleUpdate(row)"
-                />
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item>
-                      <el-button
-                        :class="buttonClass"
-                        link
-                        type="primary"
-                        :size="size"
-                        :icon="useRenderIcon(Upload)"
-                        @click="handleUpload(row)"
-                      >
-                        上传头像
-                      </el-button>
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
             </template>
           </pure-table>
         </template>

@@ -5,18 +5,16 @@ import { message } from "@/utils/message";
 import userAvatar from "@/assets/user.jpg";
 import { addDialog } from "@/components/ReDialog";
 import type { PaginationProps } from "@pureadmin/table";
-import ReCropperPreview from "@/components/ReCropperPreview";
 import type { FormItemProps } from "../utils/types";
 import { getKeyList, deviceDetection } from "@pureadmin/utils";
 import {
   getArtistList,
   addArtistWithAvatar,
   updateArtistWithAvatar,
-  updateArtistAvatar,
   deleteArtist,
   deleteArtists
 } from "@/api/system";
-import { type Ref, h, ref, toRaw, computed, reactive, onMounted } from "vue";
+import { type Ref, h, ref, toRaw, reactive, onMounted } from "vue";
 
 export function useArtist(tableRef: Ref) {
   const form = reactive({
@@ -37,8 +35,6 @@ export function useArtist(tableRef: Ref) {
   const formRef = ref();
   const dataList = ref([]);
   const loading = ref(true);
-  // 上传头像信息
-  const avatarInfo = ref();
   const selectedNum = ref(0);
   const pagination = reactive<PaginationProps>({
     total: 0,
@@ -171,24 +167,10 @@ export function useArtist(tableRef: Ref) {
     {
       label: "操作",
       fixed: "right",
-      width: 180,
+      width: 130,
       slot: "operation"
     }
   ];
-  const buttonClass = computed(() => {
-    return [
-      "!h-[20px]",
-      "reset-margin",
-      "!text-gray-500",
-      "dark:!text-white",
-      "dark:hover:!text-primary"
-    ];
-  });
-
-  function handleUpdate(row) {
-    console.log(row);
-  }
-
   function handleDelete(row) {
     deleteArtist(row.artistId)
       .then(res => {
@@ -417,53 +399,6 @@ export function useArtist(tableRef: Ref) {
     });
   }
 
-  const cropRef = ref();
-  /** 上传头像 */
-  async function handleUpload(row) {
-    addDialog({
-      title: "裁剪、上传头像",
-      width: "40%",
-      closeOnClickModal: false,
-      fullscreen: deviceDetection(),
-      contentRenderer: () =>
-        h(ReCropperPreview, {
-          ref: cropRef,
-          imgSrc: row.avatar || userAvatar,
-          fallbackSrc: userAvatar,
-          uploadable: true,
-          onCropper: info => (avatarInfo.value = info)
-        }),
-      beforeSure: async done => {
-        if (!avatarInfo.value?.blob) {
-          message("图片裁剪失败，请重试", { type: "error" });
-          return;
-        }
-
-        // 创建 FormData
-        const formData = new FormData();
-        formData.append("avatar", avatarInfo.value.blob); // 使用 blob 数据
-        formData.append("artistId", row.artistId); // 传递歌手 ID
-
-        try {
-          // 调用上传接口
-          const res = await updateArtistAvatar(row.artistId, formData);
-
-          if (res.code === 0) {
-            message("上传头像成功", { type: "success" });
-            done(); // 关闭弹框
-            onSearch(); // 刷新表格数据
-          } else {
-            message("上传头像失败", { type: "error" });
-          }
-        } catch (error) {
-          console.error("上传失败:", error);
-          message("上传失败，请重试", { type: "error" });
-        }
-      },
-      closeCallBack: () => cropRef.value.hidePopover()
-    });
-  }
-
   onMounted(async () => {
     onSearch();
   });
@@ -475,15 +410,12 @@ export function useArtist(tableRef: Ref) {
     dataList,
     selectedNum,
     pagination,
-    buttonClass,
     deviceDetection,
     onSearch,
     resetForm,
     onbatchDel,
     openDialog,
-    handleUpdate,
     handleDelete,
-    handleUpload,
     handleSizeChange,
     handleSortChange,
     onSelectionCancel,

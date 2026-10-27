@@ -72,3 +72,18 @@ export const getQqArtistProfile = (singerMid: string) => {
     }
   );
 };
+
+/**
+ * 取某位候选歌手的头像原图字节（后端同源代理，供裁剪用）。
+ *
+ * 腾讯 CDN 只对白名单 Origin 回 CORS 头，浏览器直接把 CDN 图画进 canvas
+ * 会因画布污染导不出裁剪结果，必须经此代理转成同源 blob 再裁。
+ */
+export const getQqArtistAvatar = (singerMid: string, size?: number) => {
+  const userData = getToken();
+  return http.request<Blob>("get", `/admin/artists/qq/${singerMid}/avatar`, {
+    headers: { Authorization: userData.accessToken },
+    params: size ? { size } : undefined,
+    responseType: "blob"
+  });
+};

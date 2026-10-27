@@ -208,19 +208,6 @@ export const updateArtistWithAvatar = (
   });
 };
 
-/** 歌手管理-更新歌手头像 */
-export const updateArtistAvatar = (id: number, data: object) => {
-  const userData = getToken();
-  return http.request<Result>("patch", `/admin/updateArtistAvatar/${id}`, {
-    headers: {
-      "Content-Type": "multipart/form-data",
-      Authorization: userData.accessToken
-    },
-    data,
-    responseType: "json" // 确保使用正确的响应类型（可以使用 'json' 或 'blob'）
-  });
-};
-
 /** 歌手管理-删除歌手 */
 export const deleteArtist = (id: number) => {
   const userData = getToken();
