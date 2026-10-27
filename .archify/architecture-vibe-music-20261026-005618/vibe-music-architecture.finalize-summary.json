@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\candidate.json",
+    "sha256": "48f185cacb7130e02edcce79bba5e0552ab7b505edcf8ed333edb0a33cb60361",
+    "bytes": 9514
+  },
+  "artifact": {
+    "path": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\vibe-music-architecture.html",
+    "sha256": "0a10699f47af018713a79458869979390c5f6b090194aba8a8fbd312d1c39116",
+    "bytes": 859814
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\vibe-music-architecture.finalize.json",
+    "summaryReceipt": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\vibe-music-architecture.finalize-summary.json",
+    "browserCheckReceipt": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\vibe-music-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-25T16:29:31.668Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 6366,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

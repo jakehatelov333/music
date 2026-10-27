@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "76e723c6-35b3-403c-92df-5d06c5e6993b",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\candidate.json",
+  "output": "D:\\java_code\\music\\.archify\\architecture-vibe-music-20261026-005618\\vibe-music-architecture.html",
+  "specification": {
+    "sha256": "48f185cacb7130e02edcce79bba5e0552ab7b505edcf8ed333edb0a33cb60361",
+    "bytes": 9514
+  },
+  "artifact": {
+    "sha256": "0a10699f47af018713a79458869979390c5f6b090194aba8a8fbd312d1c39116",
+    "bytes": 859814
+  }
+}

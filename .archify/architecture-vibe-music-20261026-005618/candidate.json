@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Vibe Music 系统架构与工作流程",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-vibe-music-20261026-005618/vibe-music-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/jakehatelov333/music.git",
+      "provider": "github",
+      "revision": "a23cd1d91b6049432897f37977b37fc6858c09a5"
+    },
+    "views": [
+      {
+        "id": "journey",
+        "label": "主请求链路",
+        "focus": ["listeners", "client", "auth", "server"],
+        "note": "浏览器请求经拦截链校验后进入 Controller / Service"
+      },
+      {
+        "id": "ai",
+        "label": "AI 对话链路",
+        "focus": ["client", "auth", "server", "aiAgent", "llm"],
+        "note": "SSE 流式对话与工具调用，两段式创建歌单"
+      },
+      {
+        "id": "storage",
+        "label": "存储与清理",
+        "focus": ["server", "cleanup", "mysql", "redis", "minio"],
+        "note": "删除前核对引用，杜绝误删共享对象"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "listeners",
+      "type": "external",
+      "icon": "person",
+      "label": "听众 / 游客",
+      "sublabel": "浏览器",
+      "pos": [40, 196],
+      "size": [130, 64]
+    },
+    {
+      "id": "client",
+      "type": "frontend",
+      "label": "用户端 vibe-music-client",
+      "sublabel": "Vue 3 + Pinia · ArtPlayer",
+      "tag": ":8090",
+      "pos": [230, 188],
+      "size": [200, 92],
+      "sources": [
+        { "path": "vibe-music-client/vite.config.ts", "line": 19, "end_line": 28, "label": "端口与同源代理" },
+        { "path": "vibe-music-client/src/components/Artplayer.vue", "label": "播放器组件" },
+        { "path": "vibe-music-client/src/components/Common/AiWidget.vue", "label": "AI 聊天浮窗" }
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "管理端 vibe-music-admin",
+      "sublabel": "vue-pure-admin · 角色路由守卫",
+      "tag": "/api → :8080",
+      "pos": [230, 44],
+      "size": [200, 84],
+      "sources": [
+        { "path": "vibe-music-admin/vite.config.ts", "line": 27, "end_line": 33, "label": "/api 代理" },
+        { "path": "vibe-music-admin/src/router/index.ts", "line": 109, "end_line": 134, "label": "角色守卫" }
+      ]
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "请求拦截链",
+      "sublabel": "LoginInterceptor + RateLimit",
+      "tag": "JWT + 白名单",
+      "pos": [530, 192],
+      "size": [190, 84],
+      "sources": [
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/config/WebConfig.java", "line": 26, "end_line": 41, "label": "拦截器注册" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/interceptor/LoginInterceptor.java", "line": 101, "end_line": 110, "label": "Redis 白名单 + JWT 解析" }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "Spring Boot 后端",
+      "sublabel": "Controller / Service / Mapper",
+      "tag": ":8080",
+      "pos": [840, 184],
+      "size": [210, 96],
+      "sources": [
+        { "path": "vibe-music-server/src/main/resources/application.yml", "line": 91, "end_line": 92, "label": "服务端口" },
+        { "path": "vibe-music-server/pom.xml", "line": 7, "end_line": 8, "label": "Spring Boot 3.3.7" }
+      ]
+    },
+    {
+      "id": "aiAgent",
+      "type": "backend",
+      "label": "AI Agent 运行时",
+      "sublabel": "AiAssistantFactory · 9 只读 + 1 写工具",
+      "tag": "SSE 事件流",
+      "pos": [840, 50],
+      "size": [200, 88],
+      "sources": [
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/service/ai/AiAssistantFactory.java", "line": 57, "end_line": 77, "label": "每次请求装配运行实例" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/controller/AiController.java", "line": 226, "end_line": 233, "label": "SSE 端点" }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "cloud",
+      "label": "DashScope qwen-flash",
+      "sublabel": "阿里云大模型服务",
+      "pos": [1360, 50],
+      "size": [180, 84],
+      "sources": [
+        { "path": "vibe-music-server/src/main/resources/application.yml", "line": 98, "end_line": 102, "label": "模型配置" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/config/LangChain4jConfig.java", "line": 24, "end_line": 34, "label": "Qwen 模型 Bean" }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "type": "backend",
+      "label": "媒体清理管线",
+      "sublabel": "worker 核对引用后删除",
+      "tag": "30s 兜底",
+      "pos": [1120, 396],
+      "size": [200, 88],
+      "sources": [
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/service/MediaCleanupService.java", "line": 209, "end_line": 216, "label": "核对引用后删除" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/task/MediaCleanupRetryTask.java", "line": 23, "end_line": 25, "label": "定时兜底" }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis",
+      "sublabel": "db1 · token 白名单 · 缓存",
+      "tag": ":6379",
+      "pos": [530, 560],
+      "size": [170, 70],
+      "sources": [
+        { "path": "vibe-music-server/src/main/resources/application.yml", "line": 16, "end_line": 20, "label": "Redis db1" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/interceptor/LoginInterceptor.java", "line": 101, "end_line": 108, "label": "token 查询" }
+      ]
+    },
+    {
+      "id": "mysql",
+      "type": "database",
+      "label": "MySQL",
+      "sublabel": "vibe_music 业务库",
+      "tag": ":3306",
+      "pos": [740, 560],
+      "size": [190, 76],
+      "sources": [
+        { "path": "vibe-music-server/src/main/resources/application.yml", "line": 8, "end_line": 13, "label": "数据源" }
+      ]
+    },
+    {
+      "id": "minio",
+      "type": "cloud",
+      "label": "MinIO",
+      "sublabel": "对象存储 · vibe-music-data",
+      "tag": ":9005",
+      "pos": [1000, 560],
+      "size": [190, 76],
+      "sources": [
+        { "path": "vibe-music-server/src/main/resources/application.yml", "line": 86, "end_line": 90, "label": "MinIO 配置" },
+        { "path": "vibe-music-server/src/main/java/cn/edu/seig/vibemusic/service/MinioService.java", "line": 17, "end_line": 27, "label": "上传 / 删除" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Spring Boot 单体 vibe-music-server :8080",
+      "wraps": ["auth", "server", "aiAgent", "cleanup"]
+    }
+  ],
+  "connections": [
+    { "id": "listeners-to-client", "from": "listeners", "to": "client" },
+    { "id": "client-to-auth", "from": "client", "to": "auth", "label": "JWT 请求头", "variant": "emphasis" },
+    { "id": "admin-to-auth", "from": "admin", "to": "auth", "label": "/api 代理 · JWT", "fromSide": "right", "toSide": "top" },
+    { "id": "auth-to-server", "from": "auth", "to": "server", "label": "校验通过放行" },
+    { "id": "auth-to-redis", "from": "auth", "to": "redis", "label": "token 白名单查询", "variant": "security" },
+    { "id": "server-to-aiagent", "from": "server", "to": "aiAgent", "label": "装配 Agent 运行实例" },
+    { "id": "aiagent-to-llm", "from": "aiAgent", "to": "llm", "label": "LangChain4j 流式调用" },
+    { "id": "server-to-mysql", "from": "server", "to": "mysql", "label": "MyBatis-Plus SQL" },
+    { "id": "server-to-minio", "from": "server", "to": "minio", "label": "上传 / 读取对象", "fromSide": "bottom", "toSide": "top" },
+    { "id": "server-to-cleanup", "from": "server", "to": "cleanup", "label": "登记清理任务", "fromSide": "bottom", "toSide": "top" },
+    { "id": "cleanup-to-minio", "from": "cleanup", "to": "minio", "label": "核对 7 类引用后删除", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "请求链路",
+      "items": [
+        "两个 SPA 同源代理转发到 :8080，规避跨域与 Cookie SameSite 问题",
+        "游客可匿名浏览曲库；登录后 JWT 有效期 6 小时，存 Redis db1 白名单",
+        "ROLE_ADMIN / ROLE_USER 按路径前缀授权，公开管理员注册端点已下线"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "AI 对话链路",
+      "items": [
+        "/ai/chat/stream 以 SSE 推送 start→tool→confirm→token→done 事件",
+        "创建歌单两段式：模型只出待确认预览，用户确认并重新校验后才写入",
+        "对话记忆存 MySQL（窗口 20 条）；温度 0.3、单次输出 ≤512 token"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "存储与治理",
+      "items": [
+        "Spring Cache 走 Redis，注解缓存 TTL 10 分钟，与拦截器共用 db1",
+        "删除媒体先登记任务表，worker 核对 7 类引用列，无引用才删对象",
+        "30s 定时任务兜底重试；可靠性只依赖数据库，不依赖回调"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "外部服务与可观测性",
+      "items": [
+        "验证码邮件经 QQ 邮箱 SMTP（SSL :465）发送",
+        "歌词补全抓取 QQ 音乐接口，带匹配得分阈值与总开关",
+        "管理端内置 AI 调用追踪页（traces），观测每次模型与工具调用"
+      ]
+    }
+  ]
+}
