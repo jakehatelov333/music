@@ -12,11 +12,12 @@ import { ElNotification } from "element-plus";
 import { message } from "@/utils/message";
 
 import Upload from "@iconify-icons/ri/upload-line";
-import More from "@iconify-icons/ep/more-filled";
+import Preview from "@iconify-icons/ri/headphone-line";
 import Delete from "@iconify-icons/ep/delete";
 import EditPen from "@iconify-icons/ep/edit-pen";
 import Refresh from "@iconify-icons/ep/refresh";
 import LyricsIcon from "@iconify-icons/ri/file-music-line";
+import PreviewDialog from "@/views/song/form/preview.vue";
 import { useRouter } from "vue-router";
 
 defineOptions({
@@ -26,6 +27,17 @@ defineOptions({
 const formRef = ref();
 const tableRef = ref();
 const router = useRouter();
+
+// 专辑详情中的单首歌曲音频预览
+const previewVisible = ref(false);
+const previewSongName = ref("");
+const previewAudioUrl = ref("");
+
+function openPreviewDialog(row: any) {
+  previewSongName.value = row.songName;
+  previewAudioUrl.value = row.audioUrl;
+  previewVisible.value = true;
+}
 
 // 补全本专辑歌词
 const albumBatchVisible = ref(false);
@@ -58,7 +70,6 @@ const {
   openCreateDialog,
   handleUpdate,
   handleDelete,
-  handleUpload,
   handleSizeChange,
   handleSortChange,
   onSelectionCancel,
@@ -336,32 +347,6 @@ onBeforeUnmount(stopAlbumPolling);
                   </el-button>
                 </template>
               </el-popconfirm>
-              <el-dropdown>
-                <el-button
-                  class="ml-3 mt-[2px]"
-                  link
-                  type="primary"
-                  :size="size"
-                  :icon="useRenderIcon(More)"
-                  @click="handleUpdate(row)"
-                />
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item>
-                      <el-button
-                        :class="buttonClass"
-                        link
-                        type="primary"
-                        :size="size"
-                        :icon="useRenderIcon(Upload)"
-                        @click="handleUpload(row)"
-                      >
-                        上传封面
-                      </el-button>
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
             </template>
           </pure-table>
         </template>
@@ -412,10 +397,33 @@ onBeforeUnmount(stopAlbumPolling);
                 </el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="试听" width="90">
+              <template #default="{ row }">
+                <el-button
+                  :class="buttonClass"
+                  link
+                  type="primary"
+                  size="small"
+                  :icon="useRenderIcon(Preview)"
+                  @click="openPreviewDialog(row)"
+                >
+                  预览
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </template>
       </div>
     </el-drawer>
+
+    <!-- 音频预览弹窗 -->
+    <PreviewDialog
+      v-if="previewVisible"
+      :visible="previewVisible"
+      :songName="previewSongName"
+      :audioUrl="previewAudioUrl"
+      @update:visible="previewVisible = $event"
+    />
 
     <!-- 补全本专辑进度 -->
     <el-dialog v-model="albumBatchVisible" title="补全本专辑歌词" width="460px">

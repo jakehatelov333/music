@@ -22,6 +22,11 @@ const props = defineProps({
   circled: {
     type: Boolean,
     default: true
+  },
+  /** 透传给 ReCropper 的 cropperjs 配置（如关闭滚轮缩放） */
+  options: {
+    type: Object,
+    default: () => ({})
   }
 });
 
@@ -131,6 +136,7 @@ defineExpose({ hidePopover });
             ref="refCropper"
             :src="currentImgSrc"
             :circled="circled"
+            :options="options"
             @cropper="onCropper"
             @readied="showPopover = true"
             @error="handleImgError"

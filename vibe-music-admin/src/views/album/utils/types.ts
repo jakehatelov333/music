@@ -6,6 +6,7 @@ interface ArtistOption {
 interface FormItemProps {
   formTitle: string;
   albumId?: number;
+  coverUrl?: string;
   artistId?: number;
   artistName?: string;
   albumName: string;

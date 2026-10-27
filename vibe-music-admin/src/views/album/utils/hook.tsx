@@ -3,7 +3,6 @@ import albumCover from "@/assets/song.jpg";
 import editForm from "../form/index.vue";
 import { message } from "@/utils/message";
 import { addDialog, closeDialog } from "@/components/ReDialog";
-import ReCropperPreview from "@/components/ReCropperPreview";
 import type { PaginationProps } from "@pureadmin/table";
 import { getKeyList, deviceDetection } from "@pureadmin/utils";
 import {
@@ -38,8 +37,6 @@ export function useAlbum(tableRef: Ref) {
   const detailVisible = ref(false);
   const detailLoading = ref(false);
   const detailAlbum = ref<any>(null);
-  const coverInfo = ref();
-  const cropRef = ref();
   const selectedNum = ref(0);
   const pagination = reactive<PaginationProps>({
     total: 0,
@@ -334,13 +331,14 @@ export function useAlbum(tableRef: Ref) {
     }
   }
 
-  function openDialog(row: FormItemProps) {
+  function openDialog(row: any) {
     addDialog({
       title: row?.albumId ? "编辑专辑" : "新建专辑",
       props: {
         formInline: {
           formTitle: row?.albumId ? "修改" : "新增",
           albumId: row?.albumId,
+          coverUrl: row?.cover ?? "",
           artistId: row?.artistId ?? undefined,
           artistName: row?.artistName ?? "",
           albumName: row?.albumName ?? "",
@@ -369,15 +367,37 @@ export function useAlbum(tableRef: Ref) {
           const res = curData.albumId
             ? await updateAlbum(curData)
             : await addAlbum(curData);
-          if (res.code === 0) {
-            message(`${curData.albumId ? "已更新" : "已创建"}专辑 ${curData.albumName}`, {
-              type: "success"
-            });
-            done();
-            onSearch();
-          } else {
+          if (res.code !== 0) {
             message(`修改专辑失败，${res.message}`, { type: "error" });
+            return;
           }
+          // 编辑弹窗里如果重新裁剪了封面，保存基本信息后一并上传
+          const coverBlob = formRef.value?.getCoverBlob?.();
+          if (curData.albumId && coverBlob) {
+            const formData = new FormData();
+            // 必须带图片扩展名，后端按文件扩展名 + 实际格式双重校验
+            formData.append("cover", coverBlob, "album-cover.png");
+            try {
+              const coverRes = await updateAlbumCover(curData.albumId, formData);
+              if (coverRes.code !== 0) {
+                message(coverRes.message || "上传专辑封面失败", {
+                  type: "error"
+                });
+                return;
+              }
+            } catch (error: any) {
+              console.error("上传专辑封面失败", error);
+              message(error?.response?.data?.message || "上传专辑封面失败，请重试", {
+                type: "error"
+              });
+              return;
+            }
+          }
+          message(`${curData.albumId ? "已更新" : "已创建"}专辑 ${curData.albumName}`, {
+            type: "success"
+          });
+          done();
+          onSearch();
         });
       }
     });
@@ -394,45 +414,6 @@ export function useAlbum(tableRef: Ref) {
       })
       .catch(() => message("获取专辑详情失败", { type: "error" }))
       .finally(() => (detailLoading.value = false));
-  }
-
-  function handleUpload(row) {
-    addDialog({
-      title: "裁剪、上传专辑封面",
-      width: "40%",
-      closeOnClickModal: false,
-      fullscreen: deviceDetection(),
-      contentRenderer: () =>
-        h(ReCropperPreview, {
-          ref: cropRef,
-          uploadable: true,
-          circled: false,
-          imgSrc: row.cover || albumCover,
-          onCropper: info => (coverInfo.value = info)
-        }),
-      beforeSure: async done => {
-        if (!coverInfo.value?.blob) {
-          message("图片裁剪失败，请重试", { type: "error" });
-          return;
-        }
-        const formData = new FormData();
-        formData.append("cover", coverInfo.value.blob);
-        try {
-          const res = await updateAlbumCover(row.albumId, formData);
-          if (res.code === 0) {
-            message("上传专辑封面成功", { type: "success" });
-            done();
-            onSearch();
-          } else {
-            message(res.message || "上传专辑封面失败", { type: "error" });
-          }
-        } catch (error) {
-          console.error("上传专辑封面失败", error);
-          message("上传专辑封面失败，请重试", { type: "error" });
-        }
-      },
-      closeCallBack: () => cropRef.value?.hidePopover()
-    });
   }
 
   onMounted(async () => {
@@ -460,7 +441,6 @@ export function useAlbum(tableRef: Ref) {
     openCreateDialog: () => openDialog(null as any),
     handleUpdate,
     handleDelete,
-    handleUpload,
     handleSizeChange,
     handleSortChange,
     onSelectionCancel,
