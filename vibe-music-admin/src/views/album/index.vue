@@ -320,33 +320,45 @@ onBeforeUnmount(stopAlbumPolling);
             @page-current-change="handleCurrentChange"
           >
             <template #operation="{ row }">
-              <el-button class="reset-margin" link type="primary" :size="size" @click="handleUpdate(row)">查看</el-button>
-              <el-button
-                class="reset-margin"
-                link
-                type="primary"
-                :size="size"
-                :icon="useRenderIcon(EditPen)"
-                @click="openDialog(row)"
+              <div
+                class="flex items-center justify-center gap-2 whitespace-nowrap"
               >
-                修改
-              </el-button>
-              <el-popconfirm
-                :title="`是否确认删除专辑编号为 ${row.albumId} 的这条数据`"
-                @confirm="handleDelete(row)"
-              >
-                <template #reference>
-                  <el-button
-                    class="reset-margin"
-                    link
-                    type="primary"
-                    :size="size"
-                    :icon="useRenderIcon(Delete)"
-                  >
-                    删除
-                  </el-button>
-                </template>
-              </el-popconfirm>
+                <el-button
+                  class="reset-margin !ml-0"
+                  link
+                  type="primary"
+                  :size="size"
+                  @click="handleUpdate(row)"
+                >
+                  查看
+                </el-button>
+                <el-button
+                  class="reset-margin !ml-0"
+                  link
+                  type="primary"
+                  :size="size"
+                  :icon="useRenderIcon(EditPen)"
+                  @click="openDialog(row)"
+                >
+                  修改
+                </el-button>
+                <el-popconfirm
+                  :title="`是否确认删除专辑编号为 ${row.albumId} 的这条数据`"
+                  @confirm="handleDelete(row)"
+                >
+                  <template #reference>
+                    <el-button
+                      class="reset-margin !ml-0"
+                      link
+                      type="primary"
+                      :size="size"
+                      :icon="useRenderIcon(Delete)"
+                    >
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
+              </div>
             </template>
           </pure-table>
         </template>

@@ -250,7 +250,8 @@ export default defineComponent({
         <div
           {...attrs}
           class={[
-            "w-[99/100]",
+            "box-border",
+            "w-full",
             "px-2",
             "pb-2",
             "bg-bg_color",
@@ -259,7 +260,7 @@ export default defineComponent({
               : "mt-2"
           ]}
         >
-          <div class="flex justify-between w-full h-[60px] p-4">
+          <div class="box-border flex h-[60px] w-full justify-between p-4">
             {slots?.title ? (
               slots.title()
             ) : (

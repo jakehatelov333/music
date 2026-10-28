@@ -23,7 +23,6 @@ const {
   dataList,
   selectedNum,
   pagination,
-  deviceDetection,
   onSearch,
   resetForm,
   onbatchDel,
@@ -38,15 +37,13 @@ const {
 </script>
 
 <template>
-  <div :class="['flex', 'justify-between', deviceDetection() && 'flex-wrap']">
-    <div
-      :class="[deviceDetection() ? ['w-full', 'mt-2'] : 'w-[calc(100%-0px)]']"
-    >
+  <div class="flex min-w-0 flex-wrap justify-between">
+    <div class="w-full min-w-0">
       <el-form
         ref="formRef"
         :inline="true"
         :model="form"
-        class="search-form bg-bg_color w-[99/100] pl-8 pt-[12px] overflow-auto"
+        class="search-form bg-bg_color box-border w-full overflow-auto pl-8 pt-[12px]"
       >
         <el-form-item label="歌手：" prop="artistName">
           <el-input
@@ -159,32 +156,36 @@ const {
             @page-current-change="handleCurrentChange"
           >
             <template #operation="{ row }">
-              <el-button
-                class="reset-margin"
-                link
-                type="primary"
-                :size="size"
-                :icon="useRenderIcon(EditPen)"
-                @click="openDialog('修改', row)"
+              <div
+                class="flex items-center justify-center gap-2 whitespace-nowrap"
               >
-                修改
-              </el-button>
-              <el-popconfirm
-                :title="`是否确认删除歌手编号为 ${row.artistId} 的这条数据`"
-                @confirm="handleDelete(row)"
-              >
-                <template #reference>
-                  <el-button
-                    class="reset-margin"
-                    link
-                    type="primary"
-                    :size="size"
-                    :icon="useRenderIcon(Delete)"
-                  >
-                    删除
-                  </el-button>
-                </template>
-              </el-popconfirm>
+                <el-button
+                  class="reset-margin !ml-0"
+                  link
+                  type="primary"
+                  :size="size"
+                  :icon="useRenderIcon(EditPen)"
+                  @click="openDialog('修改', row)"
+                >
+                  修改
+                </el-button>
+                <el-popconfirm
+                  :title="`是否确认删除歌手编号为 ${row.artistId} 的这条数据`"
+                  @confirm="handleDelete(row)"
+                >
+                  <template #reference>
+                    <el-button
+                      class="reset-margin !ml-0"
+                      link
+                      type="primary"
+                      :size="size"
+                      :icon="useRenderIcon(Delete)"
+                    >
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
+              </div>
             </template>
           </pure-table>
         </template>

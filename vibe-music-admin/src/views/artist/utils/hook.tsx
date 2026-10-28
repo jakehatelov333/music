@@ -148,8 +148,8 @@ export function useArtist(tableRef: Ref) {
     {
       label: "简介",
       prop: "introduction",
-      // 简介收窄，把横向空间让给编号/国籍等短列（否则表格过宽时短列被压到最小宽度）
-      width: 260,
+      // 不固定宽度，让简介列吸收剩余空间：宽屏时表格铺满，窄屏时先压到最小宽度再横向滚动
+      minWidth: 260,
       formatter: ({ introduction }) => {
         if (!introduction) {
           return "";
@@ -167,7 +167,7 @@ export function useArtist(tableRef: Ref) {
     {
       label: "操作",
       fixed: "right",
-      width: 130,
+      width: 150,
       slot: "operation"
     }
   ];
@@ -347,8 +347,13 @@ export function useArtist(tableRef: Ref) {
             if (title === "新增") {
               // 头像与歌手信息一次提交：分成两个请求时，第二步失败会留下「有歌手没头像」
               // 的半成品，而 addArtist 又不返回 id，前端没法补救。
-              const { avatarFile, avatarPreview, qqSingerMid, qqAvatarSize, ...artistPayload } =
-                curData;
+              const {
+                avatarFile,
+                avatarPreview,
+                qqSingerMid,
+                qqAvatarSize,
+                ...artistPayload
+              } = curData;
               void avatarPreview;
               addArtistWithAvatar(artistPayload, avatarFile ?? undefined, {
                 qqSingerMid: qqSingerMid || null,
@@ -371,8 +376,13 @@ export function useArtist(tableRef: Ref) {
             } else {
               // 修改也要能换头像：走 multipart 版本，一次提交文字字段 + 可选新头像。
               // 不传头像时后端保持原头像不变（空值不等于清空）。
-              const { avatarFile, avatarPreview, qqSingerMid, qqAvatarSize, ...artistPayload } =
-                curData;
+              const {
+                avatarFile,
+                avatarPreview,
+                qqSingerMid,
+                qqAvatarSize,
+                ...artistPayload
+              } = curData;
               void avatarPreview;
               updateArtistWithAvatar(artistPayload, avatarFile ?? undefined, {
                 qqSingerMid: qqSingerMid || null,
