@@ -6,6 +6,7 @@ import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 
 import Delete from "@iconify-icons/ep/delete";
 import Refresh from "@iconify-icons/ep/refresh";
+import Check from "@iconify-icons/ep/check";
 
 defineOptions({
   name: "FeedbackManagement"
@@ -25,6 +26,8 @@ const {
   onSearch,
   resetForm,
   onbatchDel,
+  onBatchMarkRead,
+  handleMarkRead,
   handleDelete,
   handleSizeChange,
   handleSortChange,
@@ -35,15 +38,13 @@ const {
 </script>
 
 <template>
-  <div :class="['flex', 'justify-between', deviceDetection() && 'flex-wrap']">
-    <div
-      :class="[deviceDetection() ? ['w-full', 'mt-2'] : 'w-[calc(100%-0px)]']"
-    >
+  <div class="flex min-w-0 flex-wrap justify-between">
+    <div class="w-full min-w-0">
       <el-form
         ref="formRef"
         :inline="true"
         :model="form"
-        class="search-form bg-bg_color w-[99/100] pl-8 pt-[12px] overflow-auto"
+        class="search-form bg-bg_color box-border w-full overflow-auto pl-8 pt-[12px]"
       >
         <el-form-item label="关键词：" prop="keyword">
           <el-input
@@ -52,6 +53,13 @@ const {
             clearable
             class="!w-[180px]"
           />
+        </el-form-item>
+        <el-form-item label="查看状态：" prop="isRead">
+          <el-select v-model="form.isRead" class="!w-[140px]">
+            <el-option label="全部" :value="-1" />
+            <el-option label="已查看" :value="1" />
+            <el-option label="未查看" :value="0" />
+          </el-select>
         </el-form-item>
         <el-form-item>
           <el-button
@@ -86,6 +94,14 @@ const {
                 取消选择
               </el-button>
             </div>
+            <el-button
+              type="primary"
+              text
+              :icon="useRenderIcon(Check)"
+              @click="onBatchMarkRead"
+            >
+              标记已查看
+            </el-button>
             <el-popconfirm title="是否确认删除?" @confirm="onbatchDel">
               <template #reference>
                 <el-button type="danger" text class="mr-1">
@@ -100,7 +116,7 @@ const {
             adaptive
             :adaptiveConfig="{ offsetBottom: 108 }"
             align-whole="center"
-            table-layout="auto"
+            table-layout="fixed"
             :loading="loading"
             :size="size"
             :data="dataList"
@@ -116,22 +132,37 @@ const {
             @page-current-change="handleCurrentChange"
           >
             <template #operation="{ row }">
-              <el-popconfirm
-                :title="`是否确认删除反馈编号为 ${row.feedbackId} 的这条数据`"
-                @confirm="handleDelete(row)"
+              <div
+                class="flex items-center justify-center gap-2 whitespace-nowrap"
               >
-                <template #reference>
-                  <el-button
-                    class="reset-margin"
-                    link
-                    type="primary"
-                    :size="size"
-                    :icon="useRenderIcon(Delete)"
-                  >
-                    删除
-                  </el-button>
-                </template>
-              </el-popconfirm>
+                <el-button
+                  v-if="row.isRead !== 1"
+                  class="reset-margin !ml-0"
+                  link
+                  type="primary"
+                  :size="size"
+                  :icon="useRenderIcon(Check)"
+                  @click="handleMarkRead(row)"
+                >
+                  标记已查看
+                </el-button>
+                <el-popconfirm
+                  :title="`是否确认删除反馈编号为 ${row.feedbackId} 的这条数据`"
+                  @confirm="handleDelete(row)"
+                >
+                  <template #reference>
+                    <el-button
+                      class="reset-margin !ml-0"
+                      link
+                      type="primary"
+                      :size="size"
+                      :icon="useRenderIcon(Delete)"
+                    >
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
+              </div>
             </template>
           </pure-table>
         </template>

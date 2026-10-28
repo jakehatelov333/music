@@ -344,60 +344,63 @@ CREATE TABLE `tb_feedback`  (
   `id` bigint(0) NOT NULL AUTO_INCREMENT COMMENT '反馈 id',
   `user_id` bigint(0) NOT NULL COMMENT '用户 id',
   `feedback` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '反馈内容',
+  `is_read` tinyint(0) NOT NULL DEFAULT 0 COMMENT '查看状态：0-未查看，1-已查看',
+  `read_time` datetime(0) NULL COMMENT '查看时间',
   `create_time` datetime(0) NOT NULL COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `fk_feedback_user_id`(`user_id`) USING BTREE,
+  INDEX `idx_feedback_is_read_create_time`(`is_read`, `create_time`) USING BTREE,
   CONSTRAINT `fk_feedback_user_id` FOREIGN KEY (`user_id`) REFERENCES `tb_user` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE = InnoDB AUTO_INCREMENT = 73 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Records of tb_feedback
 -- ----------------------------
-INSERT INTO `tb_feedback` VALUES (2, 31, '这是一个随机反馈 431', '2025-01-26 14:18:05');
-INSERT INTO `tb_feedback` VALUES (3, 30, '这是一个随机反馈 707', '2025-01-26 14:18:05');
-INSERT INTO `tb_feedback` VALUES (8, 30, '这是一个随机反馈 360', '2025-01-26 14:18:58');
-INSERT INTO `tb_feedback` VALUES (9, 31, '这是一个随机反馈 727', '2025-01-26 14:18:58');
-INSERT INTO `tb_feedback` VALUES (10, 27, '这是一个随机反馈 824', '2025-01-26 14:18:58');
-INSERT INTO `tb_feedback` VALUES (11, 29, '这是一个随机反馈 711', '2025-01-26 14:18:58');
-INSERT INTO `tb_feedback` VALUES (12, 28, '这是一个随机反馈 172', '2025-01-26 14:18:58');
-INSERT INTO `tb_feedback` VALUES (15, 35, '这是一个随机反馈 17', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (16, 80, '这是一个随机反馈 853', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (17, 55, '这是一个随机反馈 431', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (18, 79, '这是一个随机反馈 838', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (19, 73, '这是一个随机反馈 358', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (22, 79, '这是一个随机反馈 83', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (23, 52, '这是一个随机反馈 123', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (24, 36, '这是一个随机反馈 744', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (25, 62, '这是一个随机反馈 766', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (26, 58, '这是一个随机反馈 648', '2025-01-26 14:31:33');
-INSERT INTO `tb_feedback` VALUES (29, 87, '这是一个随机反馈 565', '2025-01-26 14:35:28');
-INSERT INTO `tb_feedback` VALUES (30, 73, '这是一个随机反馈 294', '2025-01-26 14:35:28');
-INSERT INTO `tb_feedback` VALUES (31, 62, '这是一个随机反馈 213', '2025-01-26 14:35:28');
-INSERT INTO `tb_feedback` VALUES (32, 64, '这是一个随机反馈 296', '2025-01-26 14:35:28');
-INSERT INTO `tb_feedback` VALUES (33, 86, '这是一个随机反馈 782', '2025-01-26 14:35:28');
-INSERT INTO `tb_feedback` VALUES (36, 63, '这是一个随机反馈 570', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (37, 105, '这是一个随机反馈 840', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (38, 59, '这是一个随机反馈 750', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (39, 57, '这是一个随机反馈 659', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (40, 104, '这是一个随机反馈 98', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (43, 44, '这是一个随机反馈 58', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (44, 41, '这是一个随机反馈 140', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (47, 104, '这是一个随机反馈 700', '2025-01-26 14:54:51');
-INSERT INTO `tb_feedback` VALUES (53, 107, '这是一个随机反馈 402', '2025-01-26 14:55:14');
-INSERT INTO `tb_feedback` VALUES (59, 126, '哇，今天的推荐太棒了！发现了好几首我超喜欢的冷门歌曲！', '2025-04-03 15:47:45');
-INSERT INTO `tb_feedback` VALUES (60, 30, '感觉推荐的音乐越来越符合我的口味了，继续保持！', '2025-04-03 15:48:45');
-INSERT INTO `tb_feedback` VALUES (61, 27, '搜索功能有点不太好用，输入歌手名字经常找不到对应的歌曲。', '2025-04-03 15:48:54');
-INSERT INTO `tb_feedback` VALUES (62, 29, '希望可以增加一个‘不再推荐这个歌手/歌曲’的功能。', '2025-04-03 15:49:03');
-INSERT INTO `tb_feedback` VALUES (63, 30, '我经常使用你们的歌单功能，但是感觉歌单的分类和管理还不够灵活。希望能增加自定义标签的功能，并且可以按照创建时间、歌曲数量等进行排序，方便我更好地整理自己的音乐库。', '2025-04-03 15:49:10');
-INSERT INTO `tb_feedback` VALUES (64, 31, '很喜欢每日推荐歌单，每天都有新的惊喜。', '2025-04-03 15:49:20');
-INSERT INTO `tb_feedback` VALUES (65, 27, '总的来说，这个音乐推荐网站还是非常不错的，为我发现了许多新的音乐。希望你们能持续优化和改进，推出更多有趣和实用的功能，成为我日常听歌的首选平台。', '2025-04-03 15:49:29');
-INSERT INTO `tb_feedback` VALUES (66, 107, '希望可以支持更多音乐平台导入歌单。', '2025-04-03 15:49:41');
-INSERT INTO `tb_feedback` VALUES (67, 28, '希望可以增加歌词显示功能。', '2025-04-03 15:49:57');
-INSERT INTO `tb_feedback` VALUES (68, 35, '整体来说还不错，会继续使用下去。', '2025-04-03 15:50:25');
-INSERT INTO `tb_feedback` VALUES (69, 80, '界面设计很简洁，用起来很舒服。', '2025-04-03 15:51:26');
-INSERT INTO `tb_feedback` VALUES (70, 55, '我希望网站能提供更详细的歌曲和专辑信息，比如歌曲的创作背景、制作团队、所属专辑的评价等等。这能帮助我们更深入地了解音乐背后的故事，增加听歌的乐趣。', '2025-04-03 15:51:44');
-INSERT INTO `tb_feedback` VALUES (71, 126, '能不能增加一些排行榜单，比如不同风格的热门歌曲？', '2025-04-03 15:51:59');
-INSERT INTO `tb_feedback` VALUES (72, 66, '我非常喜欢这个网站的整体设计风格，简约大气，操作起来也很流畅。特别是夜间模式，对眼睛非常友好。如果能在播放界面增加一些可视化的效果，比如动态频谱或者专辑封面动画，就更完美了。', '2025-04-03 15:52:09');
+INSERT INTO `tb_feedback` VALUES (2, 31, '这是一个随机反馈 431', 0, NULL, '2025-01-26 14:18:05');
+INSERT INTO `tb_feedback` VALUES (3, 30, '这是一个随机反馈 707', 0, NULL, '2025-01-26 14:18:05');
+INSERT INTO `tb_feedback` VALUES (8, 30, '这是一个随机反馈 360', 0, NULL, '2025-01-26 14:18:58');
+INSERT INTO `tb_feedback` VALUES (9, 31, '这是一个随机反馈 727', 0, NULL, '2025-01-26 14:18:58');
+INSERT INTO `tb_feedback` VALUES (10, 27, '这是一个随机反馈 824', 0, NULL, '2025-01-26 14:18:58');
+INSERT INTO `tb_feedback` VALUES (11, 29, '这是一个随机反馈 711', 0, NULL, '2025-01-26 14:18:58');
+INSERT INTO `tb_feedback` VALUES (12, 28, '这是一个随机反馈 172', 0, NULL, '2025-01-26 14:18:58');
+INSERT INTO `tb_feedback` VALUES (15, 35, '这是一个随机反馈 17', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (16, 80, '这是一个随机反馈 853', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (17, 55, '这是一个随机反馈 431', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (18, 79, '这是一个随机反馈 838', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (19, 73, '这是一个随机反馈 358', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (22, 79, '这是一个随机反馈 83', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (23, 52, '这是一个随机反馈 123', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (24, 36, '这是一个随机反馈 744', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (25, 62, '这是一个随机反馈 766', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (26, 58, '这是一个随机反馈 648', 0, NULL, '2025-01-26 14:31:33');
+INSERT INTO `tb_feedback` VALUES (29, 87, '这是一个随机反馈 565', 0, NULL, '2025-01-26 14:35:28');
+INSERT INTO `tb_feedback` VALUES (30, 73, '这是一个随机反馈 294', 0, NULL, '2025-01-26 14:35:28');
+INSERT INTO `tb_feedback` VALUES (31, 62, '这是一个随机反馈 213', 0, NULL, '2025-01-26 14:35:28');
+INSERT INTO `tb_feedback` VALUES (32, 64, '这是一个随机反馈 296', 0, NULL, '2025-01-26 14:35:28');
+INSERT INTO `tb_feedback` VALUES (33, 86, '这是一个随机反馈 782', 0, NULL, '2025-01-26 14:35:28');
+INSERT INTO `tb_feedback` VALUES (36, 63, '这是一个随机反馈 570', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (37, 105, '这是一个随机反馈 840', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (38, 59, '这是一个随机反馈 750', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (39, 57, '这是一个随机反馈 659', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (40, 104, '这是一个随机反馈 98', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (43, 44, '这是一个随机反馈 58', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (44, 41, '这是一个随机反馈 140', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (47, 104, '这是一个随机反馈 700', 0, NULL, '2025-01-26 14:54:51');
+INSERT INTO `tb_feedback` VALUES (53, 107, '这是一个随机反馈 402', 0, NULL, '2025-01-26 14:55:14');
+INSERT INTO `tb_feedback` VALUES (59, 126, '哇，今天的推荐太棒了！发现了好几首我超喜欢的冷门歌曲！', 0, NULL, '2025-04-03 15:47:45');
+INSERT INTO `tb_feedback` VALUES (60, 30, '感觉推荐的音乐越来越符合我的口味了，继续保持！', 0, NULL, '2025-04-03 15:48:45');
+INSERT INTO `tb_feedback` VALUES (61, 27, '搜索功能有点不太好用，输入歌手名字经常找不到对应的歌曲。', 0, NULL, '2025-04-03 15:48:54');
+INSERT INTO `tb_feedback` VALUES (62, 29, '希望可以增加一个‘不再推荐这个歌手/歌曲’的功能。', 0, NULL, '2025-04-03 15:49:03');
+INSERT INTO `tb_feedback` VALUES (63, 30, '我经常使用你们的歌单功能，但是感觉歌单的分类和管理还不够灵活。希望能增加自定义标签的功能，并且可以按照创建时间、歌曲数量等进行排序，方便我更好地整理自己的音乐库。', 0, NULL, '2025-04-03 15:49:10');
+INSERT INTO `tb_feedback` VALUES (64, 31, '很喜欢每日推荐歌单，每天都有新的惊喜。', 0, NULL, '2025-04-03 15:49:20');
+INSERT INTO `tb_feedback` VALUES (65, 27, '总的来说，这个音乐推荐网站还是非常不错的，为我发现了许多新的音乐。希望你们能持续优化和改进，推出更多有趣和实用的功能，成为我日常听歌的首选平台。', 0, NULL, '2025-04-03 15:49:29');
+INSERT INTO `tb_feedback` VALUES (66, 107, '希望可以支持更多音乐平台导入歌单。', 0, NULL, '2025-04-03 15:49:41');
+INSERT INTO `tb_feedback` VALUES (67, 28, '希望可以增加歌词显示功能。', 0, NULL, '2025-04-03 15:49:57');
+INSERT INTO `tb_feedback` VALUES (68, 35, '整体来说还不错，会继续使用下去。', 0, NULL, '2025-04-03 15:50:25');
+INSERT INTO `tb_feedback` VALUES (69, 80, '界面设计很简洁，用起来很舒服。', 0, NULL, '2025-04-03 15:51:26');
+INSERT INTO `tb_feedback` VALUES (70, 55, '我希望网站能提供更详细的歌曲和专辑信息，比如歌曲的创作背景、制作团队、所属专辑的评价等等。这能帮助我们更深入地了解音乐背后的故事，增加听歌的乐趣。', 0, NULL, '2025-04-03 15:51:44');
+INSERT INTO `tb_feedback` VALUES (71, 126, '能不能增加一些排行榜单，比如不同风格的热门歌曲？', 0, NULL, '2025-04-03 15:51:59');
+INSERT INTO `tb_feedback` VALUES (72, 66, '我非常喜欢这个网站的整体设计风格，简约大气，操作起来也很流畅。特别是夜间模式，对眼睛非常友好。如果能在播放界面增加一些可视化的效果，比如动态频谱或者专辑封面动画，就更完美了。', 0, NULL, '2025-04-03 15:52:09');
 
 -- ----------------------------
 -- Table structure for tb_genre

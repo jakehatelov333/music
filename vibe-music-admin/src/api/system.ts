@@ -555,6 +555,18 @@ export const deleteFeedbacks = (ids: Array<number>) => {
   });
 };
 
+/** 反馈管理-批量标记已查看 */
+export const markFeedbacksRead = (ids: Array<number>) => {
+  const userData = getToken();
+  return http.request<Result>("post", `/admin/markFeedbacksRead`, {
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: userData.accessToken
+    },
+    data: ids
+  });
+};
+
 /** 轮播图管理-获取轮播图列表 */
 export const getBannerList = (data: object) => {
   const userData = getToken();

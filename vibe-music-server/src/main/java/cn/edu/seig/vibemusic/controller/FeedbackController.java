@@ -59,6 +59,17 @@ public class FeedbackController {
     }
 
     /**
+     * 批量标记反馈为已查看
+     *
+     * @param feedbackIds 反馈id列表
+     * @return 结果
+     */
+    @PostMapping("/admin/markFeedbacksRead")
+    public Result markFeedbacksRead(@RequestBody List<Long> feedbackIds) {
+        return feedbackService.markFeedbacksRead(feedbackIds);
+    }
+
+    /**
      * 添加反馈
      *
      * @param content 反馈内容

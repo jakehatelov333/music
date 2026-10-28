@@ -27,6 +27,9 @@ public interface IFeedbackService extends IService<Feedback> {
     // 批量删除反馈
     Result deleteFeedbacks(List<Long> feedbackIds);
 
+    // 批量标记反馈为已查看
+    Result markFeedbacksRead(List<Long> feedbackIds);
+
     // 添加反馈
     Result addFeedback(String content);
 

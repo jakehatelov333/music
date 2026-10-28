@@ -38,6 +38,13 @@ public class FeedbackDTO implements Serializable {
     private String keyword;
 
     /**
+     * 查看状态：0-未查看，1-已查看；null 表示全部
+     */
+    @Min(0)
+    @Max(1)
+    private Integer isRead;
+
+    /**
      * 排序字段（白名单校验在 Service 层）：
      * feedbackId / userId / createTime；null 时按默认排序（反馈时间倒序）。
      */

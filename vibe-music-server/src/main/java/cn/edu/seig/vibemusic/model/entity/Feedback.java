@@ -50,6 +50,19 @@ public class Feedback implements Serializable {
     private String feedback;
 
     /**
+     * 查看状态：0-未查看，1-已查看
+     */
+    @TableField("is_read")
+    private Integer isRead;
+
+    /**
+     * 查看时间
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @TableField("read_time")
+    private LocalDateTime readTime;
+
+    /**
      * 创建时间
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
