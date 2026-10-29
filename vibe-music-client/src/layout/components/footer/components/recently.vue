@@ -48,18 +48,18 @@ const handleClearAll = () => {
           :class="
             props.immersive
               ? 'player-queue-trigger'
-              : 'p-2 rounded-full hover:bg-hoverMenuBg transition w-9'
+              : 'p-2 rounded-full hover:bg-hoverMenuBg transition w-9 h-9'
           "
         >
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" class="h-full w-full">
             <path
-              d="M3.4 5.2h12.4M3.4 10.8h12.4M3.4 16.4h7"
+              d="M3.4 5.6h12.4M3.4 11.2h12.4M3.4 16.8h7"
               stroke="currentColor"
               stroke-width="2.3"
               stroke-linecap="round"
             />
             <path
-              d="M16.6 13.3 22.9 17.1 16.6 20.9Z"
+              d="M14.4 13.8v6l5-3-5-3Z"
               fill="currentColor"
               stroke="currentColor"
               stroke-width="1.4"

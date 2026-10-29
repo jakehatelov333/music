@@ -88,7 +88,7 @@ const togglePlayMode = () => {
       v-model="volume"
       :show-tooltip="false"
       @change="setVolume"
-      class="!w-24 mr-4 hidden lg:block"
+      class="!w-24 mr-4 hidden lg:inline-flex"
       size="small"
       :max="100"
     />

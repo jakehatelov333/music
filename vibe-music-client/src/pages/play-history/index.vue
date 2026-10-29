@@ -448,7 +448,6 @@ onBeforeUnmount(() => {
                 <span class="ph-col-duration">
                   {{ formatMillisecondsToTime(Number(item.duration) * 1000) }}
                 </span>
-              </div>
               <span class="ph-col-remove">
                 <button
                   type="button"
@@ -456,10 +455,13 @@ onBeforeUnmount(() => {
                   :aria-label="`将《${item.songName}》从最近播放中移除`"
                   :title="`将《${item.songName}》从最近播放中移除`"
                   @click.stop="removeOne(item)"
+                    @keydown.enter.stop
+                    @keydown.space.stop
                 >
                   <icon-material-symbols:delete-outline class="text-lg" />
                 </button>
               </span>
+              </div>
             </li>
           </ul>
         </div>
@@ -487,6 +489,9 @@ onBeforeUnmount(() => {
  *
  * 之所以用 CSS 变量而不是 Tailwind 的 grid-cols-[...]：这里列多且要响应式隐藏，
  * 变量写法更容易在中途改列而不影响其他页面。
+ *
+ * 表头和数据行必须渲染同一套轨道（含第 9 列「操作」）：fr 列的宽度由整条
+ * 网格算出，行里少一列（比如把操作按钮放行外）就会让列头与数据全部错位。
  */
 .ph-table {
   --ph-gap: 1.5rem;
@@ -510,9 +515,7 @@ onBeforeUnmount(() => {
 }
 
 .ph-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
+  display: block;
   border-radius: 1rem;
   transition: background-color 0.18s ease;
 }
