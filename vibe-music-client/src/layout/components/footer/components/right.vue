@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import Recently from './recently.vue'
 import RecentPlays from './recent-plays.vue'
+
+defineOptions({ name: 'FooterControls' })
 
 const emit = defineEmits<{
   openLyrics: []
 }>()
 
-const { volume, setVolume, setPlayMode } = useAudioPlayer()
+const { volume, setVolume, setPlayMode, playMode } = useAudioPlayer()
 
 const isMuted = computed(() => volume.value === 0)
 
@@ -40,11 +42,8 @@ const playModes = {
   },
 } as const
 
-const currentMode = ref<keyof typeof playModes>('order')
-
 const togglePlayMode = () => {
-  const nextMode = playModes[currentMode.value].next
-  currentMode.value = nextMode
+  const nextMode = playModes[playMode.value].next
   setPlayMode(nextMode)
 }
 </script>
@@ -52,9 +51,16 @@ const togglePlayMode = () => {
 <template>
   <div class="flex shrink-0 items-center pr-1 md:pr-4">
     <div class="mx-2 hidden items-center sm:flex">
-      <el-tooltip :content="playModes[currentMode].tooltip" placement="top" effect="dark">
-        <button class="p-2 rounded-full hover:bg-hoverMenuBg transition w-9 h-9" @click="togglePlayMode">
-          <Icon :icon="playModes[currentMode].icon" class="w-full h-full" />
+      <el-tooltip
+        :content="playModes[playMode].tooltip"
+        placement="top"
+        effect="dark"
+      >
+        <button
+          class="p-2 rounded-full hover:bg-hoverMenuBg transition w-9 h-9"
+          @click="togglePlayMode"
+        >
+          <Icon :icon="playModes[playMode].icon" class="w-full h-full" />
         </button>
       </el-tooltip>
     </div>
@@ -64,13 +70,28 @@ const togglePlayMode = () => {
       title="打开歌词"
       @click="emit('openLyrics')"
     >
-      <icon-ri:article-line class="text-lg transition-transform group-hover:-translate-y-0.5" />
+      <icon-ri:article-line
+        class="text-lg transition-transform group-hover:-translate-y-0.5"
+      />
       <span class="hidden lg:inline">歌词</span>
     </button>
-    <button @click="toggleVolume" class="hidden h-9 w-9 rounded-full p-2 transition hover:bg-hoverMenuBg sm:block">
-      <Icon :icon="isMuted ? 'ic:round-volume-off' : 'ic:round-volume-up'" class="w-full h-full" />
+    <button
+      @click="toggleVolume"
+      class="hidden h-9 w-9 rounded-full p-2 transition hover:bg-hoverMenuBg sm:block"
+    >
+      <Icon
+        :icon="isMuted ? 'ic:round-volume-off' : 'ic:round-volume-up'"
+        class="w-full h-full"
+      />
     </button>
-    <el-slider v-model="volume" :show-tooltip="false" @change="setVolume" class="!w-24 mr-4 hidden lg:block" size="small" :max="100" />
+    <el-slider
+      v-model="volume"
+      :show-tooltip="false"
+      @change="setVolume"
+      class="!w-24 mr-4 hidden lg:block"
+      size="small"
+      :max="100"
+    />
     <RecentPlays class="hidden sm:block" />
     <Recently />
   </div>

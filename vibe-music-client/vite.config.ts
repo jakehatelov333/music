@@ -5,8 +5,10 @@ import { createProxy } from './build/proxy'
 import { createVitePlugins } from './build/plugins'
 
 // 客户端使用的业务接口前缀；统一走同源代理，公网隧道无需额外 CORS。
+// 注意末尾必须同时匹配 "/" 和 "?"：/search 是唯一不带子路径的接口，
+// 浏览器请求是 /search?keyword=...，只写 (?:/|$) 会匹配失败并落到 SPA 首页。
 const BACKEND_API_PREFIX =
-  '^/(?:admin|album|artist|banner|comment|favorite|feedback|genre|play-history|playlist(?:-binding)?|search|song|style|user)(?:/|$)'
+  '^/(?:admin|album|artist|banner|comment|favorite|feedback|genre|play-history|playlist(?:-binding)?|search|song|style|user)(?:[/?]|$)'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {

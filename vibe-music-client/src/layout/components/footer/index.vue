@@ -5,21 +5,23 @@ import Center from './components/center.vue'
 import Right from './components/right.vue'
 import DrawerMusic from '@/components/DrawerMusic/index.vue'
 
-type PlayerDrawerTab = 'lyrics' | 'comments'
+type PlayerDrawerTab = 'player' | 'lyrics' | 'comments'
 
 const showPlayerDetail = ref(false)
-const playerDrawerTab = ref<PlayerDrawerTab>('lyrics')
+const playerDrawerTab = ref<PlayerDrawerTab>('player')
 
-const openPlayerDetail = (tab: PlayerDrawerTab = 'lyrics') => {
+const openPlayerDetail = (tab: PlayerDrawerTab = 'player') => {
   playerDrawerTab.value = tab
   showPlayerDetail.value = true
 }
 </script>
 
 <template>
-  <footer class="app-player-footer border-t flex min-h-0 items-center justify-between overflow-hidden shadow-2xl shadow-black">
+  <footer
+    class="app-player-footer border-t flex min-h-0 items-center justify-between overflow-hidden shadow-2xl shadow-black"
+  >
     <!-- 左边：歌曲封面和歌曲名称 -->
-    <Left @open="openPlayerDetail('lyrics')" />
+    <Left @open="openPlayerDetail('player')" />
     <!-- 中间：控制区 -->
     <Center />
     <!-- 右边：历史播放、音量和歌词入口 -->
@@ -33,4 +35,3 @@ const openPlayerDetail = (tab: PlayerDrawerTab = 'lyrics') => {
   flex: 0 0 clamp(4rem, 8vh, 5.5rem);
 }
 </style>
-

@@ -12,6 +12,7 @@ interface AudioPlayer {
   currentTime: Ref<number>
   duration: Ref<number>
   volume: Ref<number>
+  playMode: Ref<PlayMode>
   //   currentLyricIndex: Ref<number>
   audioElement: Ref<HTMLAudioElement | null>
   play: () => void
@@ -356,6 +357,7 @@ export const AudioPlayer = () => {
     currentTime,
     duration,
     volume,
+    playMode,
     // currentLyricIndex,
     audioElement,
     play,
